@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "src/app_api.cpp"
+        "src/ble_driver.cpp"
+        "src/nvs_driver.cpp"
+        "src/utils.cpp"
+    INCLUDE_DIRS
+        "include"
+    REQUIRES
+        bt
+        nvs_flash
+	log
+        driver
+)
