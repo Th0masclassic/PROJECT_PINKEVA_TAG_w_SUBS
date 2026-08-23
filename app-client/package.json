@@ -1,0 +1,21 @@
+{
+  "name": "@pinqeva/app-provisioning",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "base64-js": "^1.5.1",
+    "react-native-ble-plx": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.0",
+    "react": "^19.1.0",
+    "react-native": "^0.81.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -9,6 +9,7 @@ idf_component_register(
     REQUIRES
         bt
         nvs_flash
+	mbedtls
 	log
         driver
 )

@@ -1,0 +1,346 @@
+import os
+import uuid
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from app.config import Settings
+from app.crypto import (
+    b64url_encode,
+    claim_completion_token,
+    release_completion_token,
+    setup_code_digest,
+)
+from app.models import (
+    DeviceClaimComplete,
+    DeviceClaimStart,
+    DeviceReleaseComplete,
+)
+from app.service import ProvisioningError, ProvisioningService
+
+
+class Cursor:
+    def __init__(self, row=None):
+        self.row = row
+
+    async def fetchone(self):
+        return self.row
+
+
+class FakeConnection:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.executions = []
+
+    async def execute(self, query, parameters=()):
+        self.executions.append((query, parameters))
+        row = self.rows.pop(0) if self.rows else None
+        return Cursor(row)
+
+
+@pytest.fixture
+def settings() -> Settings:
+    return Settings(
+        database_url="postgresql://unused",
+        supabase_jwks_url="https://example.invalid/jwks.json",
+        supabase_jwt_issuer="https://example.invalid/auth/v1",
+        supabase_jwt_audience="authenticated",
+        supabase_jwt_algorithms=("ES256",),
+        key_encryption_key=os.urandom(32),
+        claim_token_key=os.urandom(32),
+        setup_code_pepper=os.urandom(32),
+        session_ttl_seconds=600,
+        claim_ttl_seconds=86_400,
+    )
+
+
+def device_row(settings: Settings, user_id=None, session_id=None):
+    setup_code = "kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h"
+    salt = os.urandom(16)
+    return setup_code, {
+        "id": uuid.uuid4(),
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "setup_secret_salt": salt,
+        "setup_secret_digest": setup_code_digest(
+            setup_code, salt, settings.setup_code_pepper
+        ),
+        "provisioning_session_id": session_id,
+        "owner_user_id": user_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_start_claim_generates_once_binds_immediately_and_returns_no_private_key(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    setup_code, device = device_row(settings)
+    session_id_holder = {}
+
+    # The insert RETURNING row needs values generated inside the service. The
+    # fake cursor supplies stable shape; response/security assertions inspect
+    # the actual INSERT parameters.
+    returned_session = {
+        "id": uuid.uuid4(),
+        "user_id": user_id,
+        "device_id": device["id"],
+        "serial_number": device["serial_number"],
+        "advertisement_key": os.urandom(28),
+        "advertisement_key_sha256": os.urandom(32),
+        "status": "pending",
+        "expires_at": datetime.now(UTC) + timedelta(minutes=10),
+        "claim_deadline": datetime.now(UTC) + timedelta(days=1),
+        "completed_at": None,
+    }
+    connection = FakeConnection([device, None, None, returned_session, None])
+
+    response = await ProvisioningService(settings).start_claim(
+        connection,
+        user_id=user_id,
+        idempotency_key="provision:01HZZZZZZZZZZZZZ",
+        request=DeviceClaimStart(
+            serial_number=device["serial_number"], setup_code=setup_code
+        ),
+    )
+
+    insert_execution = next(
+        execution for execution in connection.executions if "INSERT INTO public.provisioning_session" in execution[0]
+    )
+    insert_parameters = insert_execution[1]
+    assert len(insert_parameters[5]) == 44  # 28-byte scalar + GCM tag
+    assert len(insert_parameters[6]) == 12
+    assert len(insert_parameters[8]) == 57
+    assert len(insert_parameters[9]) == 28
+    assert len(insert_parameters[10]) == 32
+    assert response.tag_action == "write_key"
+    assert len(response.claim_completion_token_base64url) == 43
+    assert len(response.tag_control_key_base64url) == 43
+    assert not hasattr(response, "private_key")
+    assert not hasattr(response, "public_key")
+    assert any(
+        "SET provisioning_session_id" in query for query, _ in connection.executions
+    )
+
+
+@pytest.mark.asyncio
+async def test_bad_setup_proof_uses_generic_rejection(settings: Settings) -> None:
+    connection = FakeConnection([None])
+    with pytest.raises(ProvisioningError) as error:
+        await ProvisioningService(settings).start_claim(
+            connection,
+            user_id=uuid.uuid4(),
+            idempotency_key="provision:01HZZZZZZZZZZZZZ",
+            request=DeviceClaimStart(
+                serial_number="PKV-AABBCCDDEEFF",
+                setup_code="kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h",
+            ),
+        )
+    assert error.value.code == "SETUP_PROOF_REJECTED"
+    assert error.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_bound_session_is_resumed_without_generating_a_replacement(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    setup_code, device = device_row(settings, session_id=session_id)
+    stored_key = os.urandom(28)
+    stored_hash = os.urandom(32)
+    bound = {
+        "id": session_id,
+        "user_id": user_id,
+        "device_id": device["id"],
+        "serial_number": device["serial_number"],
+        "advertisement_key": stored_key,
+        "advertisement_key_sha256": stored_hash,
+        "status": "pending",
+        "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+        "claim_deadline": datetime.now(UTC) + timedelta(hours=1),
+        "completed_at": None,
+    }
+    connection = FakeConnection([device, None, bound])
+
+    response = await ProvisioningService(settings).start_claim(
+        connection,
+        user_id=user_id,
+        idempotency_key="provision:new-retry-0001",
+        request=DeviceClaimStart(
+            serial_number=device["serial_number"], setup_code=setup_code
+        ),
+    )
+
+    assert response.session_id == session_id
+    assert response.advertisement_key_base64url == b64url_encode(stored_key)
+    assert response.tag_action == "write_key"
+    assert not any("INSERT INTO" in query for query, _ in connection.executions)
+
+
+@pytest.mark.asyncio
+async def test_tag_with_different_stored_key_fails_closed(settings: Settings) -> None:
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    setup_code, device = device_row(settings, session_id=session_id)
+    bound = {
+        "id": session_id,
+        "user_id": user_id,
+        "device_id": device["id"],
+        "serial_number": device["serial_number"],
+        "advertisement_key": os.urandom(28),
+        "advertisement_key_sha256": os.urandom(32),
+        "status": "pending",
+        "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+        "claim_deadline": datetime.now(UTC) + timedelta(hours=1),
+        "completed_at": None,
+    }
+    connection = FakeConnection([device, None, bound])
+    with pytest.raises(ProvisioningError) as error:
+        await ProvisioningService(settings).start_claim(
+            connection,
+            user_id=user_id,
+            idempotency_key="provision:mismatch-0001",
+            request=DeviceClaimStart(
+                serial_number=device["serial_number"],
+                setup_code=setup_code,
+                tag_advertisement_key_sha256_base64url=b64url_encode(os.urandom(32)),
+            ),
+        )
+    assert error.value.code == "TAG_KEY_MISMATCH"
+
+
+@pytest.mark.asyncio
+async def test_allocation_owned_by_another_user_is_unavailable(settings: Settings) -> None:
+    current_user = uuid.uuid4()
+    other_user = uuid.uuid4()
+    session_id = uuid.uuid4()
+    setup_code, device = device_row(settings, user_id=other_user, session_id=session_id)
+    bound = {
+        "id": session_id,
+        "user_id": other_user,
+        "device_id": device["id"],
+        "serial_number": device["serial_number"],
+        "advertisement_key": os.urandom(28),
+        "advertisement_key_sha256": os.urandom(32),
+        "status": "claimed",
+        "expires_at": datetime.now(UTC),
+        "claim_deadline": datetime.now(UTC),
+        "completed_at": datetime.now(UTC),
+    }
+    connection = FakeConnection([device, None, bound])
+    with pytest.raises(ProvisioningError) as error:
+        await ProvisioningService(settings).start_claim(
+            connection,
+            user_id=current_user,
+            idempotency_key="provision:other-owner-01",
+            request=DeviceClaimStart(
+                serial_number=device["serial_number"], setup_code=setup_code
+            ),
+        )
+    assert error.value.code == "DEVICE_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_claim_retry_returns_the_original_result(settings: Settings) -> None:
+    session_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    completed_at = datetime.now(UTC) - timedelta(seconds=2)
+    advertisement_hash = os.urandom(32)
+    token = claim_completion_token(
+        settings.claim_token_key,
+        session_id=session_id.bytes,
+        user_id=user_id.bytes,
+        device_id=device_id.bytes,
+        advertisement_key_sha256=advertisement_hash,
+    )
+    connection = FakeConnection(
+        [
+            {
+                "id": session_id,
+                "device_id": device_id,
+                "serial_number": "PKV-AABBCCDDEEFF",
+                "status": "claimed",
+                "advertisement_key_sha256": advertisement_hash,
+                "claim_deadline": datetime.now(UTC) + timedelta(hours=1),
+                "completed_at": completed_at,
+                "provisioning_session_id": session_id,
+            }
+        ]
+    )
+
+    response = await ProvisioningService(settings).complete_claim(
+        connection,
+        user_id=user_id,
+        request=DeviceClaimComplete(
+            session_id=session_id,
+            serial_number="PKV-AABBCCDDEEFF",
+            tag_advertisement_key_sha256_base64url=b64url_encode(advertisement_hash),
+            claim_completion_token_base64url=b64url_encode(token),
+        ),
+    )
+    assert response.device_id == device_id
+    assert response.claimed_at == completed_at
+    assert len(connection.executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_release_ends_one_owner_and_cancels_subscriptions(
+    settings: Settings,
+) -> None:
+    release_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    nonce = os.urandom(32)
+    token = release_completion_token(
+        settings.claim_token_key,
+        release_id=release_id.bytes,
+        user_id=user_id.bytes,
+        device_id=device_id.bytes,
+        nonce=nonce,
+    )
+    release = {
+        "id": release_id,
+        "user_id": user_id,
+        "device_id": device_id,
+        "provisioning_session_id": session_id,
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "reset_nonce": nonce,
+        "status": "pending",
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        "completed_at": None,
+        "cancelled_subscriptions": 0,
+        "provider_cancellations_queued": 0,
+        "current_session_id": session_id,
+    }
+    connection = FakeConnection(
+        [
+            release,
+            {"user_id": user_id},
+            {"cancelled_count": 2, "queued_count": 1},
+            None,
+            None,
+            None,
+            None,
+        ]
+    )
+
+    response = await ProvisioningService(settings).complete_release(
+        connection,
+        user_id=user_id,
+        device_id=device_id,
+        request=DeviceReleaseComplete(
+            release_id=release_id,
+            serial_number="PKV-AABBCCDDEEFF",
+            tag_key_state="empty",
+            release_completion_token_base64url=b64url_encode(token),
+        ),
+    )
+    assert response.status == "unprovisioned"
+    assert response.cancelled_subscriptions == 2
+    assert response.provider_cancellations_queued == 1
+    statements = "\n".join(query for query, _ in connection.executions)
+    assert "SET ended_at" in statements
+    assert "SET status = 'revoked'" in statements
+    assert "SET provisioning_session_id = NULL" in statements

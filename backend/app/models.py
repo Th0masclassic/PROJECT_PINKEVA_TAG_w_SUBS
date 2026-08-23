@@ -1,0 +1,156 @@
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from typing import Annotated, Literal
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from .crypto import b64url_decode_exact
+
+
+SERIAL_PATTERN = re.compile(r"^PKV-[0-9A-F]{12}$")
+IDEMPOTENCY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class DeviceClaimStart(StrictModel):
+    serial_number: str = Field(min_length=16, max_length=16)
+    setup_code: str = Field(min_length=20, max_length=128)
+    tag_advertisement_key_sha256_base64url: str | None = Field(
+        default=None, min_length=43, max_length=43
+    )
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator("tag_advertisement_key_sha256_base64url")
+    @classmethod
+    def valid_tag_key_hash(cls, value: str | None) -> str | None:
+        if value is not None:
+            b64url_decode_exact(value, 32)
+        return value
+
+
+class DeviceClaimStartResponse(StrictModel):
+    session_id: UUID
+    serial_number: str
+    protocol_version: Literal[1]
+    tag_action: Literal["write_key", "verify_existing_key"]
+    advertisement_key_base64url: str
+    advertisement_key_sha256_base64url: str
+    claim_completion_token_base64url: str
+    tag_control_key_base64url: str | None
+    expires_at: datetime
+    claim_deadline: datetime
+
+
+class DeviceClaimComplete(StrictModel):
+    session_id: UUID
+    serial_number: str = Field(min_length=16, max_length=16)
+    tag_advertisement_key_sha256_base64url: str = Field(min_length=43, max_length=43)
+    claim_completion_token_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator(
+        "tag_advertisement_key_sha256_base64url",
+        "claim_completion_token_base64url",
+    )
+    @classmethod
+    def valid_32_byte_base64url(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class DeviceClaimResponse(StrictModel):
+    device_id: UUID
+    serial_number: str
+    status: Literal["suspended"]
+    claimed_at: datetime
+    next_action: Literal["install_signed_entitlement"]
+
+
+class DeviceReleaseStart(StrictModel):
+    serial_number: str = Field(min_length=16, max_length=16)
+    tag_advertisement_key_sha256_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator("tag_advertisement_key_sha256_base64url")
+    @classmethod
+    def valid_tag_key_hash(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class DeviceReleaseStartResponse(StrictModel):
+    release_id: UUID
+    device_id: UUID
+    serial_number: str
+    reset_command_base64url: str
+    release_completion_token_base64url: str
+    expires_at: datetime
+
+
+class DeviceReleaseComplete(StrictModel):
+    release_id: UUID
+    serial_number: str = Field(min_length=16, max_length=16)
+    tag_key_state: Literal["empty"]
+    release_completion_token_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator("release_completion_token_base64url")
+    @classmethod
+    def valid_release_token(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class DeviceReleaseResponse(StrictModel):
+    device_id: UUID
+    serial_number: str
+    status: Literal["unprovisioned"]
+    released_at: datetime
+    cancelled_subscriptions: int
+    provider_cancellations_queued: int
+    next_action: Literal["ready_for_new_owner"]
+
+
+IdempotencyKey = Annotated[str, Field(min_length=16, max_length=128)]
+
+
+def validate_idempotency_key(value: str) -> str:
+    if not IDEMPOTENCY_PATTERN.fullmatch(value):
+        raise ValueError(
+            "Idempotency-Key must contain 16-128 letters, digits, '.', '_', ':', or '-'"
+        )
+    return value

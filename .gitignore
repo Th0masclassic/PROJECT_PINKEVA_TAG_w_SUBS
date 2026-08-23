@@ -1,0 +1,23 @@
+# Local development environments and dependency trees
+backend/.venv/
+app-client/node_modules/
+**/__pycache__/
+.pytest_cache/
+*.pyc
+.DS_Store
+
+# Local environment values (examples remain tracked)
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# ESP-IDF per-target generated output
+Test/Apple_FindMy_test/ESP32/build-c3/
+Test/Apple_FindMy_test/ESP32/sdkconfig.c3
+
+# Credential/key experiments must never be newly committed
+**/auth.json
+**/*.keys
+**/tmp.key
+**/reports.db
