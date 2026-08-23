@@ -12,6 +12,8 @@
 #include "esp_gatts_api.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_random.h"
+#include "esp_timer.h"
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs_driver.hpp"
@@ -23,7 +25,10 @@ constexpr uint8_t SERVICE_INSTANCE_ID = 0;
 constexpr uint8_t STATUS_VALUE_SIZE = 2;
 constexpr uint8_t PROTOCOL_VALUE_SIZE = 6;
 constexpr uint8_t KEY_FINGERPRINT_SIZE = 32;
+constexpr uint8_t TAG_CHALLENGE_SIZE = 32;
+constexpr uint8_t TAG_AUTHORIZATION_PROOF_SIZE = 32;
 constexpr uint8_t RESET_COMMAND_SIZE = 64;
+constexpr uint64_t AUTHORIZATION_TIMEOUT_MICROSECONDS = 30ULL * 1000ULL * 1000ULL;
 constexpr size_t MAX_STAGED_VALUE_SIZE = RESET_COMMAND_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
@@ -61,6 +66,14 @@ constexpr uint8_t AUTHENTICATED_RESET_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x07, 0xF0, 0xF0, 0xA6,
 };
+constexpr uint8_t TAG_CHALLENGE_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x08, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t TAG_AUTHORIZATION_PROOF_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x09, 0xF0, 0xF0, 0xA6,
+};
 
 enum AttributeIndex : uint8_t {
     SERVICE,
@@ -79,6 +92,10 @@ enum AttributeIndex : uint8_t {
     CONTROL_KEY_VALUE,
     AUTHENTICATED_RESET_DECLARATION,
     AUTHENTICATED_RESET_VALUE,
+    TAG_CHALLENGE_DECLARATION,
+    TAG_CHALLENGE_VALUE,
+    TAG_AUTHORIZATION_PROOF_DECLARATION,
+    TAG_AUTHORIZATION_PROOF_VALUE,
     ATTRIBUTE_COUNT,
 };
 
@@ -90,9 +107,9 @@ constexpr uint8_t WRITE_PROPERTY = ESP_GATT_CHAR_PROP_BIT_WRITE;
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-// Protocol 1.1, firmware 0.1. Capabilities: prepared key writes, encrypted
-// control writes, key fingerprint reads, and authenticated reset.
-uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {1, 1, 0, 1, 0x0F, 0x00};
+// Protocol 1.2, firmware 0.1. Capability bit 0x10 requires a backend-issued,
+// nonce-bound authorization proof before any provisioning/reset write.
+uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {1, 2, 0, 1, 0x1F, 0x00};
 char device_id[DEVICE_ID_LEN] = {};
 uint8_t status_value[STATUS_VALUE_SIZE] = {
     static_cast<uint8_t>(ProvisioningState::UNPROVISIONED),
@@ -103,6 +120,8 @@ uint8_t advertisement_key_attribute[PUBLIC_KEY_SIZE] = {};
 uint8_t key_fingerprint_attribute[KEY_FINGERPRINT_SIZE] = {};
 uint8_t control_key_attribute[TAG_CONTROL_KEY_SIZE] = {};
 uint8_t reset_command_attribute[RESET_COMMAND_SIZE] = {};
+uint8_t tag_challenge_attribute[TAG_CHALLENGE_SIZE] = {};
+uint8_t tag_authorization_proof_attribute[TAG_AUTHORIZATION_PROOF_SIZE] = {};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
@@ -111,6 +130,8 @@ uint16_t active_connection_id = 0;
 bool connected = false;
 bool notifications_enabled = false;
 bool service_started = false;
+bool connection_authorized = false;
+esp_timer_handle_t authorization_timeout_timer = nullptr;
 uint8_t pending_adv_configuration = 0;
 
 uint8_t staged_value[MAX_STAGED_VALUE_SIZE] = {};
@@ -293,6 +314,40 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           sizeof(reset_command_attribute),
           0,
           reset_command_attribute}},
+
+    [TAG_CHALLENGE_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&READ_PROPERTY)}},
+    [TAG_CHALLENGE_VALUE] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(TAG_CHALLENGE_UUID),
+          ESP_GATT_PERM_READ_ENCRYPTED,
+          sizeof(tag_challenge_attribute),
+          sizeof(tag_challenge_attribute),
+          tag_challenge_attribute}},
+
+    [TAG_AUTHORIZATION_PROOF_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [TAG_AUTHORIZATION_PROOF_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(TAG_AUTHORIZATION_PROOF_UUID),
+          ESP_GATT_PERM_WRITE_ENCRYPTED,
+          sizeof(tag_authorization_proof_attribute),
+          0,
+          tag_authorization_proof_attribute}},
 };
 
 void clear_staged_value() {
@@ -303,6 +358,44 @@ void clear_staged_value() {
     staged_attribute_handle = 0;
     staged_connection_id = 0;
     staged_write_active = false;
+}
+
+void stop_authorization_timeout() {
+    if (authorization_timeout_timer != nullptr) {
+        esp_timer_stop(authorization_timeout_timer);
+    }
+}
+
+void clear_connection_authorization() {
+    stop_authorization_timeout();
+    connection_authorized = false;
+    std::memset(tag_challenge_attribute, 0, sizeof(tag_challenge_attribute));
+    std::memset(tag_authorization_proof_attribute, 0,
+                sizeof(tag_authorization_proof_attribute));
+}
+
+void authorization_timeout_callback(void *) {
+    if (connected && !connection_authorized &&
+        active_gatts_if != ESP_GATT_IF_NONE) {
+        ESP_LOGW(LOG_TAG, "Closing connection without app authorization");
+        esp_ble_gatts_close(active_gatts_if, active_connection_id);
+    }
+}
+
+esp_err_t begin_connection_authorization() {
+    clear_connection_authorization();
+    esp_fill_random(tag_challenge_attribute, sizeof(tag_challenge_attribute));
+    esp_err_t error = esp_ble_gatts_set_attr_value(
+        attribute_handles[TAG_CHALLENGE_VALUE],
+        sizeof(tag_challenge_attribute), tag_challenge_attribute);
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (authorization_timeout_timer == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return esp_timer_start_once(authorization_timeout_timer,
+                                AUTHORIZATION_TIMEOUT_MICROSECONDS);
 }
 
 void update_status(ProvisioningState state, ProvisioningResult result) {
@@ -494,6 +587,56 @@ esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
     return ESP_GATT_OK;
 }
 
+esp_gatt_status_t authorize_connection(const uint8_t *proof, size_t length) {
+    if (proof == nullptr || length != TAG_AUTHORIZATION_PROOF_SIZE) {
+        return ESP_GATT_INVALID_ATTR_LEN;
+    }
+
+    uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
+    if (load_device_bootstrap_key(bootstrap_key, sizeof(bootstrap_key)) != ESP_OK) {
+        std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::UNAUTHORIZED);
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+
+    constexpr char AUTHORIZATION_DOMAIN[] = "pinqeva:bootstrap-auth:v1";
+    uint8_t message[sizeof(AUTHORIZATION_DOMAIN) + DEVICE_ID_LEN - 1 +
+                    TAG_CHALLENGE_SIZE] = {};
+    std::memcpy(message, AUTHORIZATION_DOMAIN, sizeof(AUTHORIZATION_DOMAIN));
+    std::memcpy(message + sizeof(AUTHORIZATION_DOMAIN), device_id,
+                DEVICE_ID_LEN - 1);
+    std::memcpy(message + sizeof(AUTHORIZATION_DOMAIN) + DEVICE_ID_LEN - 1,
+                tag_challenge_attribute, TAG_CHALLENGE_SIZE);
+
+    uint8_t expected_mac[TAG_AUTHORIZATION_PROOF_SIZE] = {};
+    const mbedtls_md_info_t *sha256 =
+        mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    int hmac_result = sha256 == nullptr
+                          ? -1
+                          : mbedtls_md_hmac(
+                                sha256, bootstrap_key, sizeof(bootstrap_key),
+                                message, sizeof(message), expected_mac);
+    std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
+    std::memset(message, 0, sizeof(message));
+
+    uint8_t difference = static_cast<uint8_t>(hmac_result != 0);
+    for (size_t index = 0; index < sizeof(expected_mac); ++index) {
+        difference |= expected_mac[index] ^ proof[index];
+    }
+    std::memset(expected_mac, 0, sizeof(expected_mac));
+    if (difference != 0) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::UNAUTHORIZED);
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+
+    connection_authorized = true;
+    stop_authorization_timeout();
+    ESP_LOGI(LOG_TAG, "Backend-authorized app connection accepted");
+    return ESP_GATT_OK;
+}
+
 void send_write_response(esp_gatt_if_t gatts_if,
                          esp_ble_gatts_cb_param_t *param,
                          esp_gatt_status_t status,
@@ -507,6 +650,9 @@ void send_write_response(esp_gatt_if_t gatts_if,
 }
 
 size_t secure_value_length(uint16_t handle) {
+    if (handle == attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
+        return TAG_AUTHORIZATION_PROOF_SIZE;
+    }
     if (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE]) {
         return PUBLIC_KEY_SIZE;
     }
@@ -520,6 +666,12 @@ size_t secure_value_length(uint16_t handle) {
 }
 
 bool secure_write_allowed_in_mode(uint16_t handle) {
+    if (handle == attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
+        return true;
+    }
+    if (!connection_authorized) {
+        return false;
+    }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
         return ble_mode == BLEMode::SUSPENDED;
     }
@@ -531,6 +683,14 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
 esp_gatt_status_t process_secure_write(uint16_t handle,
                                        const uint8_t *value,
                                        size_t length) {
+    if (handle == attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
+        return authorize_connection(value, length);
+    }
+    if (!connection_authorized) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::UNAUTHORIZED);
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
     if (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE]) {
         return persist_key(value, length);
     }
@@ -551,9 +711,16 @@ void handle_prepared_secure_write(esp_gatt_if_t gatts_if,
     if (expected_length == 0) {
         status = ESP_GATT_WRITE_NOT_PERMIT;
     } else if (!secure_write_allowed_in_mode(write.handle)) {
-        status = ESP_GATT_WRITE_NOT_PERMIT;
-        update_status(ProvisioningState::ERROR,
-                      ProvisioningResult::ALREADY_PROVISIONED);
+        if (!connection_authorized &&
+            write.handle != attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
+            status = ESP_GATT_INSUF_AUTHORIZATION;
+            update_status(ProvisioningState::ERROR,
+                          ProvisioningResult::UNAUTHORIZED);
+        } else {
+            status = ESP_GATT_WRITE_NOT_PERMIT;
+            update_status(ProvisioningState::ERROR,
+                          ProvisioningResult::ALREADY_PROVISIONED);
+        }
     } else if (write.offset > expected_length ||
                write.len > expected_length - write.offset) {
         status = ESP_GATT_INVALID_ATTR_LEN;
@@ -588,6 +755,9 @@ void handle_prepared_secure_write(esp_gatt_if_t gatts_if,
         std::memcpy(response.attr_value.value, write.value, write.len);
     }
     send_write_response(gatts_if, param, status, &response);
+    if (status == ESP_GATT_INSUF_AUTHORIZATION) {
+        esp_ble_gatts_close(gatts_if, write.conn_id);
+    }
 }
 
 void handle_ccc_write(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
@@ -667,6 +837,11 @@ void gatts_callback(esp_gatts_cb_event_t event,
             notifications_enabled = false;
             ccc_value[0] = ccc_value[1] = 0;
             clear_staged_value();
+            if (begin_connection_authorization() != ESP_OK) {
+                ESP_LOGE(LOG_TAG, "Could not create connection challenge");
+                esp_ble_gatts_close(gatts_if, param->connect.conn_id);
+                break;
+            }
             // Encryption and bonding are enforced by the key characteristic.
             // No-MITM is an explicit prototype limitation until QR/OOB pairing
             // or a physical confirmation control is present on production tags.
@@ -677,12 +852,16 @@ void gatts_callback(esp_gatts_cb_event_t event,
             connected = false;
             notifications_enabled = false;
             clear_staged_value();
+            clear_connection_authorization();
             if (bond_cleanup_pending) {
                 erase_all_bonds();
                 bond_cleanup_pending = false;
             } else if (ble_mode == BLEMode::SUSPENDED) {
                 update_status(ProvisioningState::SUSPENDED,
                               ProvisioningResult::ENTITLEMENT_REJECTED);
+            } else if (ble_mode == BLEMode::SETUP) {
+                update_status(ProvisioningState::UNPROVISIONED,
+                              ProvisioningResult::SUCCESS);
             }
             try_start_maintenance_advertising();
             break;
@@ -693,6 +872,9 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 esp_gatt_status_t result = process_secure_write(
                     param->write.handle, param->write.value, param->write.len);
                 send_write_response(gatts_if, param, result);
+                if (result == ESP_GATT_INSUF_AUTHORIZATION) {
+                    esp_ble_gatts_close(gatts_if, param->write.conn_id);
+                }
             } else if (param->write.handle == attribute_handles[STATUS_CCC]) {
                 handle_ccc_write(gatts_if, param);
             } else {
@@ -702,6 +884,9 @@ void gatts_callback(esp_gatts_cb_event_t event,
             break;
         case ESP_GATTS_EXEC_WRITE_EVT: {
             esp_gatt_status_t result = ESP_GATT_OK;
+            bool was_authorization_write =
+                staged_attribute_handle ==
+                attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE];
             if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC) {
                 bool complete = staged_write_active &&
                                 staged_value_length == staged_expected_length &&
@@ -722,6 +907,9 @@ void gatts_callback(esp_gatts_cb_event_t event,
             esp_ble_gatts_send_response(
                 gatts_if, param->exec_write.conn_id,
                 param->exec_write.trans_id, result, nullptr);
+            if (was_authorization_write && result != ESP_GATT_OK) {
+                esp_ble_gatts_close(gatts_if, param->exec_write.conn_id);
+            }
             break;
         }
         default:
@@ -808,6 +996,25 @@ std::optional<ERROR_TAG> ble_init() {
     esp_err_t error = nvs_init();
     if (error != ESP_OK) {
         return ERROR_TAG("NVS initialization failed", "NVS");
+    }
+
+    uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
+    error = load_device_bootstrap_key(bootstrap_key, sizeof(bootstrap_key));
+    std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
+    if (error != ESP_OK) {
+        return ERROR_TAG("Factory bootstrap key is missing or invalid", "NVS");
+    }
+
+    const esp_timer_create_args_t authorization_timer_arguments = {
+        .callback = &authorization_timeout_callback,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "ble_auth",
+    };
+    error = esp_timer_create(&authorization_timer_arguments,
+                             &authorization_timeout_timer);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Authorization timer initialization failed", LOG_TAG);
     }
     error = initialize_device_id();
     if (error != ESP_OK) {

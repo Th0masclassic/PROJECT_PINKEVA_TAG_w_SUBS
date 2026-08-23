@@ -11,5 +11,6 @@ idf_component_register(
         nvs_flash
 	mbedtls
 	log
+        esp_timer
         driver
 )

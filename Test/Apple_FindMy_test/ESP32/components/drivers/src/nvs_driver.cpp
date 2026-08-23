@@ -1,6 +1,7 @@
 #include "nvs_driver.hpp"
 
 #include <cstring>
+#include <initializer_list>
 
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -9,6 +10,7 @@ namespace {
 constexpr char STORAGE_NAMESPACE[] = "pinqeva";
 constexpr char KEY_BLOB[] = "adv_key";
 constexpr char CONTROL_KEY_BLOB[] = "control_key";
+constexpr char BOOTSTRAP_KEY_BLOB[] = "boot_key";
 constexpr char FORMAT_KEY[] = "prov_ver";
 constexpr uint8_t FORMAT_VERSION = 1;
 }  // namespace
@@ -87,6 +89,35 @@ esp_err_t load_tag_control_key(uint8_t *destination, size_t destination_size) {
         all_erased = all_erased && destination[index] == 0xFF;
     }
     if (stored_size != TAG_CONTROL_KEY_SIZE || all_zero || all_erased) {
+        std::memset(destination, 0, destination_size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
+esp_err_t load_device_bootstrap_key(uint8_t *destination,
+                                    size_t destination_size) {
+    if (destination == nullptr || destination_size != DEVICE_BOOTSTRAP_KEY_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    nvs_handle_t handle;
+    esp_err_t error = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    size_t stored_size = destination_size;
+    error = nvs_get_blob(handle, BOOTSTRAP_KEY_BLOB, destination, &stored_size);
+    nvs_close(handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    bool all_zero = true;
+    bool all_erased = true;
+    for (size_t index = 0; index < stored_size; ++index) {
+        all_zero = all_zero && destination[index] == 0x00;
+        all_erased = all_erased && destination[index] == 0xFF;
+    }
+    if (stored_size != DEVICE_BOOTSTRAP_KEY_SIZE || all_zero || all_erased) {
         std::memset(destination, 0, destination_size);
         return ESP_ERR_INVALID_SIZE;
     }
@@ -195,7 +226,13 @@ esp_err_t erase_provisioning_data() {
     if (error != ESP_OK) {
         return error;
     }
-    error = nvs_erase_all(handle);
+    for (const char *key : {KEY_BLOB, CONTROL_KEY_BLOB, FORMAT_KEY}) {
+        esp_err_t erase_result = nvs_erase_key(handle, key);
+        if (erase_result != ESP_OK && erase_result != ESP_ERR_NVS_NOT_FOUND) {
+            error = erase_result;
+            break;
+        }
+    }
     if (error == ESP_OK) {
         error = nvs_commit(handle);
     }
@@ -206,13 +243,18 @@ esp_err_t erase_provisioning_data() {
 
     uint8_t advertisement_key[ADVERTISEMENT_KEY_SIZE] = {};
     uint8_t control_key[TAG_CONTROL_KEY_SIZE] = {};
+    uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
     esp_err_t advertisement_result =
         load_advertisement_key(advertisement_key, sizeof(advertisement_key));
     esp_err_t control_result =
         load_tag_control_key(control_key, sizeof(control_key));
+    esp_err_t bootstrap_result =
+        load_device_bootstrap_key(bootstrap_key, sizeof(bootstrap_key));
     std::memset(advertisement_key, 0, sizeof(advertisement_key));
     std::memset(control_key, 0, sizeof(control_key));
-    if (advertisement_result == ESP_OK || control_result == ESP_OK) {
+    std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
+    if (advertisement_result == ESP_OK || control_result == ESP_OK ||
+        bootstrap_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }
     return ESP_OK;

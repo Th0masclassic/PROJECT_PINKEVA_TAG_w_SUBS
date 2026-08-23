@@ -10,13 +10,14 @@ from app.crypto import (
     b64url_decode_exact,
     b64url_encode,
     claim_completion_token,
+    decrypt_device_bootstrap_key,
     decrypt_private_key,
+    encrypt_device_bootstrap_key,
     encrypt_private_key,
     generate_finder_key_bundle,
-    setup_code_digest,
+    tag_authorization_proof,
     tag_control_key,
     tag_reset_command,
-    verify_setup_code,
 )
 
 
@@ -58,15 +59,29 @@ def test_private_key_envelope_binds_ciphertext_to_session() -> None:
         decrypt_private_key(tampered, key, aad)
 
 
-def test_setup_code_is_peppered_and_compared_safely() -> None:
-    setup_code = "kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h"
-    salt = os.urandom(16)
-    pepper = os.urandom(32)
-    digest = setup_code_digest(setup_code, salt, pepper)
+def test_bootstrap_key_is_encrypted_and_proof_is_challenge_bound() -> None:
+    bootstrap_key = os.urandom(32)
+    envelope_key = os.urandom(32)
+    associated_data = b"pinqeva:bootstrap:v1:device:PKV-AABBCCDDEEFF"
+    encrypted = encrypt_device_bootstrap_key(
+        bootstrap_key, envelope_key, associated_data
+    )
 
-    assert verify_setup_code(setup_code, digest, salt, pepper)
-    assert not verify_setup_code(setup_code + "x", digest, salt, pepper)
-    assert not verify_setup_code(setup_code, digest, salt, os.urandom(32))
+    assert (
+        decrypt_device_bootstrap_key(encrypted, envelope_key, associated_data)
+        == bootstrap_key
+    )
+    with pytest.raises(InvalidTag):
+        decrypt_device_bootstrap_key(encrypted, envelope_key, b"another-device")
+
+    challenge = os.urandom(32)
+    proof = tag_authorization_proof(
+        bootstrap_key, "PKV-AABBCCDDEEFF", challenge
+    )
+    assert len(proof) == 32
+    assert proof != tag_authorization_proof(
+        bootstrap_key, "PKV-AABBCCDDEEFF", os.urandom(32)
+    )
 
 
 def test_base64url_decoder_requires_canonical_exact_length() -> None:

@@ -20,7 +20,7 @@ class StrictModel(BaseModel):
 
 class DeviceClaimStart(StrictModel):
     serial_number: str = Field(min_length=16, max_length=16)
-    setup_code: str = Field(min_length=20, max_length=128)
+    tag_challenge_base64url: str = Field(min_length=43, max_length=43)
     tag_advertisement_key_sha256_base64url: str | None = Field(
         default=None, min_length=43, max_length=43
     )
@@ -30,10 +30,13 @@ class DeviceClaimStart(StrictModel):
     def valid_serial(cls, value: str) -> str:
         normalized = value.upper()
         if not SERIAL_PATTERN.fullmatch(normalized):
-            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+            raise ValueError("serial_number isnt following the correct format")
         return normalized
 
-    @field_validator("tag_advertisement_key_sha256_base64url")
+    @field_validator(
+        "tag_challenge_base64url",
+        "tag_advertisement_key_sha256_base64url",
+    )
     @classmethod
     def valid_tag_key_hash(cls, value: str | None) -> str | None:
         if value is not None:
@@ -48,6 +51,7 @@ class DeviceClaimStartResponse(StrictModel):
     tag_action: Literal["write_key", "verify_existing_key"]
     advertisement_key_base64url: str
     advertisement_key_sha256_base64url: str
+    tag_authorization_proof_base64url: str
     claim_completion_token_base64url: str
     tag_control_key_base64url: str | None
     expires_at: datetime
@@ -88,6 +92,7 @@ class DeviceClaimResponse(StrictModel):
 
 class DeviceReleaseStart(StrictModel):
     serial_number: str = Field(min_length=16, max_length=16)
+    tag_challenge_base64url: str = Field(min_length=43, max_length=43)
     tag_advertisement_key_sha256_base64url: str = Field(min_length=43, max_length=43)
 
     @field_validator("serial_number")
@@ -98,7 +103,10 @@ class DeviceReleaseStart(StrictModel):
             raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
         return normalized
 
-    @field_validator("tag_advertisement_key_sha256_base64url")
+    @field_validator(
+        "tag_challenge_base64url",
+        "tag_advertisement_key_sha256_base64url",
+    )
     @classmethod
     def valid_tag_key_hash(cls, value: str) -> str:
         b64url_decode_exact(value, 32)
@@ -109,6 +117,7 @@ class DeviceReleaseStartResponse(StrictModel):
     release_id: UUID
     device_id: UUID
     serial_number: str
+    tag_authorization_proof_base64url: str
     reset_command_base64url: str
     release_completion_token_base64url: str
     expires_at: datetime

@@ -1,6 +1,6 @@
 # Pinqeva provisioning security and scenario review
 
-**Review scope:** protocol-v1.1 key generation, claim/resume, App-to-Tag BLE transfer, ESP32-C3 storage, one-owner enforcement, authenticated release, and subscription cancellation.
+**Review scope:** protocol-v1.2 QR-free connection authorization, key generation, claim/resume, App-to-Tag BLE transfer, ESP32-C3 storage, one-owner enforcement, authenticated release, and subscription cancellation.
 
 ## Security outcome
 
@@ -11,6 +11,7 @@ The implemented vertical slice separates all key roles:
 - The **advertisement key** is the 28-byte X coordinate defined by the existing experimental finder protocol. It is the only key value sent through the app to the ESP32.
 - The **advertisement-key identifier** is SHA-256 over those 28 bytes. It is safe to use for matching/idempotency but must not substitute for authorization.
 - The **tag-control key** is a domain-separated HMAC derivation unique to one user/device/allocation. It is stored by the tag and used only to authenticate destructive reset commands; it is not a finder private key.
+- The **factory bootstrap key** is a random 32-byte value unique to one physical tag. It is injected into NVS during manufacturing and stored backend-side only as AES-GCM ciphertext. The app receives only a fresh-challenge HMAC proof, never this reusable key. Production hardware must enable secure boot and flash/NVS encryption to resist physical extraction.
 
 An advertisement key is public material, but an attacker who replaces it can deny service or bind a tag to the wrong account. The flow therefore protects integrity and ownership even though confidentiality of that particular value is not the main security goal.
 
@@ -19,14 +20,15 @@ An advertisement key is public material, but an attacker who replaces it can den
 | Boundary / failure | Implemented behavior |
 |---|---|
 | Unauthenticated API caller | Rejected by asymmetric Supabase JWT verification with issuer, audience, expiry, and algorithm restrictions. |
-| Stolen app token without product label | Cannot start provisioning without the random manufacturing QR setup code. |
-| Unknown serial vs bad setup code | Same generic response prevents serial enumeration. |
+| App extraction or unofficial client | Reveals no fleet-wide key. Sensitive firmware writes require a fresh HMAC generated with that tag's device-specific bootstrap key. |
+| Unknown serial vs missing/invalid factory credential | Same generic response prevents serial enumeration. |
 | Duplicate mobile retry | Same user/idempotency key returns the same session and key; no duplicate keypair. |
 | Concurrent claims | The device row is locked, key allocation and `provisioning_session_id` binding happen in one transaction, and a unique active-owner index allows one active owner. |
 | Existing/possibly written key | Same allocation is resumed. An expired, unknown, or mismatched fingerprint enters recovery; no timeout path generates a replacement. |
 | Backend/database disclosure | Private scalar is AES-GCM ciphertext; the envelope key is external and the user-facing database roles have no table access. |
-| BLE passive eavesdropping | Advertisement-key characteristic requires an encrypted bonded link. |
-| Short ATT MTU / fragmented write | Handle-bound prepared staging requires exactly 28, 32, or 64 complete bytes for advertisement, control, or reset respectively; partial data is zeroed and never committed. |
+| BLE passive eavesdropping | Challenge, proof, fingerprint, and key characteristics require an encrypted bonded link. The proof is also nonce-bound and cannot authorize another connection. |
+| Unauthorized BLE client | Sensitive writes fail before proof verification; an invalid proof disconnects immediately and a client that sends no proof is disconnected after 30 seconds. |
+| Short ATT MTU / fragmented write | Handle-bound prepared staging requires exactly 28, 32, or 64 complete bytes for advertisement, authorization/control, or reset respectively; partial data is zeroed and never committed. |
 | Disconnect during BLE write | Staging buffer is zeroed and the tag remains unprovisioned. |
 | Invalid/all-zero/all-erased key | Explicitly rejected and never committed. |
 | Flash error / read-back mismatch | Reports storage failure; no successful status is emitted. |
@@ -37,11 +39,11 @@ An advertisement key is public material, but an attacker who replaces it can den
 | Subscription during removal | All local nonterminal subscriptions for that user/device become cancelled in the completion transaction; external provider IDs are queued in an idempotent cancellation outbox. |
 | Reboot after key receipt | Tag fails closed into subscription-suspended maintenance mode. |
 | Missing signed entitlement | Finder payload remains disabled. |
-| Secret logging | New backend/app/firmware paths do not log bearer tokens, setup codes, advertisement bytes, private scalars, or ciphertext. |
+| Secret logging | New backend/app/firmware paths do not log bootstrap keys, authorization proofs, bearer tokens, advertisement bytes, private scalars, or ciphertext. |
 
 ## Residual risks and required production work
 
-1. **BLE is encrypted but not MITM-authenticated.** ESP32-C3 currently uses Secure Connections “Just Works” because the prototype has no display/input or QR-derived OOB pairing implementation. A nearby active attacker could race or interfere with initial provisioning. Production must combine a physical button/window with LE Secure Connections OOB derived from the QR/manufacturing secret, or add an authenticated proof characteristic.
+1. **BLE is encrypted and backend-authorized but not MITM-authenticated.** ESP32-C3 still uses Secure Connections “Just Works.” The v1.2 challenge/proof prevents clients without backend cooperation from writing sensitive values, but a nearby active attacker may relay or race a legitimate session. Production should combine a physical button/window with MITM-resistant LE Secure Connections association or hardware OOB.
 2. **Claim completion is still app-relayed, not hardware-attested.** The app now reads and matches a tag fingerprint, and destructive reset is HMAC-authenticated, but a modified app could falsely report a fingerprint. Add a manufacturing attestation key protected by secure boot/flash encryption (ideally a secure element) and have the tag sign the session ID, backend nonce, serial, firmware measurement, and advertisement-key hash.
 3. **Subscription entitlement is deliberately not implemented here.** The tag stays suspended. Before finder advertising is enabled, implement the signed device-bound lease, anti-rollback counter, trusted-time rules, renewal channel, and backend signing-key rotation described in the architecture report.
 4. **Development envelope encryption is not a production KMS.** Replace the static AES key with per-record data keys wrapped by a managed KMS/HSM, record key IDs, restrict decrypt permission to the location worker, and test rotation/recovery.
@@ -51,7 +53,9 @@ An advertisement key is public material, but an attacker who replaces it can den
 8. **Payment-provider cancellation needs a worker.** Release cancels local access immediately and atomically enqueues every provider subscription ID. Billing is not guaranteed stopped until a retrying provider worker succeeds and a signed webhook confirms the provider's terminal state.
 9. **Reset commands cannot be revoked by an offline tag.** A valid HMAC command remains usable until that allocation is erased because the prototype has no trustworthy clock or online revocation channel. Issue commands only after explicit owner confirmation and add physical-presence gating for production.
 10. **Control-root rotation needs versioned key custody.** Existing tags derive their reset-control secret from `PINQEVA_CLAIM_TOKEN_KEY`. Production must store a control-key version per allocation and retain old roots in an HSM-backed decrypt/derive keyring until every associated tag is released or migrated; replacing the environment value alone would strand transfers.
-11. **Rate limiting is deployment infrastructure.** Setup codes are high-entropy and errors avoid serial enumeration, but the API process does not contain a distributed limiter. Enforce per-account, per-IP, and per-device attempt budgets at the API gateway and alert on repeated setup-proof failures.
+11. **Rate limiting is deployment infrastructure.** The authorization endpoint effectively provides a device-specific HMAC service to authenticated accounts. It does not reveal the key, but production must enforce per-account, per-IP, and per-device attempt budgets and alert on repeated authorization failures.
+12. **Current ESP32-C3 storage is not encrypted at rest.** The checked prototype configuration has secure boot and flash/NVS encryption disabled. Physical flash access can therefore expose that tag's bootstrap and control keys. This does not expose a fleet-wide secret, but production provisioning must enable and irreversibly validate secure boot plus flash/NVS encryption before injecting credentials.
+13. **Backend login does not attest the official app binary.** A modified client holding a valid user session can ask for a proof while it is near an unowned tag. If the product must accept only genuine app builds, add platform app/device attestation at the API boundary; if ownership must require stronger physical intent, add a button/touch window or account pre-assignment.
 
 ## Recovery decisions
 
@@ -59,4 +63,5 @@ An advertisement key is public material, but an attacker who replaces it can den
 - Normal transfer is two-phase and rotates keys: authenticated reset erases both NVS keys, backend completion ends ownership/revokes the old allocation/cancels subscriptions, and the next owner receives a new allocation.
 - The tag erases BLE bonds when the reset connection disconnects. If reset succeeds but backend completion fails, the same release capability is retried; if its deadline passes, an operator must reconcile the audit state without inventing another key.
 - Tags provisioned by an older firmware without a tag-control key cannot use authenticated reset and require operator-assisted physical recovery.
+- Tags manufactured before protocol v1.2 also need a securely injected `boot_key` plus a matching backend credential row before they can use QR-free authorization.
 - Lost phones do not require a key rotation: revoke the app session and reauthenticate. A device ownership transfer must be explicit and should rotate the finder key only after the old owner is ended and physical possession is verified.

@@ -11,7 +11,7 @@ from app.models import DeviceClaimStart, DeviceReleaseComplete, validate_idempot
 def test_serial_is_normalized() -> None:
     request = DeviceClaimStart(
         serial_number="pkv-aabbccddeeff",
-        setup_code="kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h",
+        tag_challenge_base64url=b64url_encode(os.urandom(32)),
     )
     assert request.serial_number == "PKV-AABBCCDDEEFF"
 
@@ -23,7 +23,7 @@ def test_invalid_serial_is_rejected(serial: str) -> None:
     with pytest.raises(ValidationError):
         DeviceClaimStart(
             serial_number=serial,
-            setup_code="kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h",
+            tag_challenge_base64url=b64url_encode(os.urandom(32)),
         )
 
 
@@ -31,15 +31,21 @@ def test_key_fingerprint_must_be_canonical_32_byte_base64url() -> None:
     valid = b64url_encode(os.urandom(32))
     assert DeviceClaimStart(
         serial_number="PKV-AABBCCDDEEFF",
-        setup_code="kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h",
+        tag_challenge_base64url=b64url_encode(os.urandom(32)),
         tag_advertisement_key_sha256_base64url=valid,
     ).tag_advertisement_key_sha256_base64url == valid
 
     with pytest.raises(ValidationError):
         DeviceClaimStart(
             serial_number="PKV-AABBCCDDEEFF",
-            setup_code="kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h",
+            tag_challenge_base64url=b64url_encode(os.urandom(32)),
             tag_advertisement_key_sha256_base64url="!" * 43,
+        )
+
+    with pytest.raises(ValidationError):
+        DeviceClaimStart(
+            serial_number="PKV-AABBCCDDEEFF",
+            tag_challenge_base64url="!" * 43,
         )
 
 
@@ -69,8 +75,8 @@ def test_backend_secret_roles_cannot_reuse_the_same_key() -> None:
             supabase_jwt_audience="authenticated",
             supabase_jwt_algorithms=("ES256",),
             key_encryption_key=reused,
+            bootstrap_key_encryption_key=reused,
             claim_token_key=reused,
-            setup_code_pepper=os.urandom(32),
             session_ttl_seconds=600,
             claim_ttl_seconds=86_400,
         )

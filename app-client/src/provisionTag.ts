@@ -16,6 +16,11 @@ import {
   PROVISIONING_STATUS_UUID,
   ProvisioningClientError,
   RESET_COMMAND_LENGTH,
+  TAG_AUTHORIZATION_CAPABILITY,
+  TAG_AUTHORIZATION_PROOF_LENGTH,
+  TAG_AUTHORIZATION_PROOF_UUID,
+  TAG_CHALLENGE_LENGTH,
+  TAG_CHALLENGE_UUID,
   TAG_CONTROL_KEY_LENGTH,
   TAG_CONTROL_KEY_UUID,
   bytesEqual,
@@ -31,8 +36,6 @@ import {
 
 export type ProvisionTagInput = {
   peripheralId: string;
-  expectedSerialNumber: string;
-  setupCode: string;
   idempotencyKey: string;
   timeoutMs?: number;
 };
@@ -61,26 +64,36 @@ export class TagProvisioner {
       // reset command; firmware also supports prepared writes for every value.
       device = await device.requestMTU(128).catch(() => device as Device);
 
-      const [protocolCharacteristic, identifierCharacteristic, fingerprintCharacteristic] = await Promise.all([
+      const [
+        protocolCharacteristic,
+        identifierCharacteristic,
+        fingerprintCharacteristic,
+        challengeCharacteristic,
+      ] = await Promise.all([
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, PROTOCOL_INFO_UUID),
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, DEVICE_IDENTIFIER_UUID),
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+        device.readCharacteristicForService(PINQEVA_SERVICE_UUID, TAG_CHALLENGE_UUID),
       ]);
       const protocol = parseProtocolInformation(decodeBleBase64(protocolCharacteristic.value));
-      if (protocol.protocolMajor !== 1) {
+      if (
+        protocol.protocolMajor !== 1 ||
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0
+      ) {
         throw new ProvisioningClientError(
           "UNSUPPORTED_PROTOCOL",
-          `Tag protocol ${protocol.protocolMajor}.${protocol.protocolMinor} is not supported`,
+          `Tag protocol ${protocol.protocolMajor}.${protocol.protocolMinor} does not support app authorization`,
         );
       }
 
       const serialNumber = decodeDeviceIdentifier(
         decodeBleBase64(identifierCharacteristic.value),
       );
-      if (serialNumber !== input.expectedSerialNumber.toUpperCase()) {
+      const tagChallenge = decodeBleBase64(challengeCharacteristic.value);
+      if (tagChallenge.length !== TAG_CHALLENGE_LENGTH) {
         throw new ProvisioningClientError(
-          "SERIAL_MISMATCH",
-          "The connected tag does not match the scanned QR code",
+          "INVALID_TAG_CHALLENGE",
+          `Expected ${TAG_CHALLENGE_LENGTH} challenge bytes`,
         );
       }
 
@@ -89,8 +102,8 @@ export class TagProvisioner {
       );
       const claim = await this.backend.startDeviceClaim({
         serialNumber,
-        setupCode: input.setupCode,
         idempotencyKey: input.idempotencyKey,
+        tagChallengeBase64url: encodeBase64Url(tagChallenge),
         tagAdvertisementKeySha256Base64url:
           initialFingerprint === null ? null : encodeBase64Url(initialFingerprint),
       });
@@ -115,6 +128,26 @@ export class TagProvisioner {
           "INVALID_BACKEND_KEY",
           "Expected a 32-byte advertisement-key fingerprint",
         );
+      }
+
+      const authorizationProof = decodeBase64Url(
+        claim.tag_authorization_proof_base64url,
+      );
+      if (authorizationProof.length !== TAG_AUTHORIZATION_PROOF_LENGTH) {
+        throw new ProvisioningClientError(
+          "INVALID_BACKEND_AUTHORIZATION",
+          `Expected ${TAG_AUTHORIZATION_PROOF_LENGTH} authorization-proof bytes`,
+        );
+      }
+      try {
+        await device.writeCharacteristicWithResponseForService(
+          PINQEVA_SERVICE_UUID,
+          TAG_AUTHORIZATION_PROOF_UUID,
+          toBleBase64(authorizationProof),
+        );
+      } finally {
+        authorizationProof.fill(0);
+        tagChallenge.fill(0);
       }
 
       if (claim.tag_action === "write_key") {
@@ -229,16 +262,26 @@ export class TagProvisioner {
       device = await device.discoverAllServicesAndCharacteristics();
       device = await device.requestMTU(128).catch(() => device as Device);
 
-      const [protocolCharacteristic, identifierCharacteristic, fingerprintCharacteristic] =
+      const [
+        protocolCharacteristic,
+        identifierCharacteristic,
+        fingerprintCharacteristic,
+        challengeCharacteristic,
+      ] =
         await Promise.all([
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, PROTOCOL_INFO_UUID),
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, DEVICE_IDENTIFIER_UUID),
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+          device.readCharacteristicForService(PINQEVA_SERVICE_UUID, TAG_CHALLENGE_UUID),
         ]);
       const protocol = parseProtocolInformation(
         decodeBleBase64(protocolCharacteristic.value),
       );
-      if (protocol.protocolMajor !== 1 || (protocol.capabilities & 0x08) === 0) {
+      if (
+        protocol.protocolMajor !== 1 ||
+        (protocol.capabilities & 0x08) === 0 ||
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0
+      ) {
         throw new ProvisioningClientError(
           "AUTHENTICATED_RESET_UNSUPPORTED",
           "This tag requires operator-assisted recovery before transfer",
@@ -256,6 +299,13 @@ export class TagProvisioner {
       const fingerprint = decodeTagKeyFingerprint(
         decodeBleBase64(fingerprintCharacteristic.value),
       );
+      const tagChallenge = decodeBleBase64(challengeCharacteristic.value);
+      if (tagChallenge.length !== TAG_CHALLENGE_LENGTH) {
+        throw new ProvisioningClientError(
+          "INVALID_TAG_CHALLENGE",
+          `Expected ${TAG_CHALLENGE_LENGTH} challenge bytes`,
+        );
+      }
       if (fingerprint === null) {
         throw new ProvisioningClientError(
           "RECOVERY_REQUIRED",
@@ -267,6 +317,7 @@ export class TagProvisioner {
         deviceId: input.deviceId,
         serialNumber,
         tagAdvertisementKeySha256Base64url: encodeBase64Url(fingerprint),
+        tagChallengeBase64url: encodeBase64Url(tagChallenge),
         idempotencyKey: input.idempotencyKey,
       });
       if (release.serial_number !== serialNumber || release.device_id !== input.deviceId) {
@@ -280,6 +331,25 @@ export class TagProvisioner {
           "RELEASE_EXPIRED",
           "The authenticated reset command expired",
         );
+      }
+      const authorizationProof = decodeBase64Url(
+        release.tag_authorization_proof_base64url,
+      );
+      if (authorizationProof.length !== TAG_AUTHORIZATION_PROOF_LENGTH) {
+        throw new ProvisioningClientError(
+          "INVALID_BACKEND_AUTHORIZATION",
+          `Expected ${TAG_AUTHORIZATION_PROOF_LENGTH} authorization-proof bytes`,
+        );
+      }
+      try {
+        await device.writeCharacteristicWithResponseForService(
+          PINQEVA_SERVICE_UUID,
+          TAG_AUTHORIZATION_PROOF_UUID,
+          toBleBase64(authorizationProof),
+        );
+      } finally {
+        authorizationProof.fill(0);
+        tagChallenge.fill(0);
       }
       const resetCommand = decodeBase64Url(release.reset_command_base64url);
       if (resetCommand.length !== RESET_COMMAND_LENGTH) {

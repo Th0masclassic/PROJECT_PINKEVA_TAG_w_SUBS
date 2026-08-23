@@ -1,13 +1,13 @@
 # Pinqeva provisioning backend
 
-This service implements the key-lifecycle portion of protocol v1.1:
+This service implements the key-lifecycle portion of protocol v1.2:
 
-1. The authenticated app reads the tag serial and scans its manufacturing QR setup code.
-2. `POST /v1/devices/claim` locks the device row and either resumes its existing allocation or, only when both backend and tag report empty, generates one P-224 key pair with the operating-system CSPRNG.
-3. The transaction immediately binds that allocation to the device. It stores the AES-256-GCM-encrypted 28-byte private scalar and returns only the 28-byte advertisement key, SHA-256 fingerprint, and domain-separated provisioning capabilities.
-4. The app first installs a one-time tag-control key and then the advertisement key over encrypted BLE. The ESP32 commits and reads back both; ordinary writes can never replace them.
+1. The authenticated app connects to a selected tag and reads its serial plus a fresh 32-byte challenge.
+2. `POST /v1/devices/claim` uses the encrypted per-device factory credential to return a challenge-bound authorization proof. The reusable bootstrap key remains only on the tag and backend.
+3. The endpoint locks the device row and either resumes its existing allocation or, only when both backend and tag report empty, generates one P-224 key pair with the operating-system CSPRNG.
+4. The app writes the authorization proof before the one-time tag-control key and advertisement key. Firmware disconnects invalid clients and times out connections that never authorize.
 5. The app reads the tag's 32-byte key fingerprint. `POST /v1/devices/claim/complete` checks it plus a user/session/device-bound capability before creating the one active ownership row.
-6. Release is also two-phase: the active owner requests a one-time authenticated reset command, the tag erases both keys and later its BLE bonds, then the backend ends ownership, cancels local subscriptions, and queues payment-provider cancellation.
+6. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
 
 ## Run locally
 
@@ -32,12 +32,12 @@ Content-Type: application/json
 
 {
   "serial_number": "PKV-AABBCCDDEEFF",
-  "setup_code": "<high-entropy QR code>",
+  "tag_challenge_base64url": "<32-byte challenge read from the tag>",
   "tag_advertisement_key_sha256_base64url": null
 }
 ```
 
-`null` means the encrypted fingerprint characteristic reports 32 zero bytes. If the tag already contains a key, the app sends its fingerprint instead. The response says either `write_key` or `verify_existing_key`. A retry always returns the original allocation; it does not generate another key.
+`null` means the encrypted fingerprint characteristic reports 32 zero bytes. If the tag already contains a key, the app sends its fingerprint instead. The response includes `tag_authorization_proof_base64url` plus either `write_key` or `verify_existing_key`. The proof is valid only for that device's current challenge. A retry always returns the original allocation; it does not generate another key.
 
 After the tag reports `0x04 0x00` and its fingerprint matches, complete the claim:
 
@@ -71,11 +71,11 @@ The outbox is not the payment-provider API. A production worker must process it 
 ## Secret handling
 
 - `PINQEVA_KEY_ENCRYPTION_KEY` is a development envelope key. Production should replace it with a KMS/HSM-backed data-key flow and retain a key version for rotation.
+- `PINQEVA_BOOTSTRAP_KEY_ENCRYPTION_KEY` protects backend copies of per-device factory bootstrap keys and must be independent from every other root.
 - `PINQEVA_CLAIM_TOKEN_KEY` is an independent HMAC root for completion capabilities and per-allocation tag-control keys.
-- `PINQEVA_SETUP_CODE_PEPPER` is independent from the envelope key.
-- The database stores a full public P-224 point, the 28-byte advertisement X coordinate, its hash, and an encrypted private scalar. Direct Data API access to `provisioning_session` is revoked.
-- Logs and error payloads must never contain setup codes, bearer tokens, BLE key bytes, private scalars, database URLs, or ciphertext.
-- A manufacturing process must insert each device with a random setup-code salt and digest before it can be provisioned.
+- The database stores an encrypted per-device bootstrap key, a full public P-224 point, the 28-byte advertisement X coordinate, its hash, and an encrypted private scalar. Direct Data API access to both credential tables is revoked.
+- Logs and error payloads must never contain bootstrap keys, authorization proofs, bearer tokens, BLE key bytes, private scalars, database URLs, or ciphertext.
+- `tools/register_device.py` creates the database record and emits the private `boot_key` payload for controlled NVS injection. That output is manufacturing material, not a customer QR code.
 
 ## Important boundary
 

@@ -35,8 +35,8 @@ class Settings:
     supabase_jwt_audience: str
     supabase_jwt_algorithms: tuple[str, ...]
     key_encryption_key: bytes
+    bootstrap_key_encryption_key: bytes
     claim_token_key: bytes
-    setup_code_pepper: bytes
     session_ttl_seconds: int
     claim_ttl_seconds: int
 
@@ -44,12 +44,12 @@ class Settings:
         if len(
             {
                 self.key_encryption_key,
+                self.bootstrap_key_encryption_key,
                 self.claim_token_key,
-                self.setup_code_pepper,
             }
         ) != 3:
             raise ConfigurationError(
-                "Envelope, claim-token, and setup-code secrets must be independent"
+                "Finder-key, bootstrap-key, and claim-token secrets must be independent"
             )
 
 
@@ -83,11 +83,12 @@ def get_settings() -> Settings:
         key_encryption_key=decode_32_byte_secret(
             "PINQEVA_KEY_ENCRYPTION_KEY", _required("PINQEVA_KEY_ENCRYPTION_KEY")
         ),
+        bootstrap_key_encryption_key=decode_32_byte_secret(
+            "PINQEVA_BOOTSTRAP_KEY_ENCRYPTION_KEY",
+            _required("PINQEVA_BOOTSTRAP_KEY_ENCRYPTION_KEY"),
+        ),
         claim_token_key=decode_32_byte_secret(
             "PINQEVA_CLAIM_TOKEN_KEY", _required("PINQEVA_CLAIM_TOKEN_KEY")
-        ),
-        setup_code_pepper=decode_32_byte_secret(
-            "PINQEVA_SETUP_CODE_PEPPER", _required("PINQEVA_SETUP_CODE_PEPPER")
         ),
         session_ttl_seconds=session_ttl,
         claim_ttl_seconds=claim_ttl,

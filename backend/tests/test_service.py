@@ -8,13 +8,15 @@ from app.config import Settings
 from app.crypto import (
     b64url_encode,
     claim_completion_token,
+    encrypt_device_bootstrap_key,
     release_completion_token,
-    setup_code_digest,
+    tag_authorization_proof,
 )
 from app.models import (
     DeviceClaimComplete,
     DeviceClaimStart,
     DeviceReleaseComplete,
+    DeviceReleaseStart,
 )
 from app.service import ProvisioningError, ProvisioningService
 
@@ -47,23 +49,30 @@ def settings() -> Settings:
         supabase_jwt_audience="authenticated",
         supabase_jwt_algorithms=("ES256",),
         key_encryption_key=os.urandom(32),
+        bootstrap_key_encryption_key=os.urandom(32),
         claim_token_key=os.urandom(32),
-        setup_code_pepper=os.urandom(32),
         session_ttl_seconds=600,
         claim_ttl_seconds=86_400,
     )
 
 
 def device_row(settings: Settings, user_id=None, session_id=None):
-    setup_code = "kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h"
-    salt = os.urandom(16)
-    return setup_code, {
-        "id": uuid.uuid4(),
-        "serial_number": "PKV-AABBCCDDEEFF",
-        "setup_secret_salt": salt,
-        "setup_secret_digest": setup_code_digest(
-            setup_code, salt, settings.setup_code_pepper
-        ),
+    device_id = uuid.uuid4()
+    serial_number = "PKV-AABBCCDDEEFF"
+    bootstrap_key = os.urandom(32)
+    associated_data = (
+        f"pinqeva:bootstrap:v1:{device_id}:{serial_number}"
+    ).encode("ascii")
+    encrypted = encrypt_device_bootstrap_key(
+        bootstrap_key, settings.bootstrap_key_encryption_key, associated_data
+    )
+    return bootstrap_key, {
+        "id": device_id,
+        "device_id": device_id,
+        "serial_number": serial_number,
+        "bootstrap_key_ciphertext": encrypted.ciphertext,
+        "bootstrap_key_nonce": encrypted.nonce,
+        "bootstrap_key_envelope_version": encrypted.version,
         "provisioning_session_id": session_id,
         "owner_user_id": user_id,
     }
@@ -74,7 +83,8 @@ async def test_start_claim_generates_once_binds_immediately_and_returns_no_priva
     settings: Settings,
 ) -> None:
     user_id = uuid.uuid4()
-    setup_code, device = device_row(settings)
+    bootstrap_key, device = device_row(settings)
+    challenge = os.urandom(32)
     session_id_holder = {}
 
     # The insert RETURNING row needs values generated inside the service. The
@@ -99,7 +109,8 @@ async def test_start_claim_generates_once_binds_immediately_and_returns_no_priva
         user_id=user_id,
         idempotency_key="provision:01HZZZZZZZZZZZZZ",
         request=DeviceClaimStart(
-            serial_number=device["serial_number"], setup_code=setup_code
+            serial_number=device["serial_number"],
+            tag_challenge_base64url=b64url_encode(challenge),
         ),
     )
 
@@ -115,6 +126,9 @@ async def test_start_claim_generates_once_binds_immediately_and_returns_no_priva
     assert response.tag_action == "write_key"
     assert len(response.claim_completion_token_base64url) == 43
     assert len(response.tag_control_key_base64url) == 43
+    assert response.tag_authorization_proof_base64url == b64url_encode(
+        tag_authorization_proof(bootstrap_key, device["serial_number"], challenge)
+    )
     assert not hasattr(response, "private_key")
     assert not hasattr(response, "public_key")
     assert any(
@@ -123,7 +137,9 @@ async def test_start_claim_generates_once_binds_immediately_and_returns_no_priva
 
 
 @pytest.mark.asyncio
-async def test_bad_setup_proof_uses_generic_rejection(settings: Settings) -> None:
+async def test_unknown_device_uses_generic_authorization_rejection(
+    settings: Settings,
+) -> None:
     connection = FakeConnection([None])
     with pytest.raises(ProvisioningError) as error:
         await ProvisioningService(settings).start_claim(
@@ -132,10 +148,10 @@ async def test_bad_setup_proof_uses_generic_rejection(settings: Settings) -> Non
             idempotency_key="provision:01HZZZZZZZZZZZZZ",
             request=DeviceClaimStart(
                 serial_number="PKV-AABBCCDDEEFF",
-                setup_code="kXxWmpyHXq6YJf4vJ69EBtCaJq8qJm1h",
+                tag_challenge_base64url=b64url_encode(os.urandom(32)),
             ),
         )
-    assert error.value.code == "SETUP_PROOF_REJECTED"
+    assert error.value.code == "DEVICE_AUTHORIZATION_REJECTED"
     assert error.value.status_code == 403
 
 
@@ -145,7 +161,7 @@ async def test_bound_session_is_resumed_without_generating_a_replacement(
 ) -> None:
     user_id = uuid.uuid4()
     session_id = uuid.uuid4()
-    setup_code, device = device_row(settings, session_id=session_id)
+    _, device = device_row(settings, session_id=session_id)
     stored_key = os.urandom(28)
     stored_hash = os.urandom(32)
     bound = {
@@ -167,7 +183,8 @@ async def test_bound_session_is_resumed_without_generating_a_replacement(
         user_id=user_id,
         idempotency_key="provision:new-retry-0001",
         request=DeviceClaimStart(
-            serial_number=device["serial_number"], setup_code=setup_code
+            serial_number=device["serial_number"],
+            tag_challenge_base64url=b64url_encode(os.urandom(32)),
         ),
     )
 
@@ -181,7 +198,7 @@ async def test_bound_session_is_resumed_without_generating_a_replacement(
 async def test_tag_with_different_stored_key_fails_closed(settings: Settings) -> None:
     user_id = uuid.uuid4()
     session_id = uuid.uuid4()
-    setup_code, device = device_row(settings, session_id=session_id)
+    _, device = device_row(settings, session_id=session_id)
     bound = {
         "id": session_id,
         "user_id": user_id,
@@ -202,7 +219,7 @@ async def test_tag_with_different_stored_key_fails_closed(settings: Settings) ->
             idempotency_key="provision:mismatch-0001",
             request=DeviceClaimStart(
                 serial_number=device["serial_number"],
-                setup_code=setup_code,
+                tag_challenge_base64url=b64url_encode(os.urandom(32)),
                 tag_advertisement_key_sha256_base64url=b64url_encode(os.urandom(32)),
             ),
         )
@@ -214,7 +231,7 @@ async def test_allocation_owned_by_another_user_is_unavailable(settings: Setting
     current_user = uuid.uuid4()
     other_user = uuid.uuid4()
     session_id = uuid.uuid4()
-    setup_code, device = device_row(settings, user_id=other_user, session_id=session_id)
+    _, device = device_row(settings, user_id=other_user, session_id=session_id)
     bound = {
         "id": session_id,
         "user_id": other_user,
@@ -234,7 +251,8 @@ async def test_allocation_owned_by_another_user_is_unavailable(settings: Setting
             user_id=current_user,
             idempotency_key="provision:other-owner-01",
             request=DeviceClaimStart(
-                serial_number=device["serial_number"], setup_code=setup_code
+                serial_number=device["serial_number"],
+                tag_challenge_base64url=b64url_encode(os.urandom(32)),
             ),
         )
     assert error.value.code == "DEVICE_UNAVAILABLE"
@@ -282,6 +300,57 @@ async def test_claim_retry_returns_the_original_result(settings: Settings) -> No
     assert response.device_id == device_id
     assert response.claimed_at == completed_at
     assert len(connection.executions) == 1
+
+
+@pytest.mark.asyncio
+async def test_start_release_returns_challenge_bound_authorization(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    session_id = uuid.uuid4()
+    bootstrap_key, device = device_row(
+        settings, user_id=user_id, session_id=session_id
+    )
+    advertisement_hash = os.urandom(32)
+    device.update(
+        owner_user_id=user_id,
+        session_user_id=user_id,
+        session_status="claimed",
+        advertisement_key_sha256=advertisement_hash,
+    )
+    release_id = uuid.uuid4()
+    release = {
+        "id": release_id,
+        "user_id": user_id,
+        "device_id": device["device_id"],
+        "provisioning_session_id": session_id,
+        "serial_number": device["serial_number"],
+        "reset_nonce": os.urandom(32),
+        "status": "pending",
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
+    }
+    challenge = os.urandom(32)
+    connection = FakeConnection([None, device, None, release])
+
+    response = await ProvisioningService(settings).start_release(
+        connection,
+        user_id=user_id,
+        device_id=device["device_id"],
+        idempotency_key="release:01HZZZZZZZZZZZZZZ",
+        request=DeviceReleaseStart(
+            serial_number=device["serial_number"],
+            tag_challenge_base64url=b64url_encode(challenge),
+            tag_advertisement_key_sha256_base64url=b64url_encode(
+                advertisement_hash
+            ),
+        ),
+    )
+
+    assert response.release_id == release_id
+    assert response.tag_authorization_proof_base64url == b64url_encode(
+        tag_authorization_proof(bootstrap_key, device["serial_number"], challenge)
+    )
+    assert len(response.reset_command_base64url) == 86
 
 
 @pytest.mark.asyncio

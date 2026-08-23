@@ -7,20 +7,23 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
+from cryptography.exceptions import InvalidTag
 from psycopg import AsyncConnection
 from psycopg.errors import UniqueViolation
 
 from .config import Settings
 from .crypto import (
+    EncryptedSecret,
     b64url_decode_exact,
     b64url_encode,
     claim_completion_token,
+    decrypt_device_bootstrap_key,
     encrypt_private_key,
     generate_finder_key_bundle,
     release_completion_token,
+    tag_authorization_proof,
     tag_control_key,
     tag_reset_command,
-    verify_setup_code,
 )
 from .models import (
     DeviceClaimComplete,
@@ -61,37 +64,41 @@ class ProvisioningService:
         # This makes "check then generate" one atomic operation across callers.
         device_query = await connection.execute(
             """
-            SELECT d.id, d.serial_number, d.setup_secret_salt, d.setup_secret_digest,
+            SELECT d.id, d.id AS device_id, d.serial_number,
                    d.provisioning_session_id,
+                   dbc.key_ciphertext AS bootstrap_key_ciphertext,
+                   dbc.key_nonce AS bootstrap_key_nonce,
+                   dbc.envelope_version AS bootstrap_key_envelope_version,
                    (
                        SELECT o.user_id FROM public.ownership o
                         WHERE o.device_id = d.id AND o.ended_at IS NULL
                         LIMIT 1
                    ) AS owner_user_id
               FROM public.device d
+              LEFT JOIN public.device_bootstrap_credential dbc
+                ON dbc.device_id = d.id
              WHERE d.serial_number = %s
-             FOR UPDATE
+             FOR UPDATE OF d
             """,
             (request.serial_number,),
         )
         device = await device_query.fetchone()
-        # Use one response for unknown serials and invalid QR secrets to avoid enumeration.
+        # Use one response for unknown serials and devices missing their factory
+        # bootstrap credential to avoid turning this endpoint into an inventory oracle.
         if (
             device is None
-            or device["setup_secret_salt"] is None
-            or device["setup_secret_digest"] is None
-            or not verify_setup_code(
-                request.setup_code,
-                bytes(device["setup_secret_digest"]),
-                bytes(device["setup_secret_salt"]),
-                self.settings.setup_code_pepper,
-            )
+            or device["bootstrap_key_ciphertext"] is None
+            or device["bootstrap_key_nonce"] is None
+            or device["bootstrap_key_envelope_version"] is None
         ):
             raise ProvisioningError(
-                "SETUP_PROOF_REJECTED",
-                "The tag identity or setup proof could not be verified",
+                "DEVICE_AUTHORIZATION_REJECTED",
+                "The tag identity or factory authorization could not be verified",
                 403,
             )
+        authorization_proof = self._authorization_proof(
+            device, request.tag_challenge_base64url
+        )
 
         existing_idempotency_query = await connection.execute(
             """
@@ -118,7 +125,11 @@ class ProvisioningService:
                 connection, device=device, session=existing
             )
             return await self._resume_claim(
-                connection, user_id=user_id, request=request, session=existing
+                connection,
+                user_id=user_id,
+                request=request,
+                session=existing,
+                authorization_proof=authorization_proof,
             )
 
         # provisioning_session_id is a permanent allocation marker, set in the
@@ -151,7 +162,11 @@ class ProvisioningService:
                 connection, device=device, session=bound
             )
             return await self._resume_claim(
-                connection, user_id=user_id, request=request, session=bound
+                connection,
+                user_id=user_id,
+                request=request,
+                session=bound,
+                authorization_proof=authorization_proof,
             )
 
         # Compatibility safety for rows created before allocation-at-start was
@@ -180,7 +195,11 @@ class ProvisioningService:
                 connection, device=device, session=historical
             )
             return await self._resume_claim(
-                connection, user_id=user_id, request=request, session=historical
+                connection,
+                user_id=user_id,
+                request=request,
+                session=historical,
+                authorization_proof=authorization_proof,
             )
 
         if device.get("owner_user_id") is not None:
@@ -261,7 +280,9 @@ class ProvisioningService:
             """,
             (session_id, now, device["id"]),
         )
-        return self._start_response(session, user_id, "write_key")
+        return self._start_response(
+            session, user_id, "write_key", authorization_proof
+        )
 
     async def complete_claim(
         self,
@@ -396,10 +417,15 @@ class ProvisioningService:
             """
             SELECT dr.id, dr.user_id, dr.device_id, dr.provisioning_session_id,
                    dr.serial_number, dr.reset_nonce, dr.status, dr.expires_at,
-                   ps.advertisement_key_sha256
+                   ps.advertisement_key_sha256,
+                   dbc.key_ciphertext AS bootstrap_key_ciphertext,
+                   dbc.key_nonce AS bootstrap_key_nonce,
+                   dbc.envelope_version AS bootstrap_key_envelope_version
               FROM public.device_release dr
               JOIN public.provisioning_session ps
                 ON ps.id = dr.provisioning_session_id
+              JOIN public.device_bootstrap_credential dbc
+                ON dbc.device_id = dr.device_id
              WHERE dr.user_id = %s AND dr.idempotency_key = %s
              FOR UPDATE OF dr
             """,
@@ -419,18 +445,27 @@ class ProvisioningService:
                     409,
                 )
             self._verify_release_start_binding(request, existing)
-            return self._release_start_response(existing, user_id)
+            return self._release_start_response(
+                existing,
+                user_id,
+                self._authorization_proof(existing, request.tag_challenge_base64url),
+            )
 
         device_query = await connection.execute(
             """
             SELECT d.id AS device_id, d.serial_number, d.provisioning_session_id,
                    o.user_id AS owner_user_id, ps.user_id AS session_user_id,
-                   ps.status AS session_status, ps.advertisement_key_sha256
+                   ps.status AS session_status, ps.advertisement_key_sha256,
+                   dbc.key_ciphertext AS bootstrap_key_ciphertext,
+                   dbc.key_nonce AS bootstrap_key_nonce,
+                   dbc.envelope_version AS bootstrap_key_envelope_version
               FROM public.device d
               JOIN public.ownership o
                 ON o.device_id = d.id AND o.ended_at IS NULL
               JOIN public.provisioning_session ps
                 ON ps.id = d.provisioning_session_id
+              JOIN public.device_bootstrap_credential dbc
+                ON dbc.device_id = d.id
              WHERE d.id = %s
              FOR UPDATE OF d, o, ps
             """,
@@ -454,10 +489,15 @@ class ProvisioningService:
             """
             SELECT dr.id, dr.user_id, dr.device_id, dr.provisioning_session_id,
                    dr.serial_number, dr.reset_nonce, dr.status, dr.expires_at,
-                   ps.advertisement_key_sha256
+                   ps.advertisement_key_sha256,
+                   dbc.key_ciphertext AS bootstrap_key_ciphertext,
+                   dbc.key_nonce AS bootstrap_key_nonce,
+                   dbc.envelope_version AS bootstrap_key_envelope_version
               FROM public.device_release dr
               JOIN public.provisioning_session ps
                 ON ps.id = dr.provisioning_session_id
+              JOIN public.device_bootstrap_credential dbc
+                ON dbc.device_id = dr.device_id
              WHERE dr.device_id = %s AND dr.status = 'pending'
              FOR UPDATE OF dr
             """,
@@ -475,7 +515,11 @@ class ProvisioningService:
                     409,
                 )
             self._verify_release_start_binding(request, active)
-            return self._release_start_response(active, user_id)
+            return self._release_start_response(
+                active,
+                user_id,
+                self._authorization_proof(active, request.tag_challenge_base64url),
+            )
 
         now = datetime.now(UTC)
         release_id = uuid.uuid4()
@@ -506,7 +550,16 @@ class ProvisioningService:
             raise RuntimeError("Device-release insert returned no row")
         release = dict(release)
         release["advertisement_key_sha256"] = device["advertisement_key_sha256"]
-        return self._release_start_response(release, user_id)
+        release["bootstrap_key_ciphertext"] = device["bootstrap_key_ciphertext"]
+        release["bootstrap_key_nonce"] = device["bootstrap_key_nonce"]
+        release["bootstrap_key_envelope_version"] = device[
+            "bootstrap_key_envelope_version"
+        ]
+        return self._release_start_response(
+            release,
+            user_id,
+            self._authorization_proof(release, request.tag_challenge_base64url),
+        )
 
     async def complete_release(
         self,
@@ -698,6 +751,7 @@ class ProvisioningService:
         user_id: UUID,
         request: DeviceClaimStart,
         session: dict,
+        authorization_proof: bytes,
     ) -> DeviceClaimStartResponse:
         if session["status"] not in {"pending", "claimed"}:
             raise ProvisioningError(
@@ -730,7 +784,9 @@ class ProvisioningService:
                     "The backend is claimed but the tag reports no stored key",
                     409,
                 )
-            return self._start_response(session, user_id, "verify_existing_key")
+            return self._start_response(
+                session, user_id, "verify_existing_key", authorization_proof
+            )
 
         now = datetime.now(UTC)
         if session["claim_deadline"] <= now:
@@ -741,7 +797,9 @@ class ProvisioningService:
             )
 
         if observed_hash is not None:
-            return self._start_response(session, user_id, "verify_existing_key")
+            return self._start_response(
+                session, user_id, "verify_existing_key", authorization_proof
+            )
 
         # The tag explicitly reports empty. Re-open delivery of the exact same
         # allocated key, bounded by the original claim deadline. Never generate
@@ -761,7 +819,9 @@ class ProvisioningService:
             )
             session = dict(session)
             session["expires_at"] = renewed_expiry
-        return self._start_response(session, user_id, "write_key")
+        return self._start_response(
+            session, user_id, "write_key", authorization_proof
+        )
 
     def _completion_token(
         self,
@@ -796,7 +856,11 @@ class ProvisioningService:
         )
 
     def _start_response(
-        self, row: dict, user_id: UUID, tag_action: str
+        self,
+        row: dict,
+        user_id: UUID,
+        tag_action: str,
+        authorization_proof: bytes,
     ) -> DeviceClaimStartResponse:
         advertisement_hash = bytes(row["advertisement_key_sha256"])
         return DeviceClaimStartResponse(
@@ -806,6 +870,7 @@ class ProvisioningService:
             tag_action=tag_action,
             advertisement_key_base64url=b64url_encode(bytes(row["advertisement_key"])),
             advertisement_key_sha256_base64url=b64url_encode(advertisement_hash),
+            tag_authorization_proof_base64url=b64url_encode(authorization_proof),
             claim_completion_token_base64url=b64url_encode(
                 self._completion_token(
                     session_id=row["id"],
@@ -857,7 +922,7 @@ class ProvisioningService:
         )
 
     def _release_start_response(
-        self, row: dict, user_id: UUID
+        self, row: dict, user_id: UUID, authorization_proof: bytes
     ) -> DeviceReleaseStartResponse:
         control_key = self._tag_control_key(
             session_id=row["provisioning_session_id"],
@@ -872,12 +937,39 @@ class ProvisioningService:
             release_id=row["id"],
             device_id=row["device_id"],
             serial_number=row["serial_number"],
+            tag_authorization_proof_base64url=b64url_encode(authorization_proof),
             reset_command_base64url=b64url_encode(command),
             release_completion_token_base64url=b64url_encode(
                 self._release_completion_token(row, user_id)
             ),
             expires_at=row["expires_at"],
         )
+
+    def _authorization_proof(self, row: dict, encoded_challenge: str) -> bytes:
+        try:
+            challenge = b64url_decode_exact(encoded_challenge, 32)
+            encrypted = EncryptedSecret(
+                version=int(row["bootstrap_key_envelope_version"]),
+                nonce=bytes(row["bootstrap_key_nonce"]),
+                ciphertext=bytes(row["bootstrap_key_ciphertext"]),
+            )
+            associated_data = (
+                f"pinqeva:bootstrap:v1:{row['device_id']}:{row['serial_number']}"
+            ).encode("ascii")
+            bootstrap_key = decrypt_device_bootstrap_key(
+                encrypted,
+                self.settings.bootstrap_key_encryption_key,
+                associated_data,
+            )
+            return tag_authorization_proof(
+                bootstrap_key, row["serial_number"], challenge
+            )
+        except (InvalidTag, KeyError, TypeError, ValueError):
+            raise ProvisioningError(
+                "DEVICE_AUTHORIZATION_REJECTED",
+                "The tag identity or factory authorization could not be verified",
+                403,
+            ) from None
 
     @staticmethod
     def _release_response(row: dict) -> DeviceReleaseResponse:

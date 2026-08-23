@@ -131,7 +131,7 @@ During setup, the current firmware advertises the name `PKV-XXXXXXXXXXXX`, where
 
 ### 2.5 Persistent storage
 
-**Current:** firmware stores the protocol-v1.1 advertisement key and reset-control key as NVS blobs with a format marker. It rejects invalid values, refuses ordinary replacement, commits and reads back both, and exposes only the SHA-256 advertisement-key fingerprint. An owner release must carry a valid per-allocation HMAC before both blobs are erased. NVS initialization fails closed instead of silently erasing provisioned data.
+**Current:** firmware stores the protocol-v1.2 factory bootstrap key, advertisement key, and reset-control key as NVS blobs. It rejects invalid values, refuses ordinary replacement, commits and reads back owner keys, and exposes only the SHA-256 advertisement-key fingerprint. An owner release must carry a valid per-allocation HMAC before advertisement/control blobs are erased; the factory bootstrap key survives transfer. NVS initialization fails closed instead of silently erasing provisioned data.
 
 **Proposed:** the storage module provides:
 
@@ -214,7 +214,8 @@ The mobile client acts as the BLE central and GATT client. It is responsible for
 - User registration, login, and session management.
 - Scanning for setup-mode devices advertising the Pinqeva service.
 - Connecting to the selected tracker.
-- Reading device identifier, firmware version, and protocol version.
+- Reading device identifier, firmware version, protocol version, and a fresh connection challenge.
+- Relaying that challenge to the authenticated backend and writing the returned one-time authorization proof before sensitive operations.
 - Requesting a provisioning public key from the backend.
 - Requesting a signed subscription entitlement for the selected device.
 - Writing only the 28-byte advertisement public key to the tracker.
@@ -234,6 +235,7 @@ The application must not infer global location from BLE signal strength. RSSI ca
 The backend is the authority for identity, ownership, subscriptions, and location access. It is responsible for:
 
 - Authenticating users and validating sessions.
+- Decrypting a device-specific factory bootstrap key only long enough to issue a challenge-bound BLE authorization proof; never returning that reusable key to the app.
 - Atomically starting/resuming permanent per-device key allocations and completing ownership only after tag fingerprint confirmation.
 - Enforcing one active owner and coordinating authenticated release plus subscription cancellation before transfer.
 - Generating or securely importing finder-network key pairs.
@@ -335,7 +337,7 @@ The most important trust boundaries are:
 - Between the payment provider and webhook receiver.
 - Between location data and any requester.
 
-A production tracker should require physical presence or a setup secret printed as a QR code to prevent a nearby attacker from claiming a new device. BLE encryption and bonding should protect provisioning. The initial prototype may use a simplified test flow, but that behavior is not production security.
+Protocol v1.2 removes the customer QR step. Manufacturing injects one random 32-byte bootstrap key into each tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. Production should additionally require a physical setup action or MITM-resistant LE Secure Connections association to limit nearby relay/race attacks.
 
 ## 4. Communication Protocol
 
@@ -358,7 +360,7 @@ The client scans for the service UUID, displays candidate device identifiers, an
 
 ### 4.3 Proposed Pinqeva Provisioning GATT service
 
-The following UUIDs define implemented provisioning protocol version 1.1.
+The following UUIDs define implemented provisioning protocol version 1.2.
 
 | Attribute | UUID | Properties | Value |
 |---|---|---|---|
@@ -370,9 +372,11 @@ The following UUIDs define implemented provisioning protocol version 1.1.
 | Key Fingerprint | `a6f0f005-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted read | SHA-256 of the 28-byte key, or 32 zero bytes when empty. |
 | Tag Control Key | `a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted write with response | One-time 32-byte secret for authenticated reset; identical setup retries only. |
 | Authenticated Reset | `a6f0f007-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted write with response | 32-byte nonce plus 32-byte HMAC; erases key/control material after verification. |
-| Subscription Entitlement | `a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01` | Future | Reserved proposal; not implemented. |
+| Tag Challenge | `a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted read | Fresh random 32-byte value generated for each BLE connection. |
+| Tag Authorization Proof | `a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted write with response | `HMAC-SHA256(device_bootstrap_key, domain || serial || challenge)`. Unlocks sensitive writes for this connection only. |
+| Subscription Entitlement | `a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01` | Future | Reserved proposal; not implemented. |
 
-GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for the 28-byte advertisement key, 32-byte control key, and 64-byte reset command. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
+GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for the 32-byte authorization proof, 28-byte advertisement key, 32-byte control key, and 64-byte reset command. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
 
 ### 4.4 Protocol Information value
 
@@ -407,22 +411,24 @@ Provisioning Status contains two bytes: one state byte followed by one result by
 | Invalid value | `0x02` | Key value is erased or rejected. |
 | Storage failure | `0x03` | Save or read-back failed. |
 | Already provisioned | `0x04` | Replacement is not allowed. |
-| Unauthorized | `0x05` | Setup proof is insufficient. |
+| Unauthorized | `0x05` | The connection proof is missing or invalid. |
 | Unsupported version | `0x06` | Protocol versions are incompatible. |
 | Entitlement rejected | `0x07` | Entitlement is invalid, expired, or for another device. |
 | Internal error | `0x7F` | Unclassified firmware failure. |
 
 ### 4.6 Key lifecycle
 
-The finder key pair contains a private key and a 28-byte advertisement public key. Their lifecycle is deliberately separated:
+The finder key pair contains a private key and a 28-byte advertisement public key. Its lifecycle is deliberately separate from the factory bootstrap key:
 
-1. The backend locks the device and checks its permanent allocation plus the tag-read fingerprint.
-2. If an allocation exists, the backend resumes that exact key. It generates a key pair only when the backend has no live allocation and the tag reports empty.
-3. The backend stores the private key in protected server-side storage and binds the allocation to the device in the same transaction.
-4. The backend sends only the advertisement public key and a domain-separated control key to the authenticated mobile client.
-5. The mobile client installs the control key followed by the public key over protected BLE.
-6. The tracker validates, stores, reads back, and exposes only the SHA-256 public-key fingerprint.
-7. Backend ownership is created only after that fingerprint is relayed and matched.
+1. Manufacturing injects a unique bootstrap key into protected tag NVS and stores an encrypted backend copy. Owner reset never erases this factory key.
+2. For each connection, the backend returns only a challenge-bound HMAC proof; the app never receives the reusable bootstrap key.
+3. After firmware accepts the proof, the backend locks the device and checks its permanent allocation plus the tag-read fingerprint.
+4. If an allocation exists, the backend resumes that exact key. It generates a key pair only when the backend has no live allocation and the tag reports empty.
+5. The backend stores the private key in protected server-side storage and binds the allocation to the device in the same transaction.
+6. The backend sends only the advertisement public key and a domain-separated control key to the authenticated mobile client.
+7. The mobile client installs the control key followed by the public key over protected BLE.
+8. The tracker validates, stores, reads back, and exposes only the SHA-256 public-key fingerprint.
+9. Backend ownership is created only after that fingerprint is relayed and matched.
 8. The tracker derives its random BLE address and advertising payload from that public key only after entitlement work is implemented.
 9. The backend later uses the private key to decrypt reports associated with the public-key identifier.
 
@@ -454,12 +460,13 @@ sequenceDiagram
     participant Tag as Pinqeva tracker
 
     App->>Tag: BLE connect
-    App->>Tag: Read version, device ID, and encrypted key fingerprint
-    Tag-->>App: Version, PKV ID, empty or stored fingerprint
-    Note over App: Require BLE ID to match product QR
-    App->>API: Start/resume claim (PKV ID + QR proof + observed fingerprint)
+    App->>Tag: Read version, device ID, challenge, and encrypted key fingerprint
+    Tag-->>App: Version, PKV ID, fresh challenge, empty or stored fingerprint
+    App->>API: Start/resume claim (PKV ID + challenge + observed fingerprint)
     API->>Store: Lock device; reuse allocation or generate once; bind immediately
-    API-->>App: Action + 28-byte advertisement key + control key
+    API-->>App: One-time tag proof + action + advertisement/control keys
+    App->>Tag: Write authorization proof
+    Tag-->>App: Connection authorized
     alt Tag is empty
         App->>Tag: Write control key, then 28-byte advertisement key
         Note over Tag: Validate, commit, and read back
@@ -487,7 +494,7 @@ Tracker advertising is non-connectable in the prototype. Future nearby commands 
 
 | Operation | Example route | Authorization |
 |---|---|---|
-| Start/resume device claim | `POST /v1/devices/claim` | Authenticated user + setup proof |
+| Start/resume device claim | `POST /v1/devices/claim` | Authenticated user + fresh tag challenge |
 | Complete device claim | `POST /v1/devices/claim/complete` | Allocation owner + completion capability |
 | Start device release | `POST /v1/devices/{deviceId}/release` | Active owner + connected-tag fingerprint |
 | Complete device release | `POST /v1/devices/{deviceId}/release/complete` | Active owner + release capability + empty tag |
@@ -530,11 +537,11 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Device identifier derived from the factory MAC address.
 - Setup and subscription-suspended firmware modes for the provisioning slice.
 - Connectable advertisement containing the provisioning service UUID, with the `PKV-` name in scan response data.
-- Protocol-v1.1 GATT service with encrypted key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared advertisement-key writes.
-- Validated one-time NVS key/control persistence, commit/read-back checks, authenticated erasure, and BLE-bond cleanup after reset disconnect.
-- React Native claim/release service that verifies BLE/QR identity and fingerprints, avoids rewrites, installs key material in safe order, and confirms reset before backend release.
-- Authenticated API that conditionally generates P-224 material once, binds allocations atomically, encrypts private scalars, completes one ownership, and performs two-phase release.
-- Supabase migration for setup proofs, encrypted key custody, permanent allocation markers, one active owner, release audit, subscription cancellation, and provider outbox delivery.
+- Protocol-v1.2 GATT service with a per-connection challenge/proof gate, 30-second unauthorized-client timeout, encrypted key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
+- Validated factory-bootstrap plus one-time NVS key/control persistence, commit/read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
+- React Native claim/release service that automatically obtains and writes backend authorization proofs, verifies fingerprints, avoids rewrites, installs key material in safe order, and confirms reset before backend release.
+- Authenticated API that decrypts device bootstrap credentials to issue nonce-bound proofs, conditionally generates P-224 material once, binds allocations atomically, encrypts private scalars, completes one ownership, and performs two-phase release.
+- Supabase migrations for backend-only bootstrap credentials, encrypted key custody, permanent allocation markers, one active owner, release audit, subscription cancellation, and provider outbox delivery.
 - ESP32-C3 build baseline verified with ESP-IDF 5.4.
 - Experimental key generation and report-retrieval scripts.
 - Supabase tables for profiles, devices, ownership, plans, subscriptions, invoices, and payment events.
@@ -542,7 +549,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 
 ### 5.2 Not yet implemented or incomplete
 
-- MITM-authenticated BLE OOB pairing, physical-presence gating, and tag-signed provisioning receipts.
+- Physical-presence gating, MITM-resistant BLE association, and tag-signed provisioning receipts beyond the implemented backend-authentication proof.
 - Product mobile UI around the checked-in provisioning service.
 - Production KMS/HSM private-key wrapping and report-worker integration.
 - Location-report schema and Pinqeva map implementation.

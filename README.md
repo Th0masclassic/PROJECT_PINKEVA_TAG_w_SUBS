@@ -40,13 +40,13 @@ The complete architecture and proposed communication contract are documented in 
 | Firmware mode selection | Implemented provisioning slice | A missing key enters setup; a valid committed key without an entitlement fails closed into suspended maintenance mode. |
 | Setup mode | Implemented | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`, accepts encrypted connections, and resumes after disconnect. |
 | Tracker mode | Blocked by entitlement | Finder advertising is intentionally disabled until signed entitlement verification is implemented. |
-| GATT event handling | Implemented provisioning slice | Protocol v1.1 exposes identity/status, encrypted key fingerprints, one-time control/key writes, and HMAC-authenticated reset. |
+| GATT event handling | Implemented provisioning slice | Protocol v1.2 adds QR-free per-connection challenge/proof authorization before one-time control/key writes and HMAC-authenticated reset. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
 | Supabase database | Partial | Adds encrypted key custody, permanent device allocation, idempotency, one-active-owner enforcement, audited release, subscription cancellation, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
-| Mobile client | Provisioning module | A typed React Native service verifies tag/QR identity and fingerprints, safely claims/resumes, and performs authenticated two-phase release. A product UI is still needed. |
+| Mobile client | Provisioning module | A typed React Native service performs QR-free, backend-authorized BLE challenge-response, verifies fingerprints, safely claims/resumes, and performs authenticated two-phase release. A product UI is still needed. |
 | Backend API and worker | Provisioning module | Conditional one-time key generation, encrypted private-key custody, one-owner claim, release, and local subscription cancellation are implemented. The payment outbox worker, entitlements, and location worker remain. |
 | Pinqeva map and vehicle UI | Not implemented | The map, location history, and vehicle profile experience are currently architectural requirements. |
 | Subscription enforcement | Fail-closed placeholder | Suspended state is enforced; signed lease issuance and verification remain to be implemented. |
@@ -149,7 +149,7 @@ Replace `COMx` with the board's serial port. Firmware behavior must be validated
 
 The next milestone completes subscription authorization and proves this slice on hardware:
 
-1. Add QR/OOB or physical-presence authenticated BLE pairing and a tag-signed provisioning receipt.
+1. Validate the implemented per-device challenge-response on hardware, then add physical-presence/MITM-resistant pairing and a tag-signed provisioning receipt.
 2. Implement signed entitlement issuance, atomic storage, signature/device/counter/expiry checks, and trusted time.
 3. Activate finder advertising only after entitlement verification and stop it at expiry.
 4. Test scan, pairing, fragmented write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on ESP32-C3-MINI with iOS and Android.

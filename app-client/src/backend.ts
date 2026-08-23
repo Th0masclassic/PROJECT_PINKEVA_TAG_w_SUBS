@@ -5,6 +5,7 @@ export type DeviceClaimStart = {
   tag_action: "write_key" | "verify_existing_key";
   advertisement_key_base64url: string;
   advertisement_key_sha256_base64url: string;
+  tag_authorization_proof_base64url: string;
   claim_completion_token_base64url: string;
   tag_control_key_base64url: string | null;
   expires_at: string;
@@ -23,6 +24,7 @@ export type DeviceReleaseStart = {
   release_id: string;
   device_id: string;
   serial_number: string;
+  tag_authorization_proof_base64url: string;
   reset_command_base64url: string;
   release_completion_token_base64url: string;
   expires_at: string;
@@ -48,8 +50,8 @@ export class PinqevaBackendClient {
 
   async startDeviceClaim(input: {
     serialNumber: string;
-    setupCode: string;
     idempotencyKey: string;
+    tagChallengeBase64url: string;
     tagAdvertisementKeySha256Base64url: string | null;
   }): Promise<DeviceClaimStart> {
     return this.request<DeviceClaimStart>("/v1/devices/claim", {
@@ -57,7 +59,7 @@ export class PinqevaBackendClient {
       headers: { "Idempotency-Key": input.idempotencyKey },
       body: JSON.stringify({
         serial_number: input.serialNumber,
-        setup_code: input.setupCode,
+        tag_challenge_base64url: input.tagChallengeBase64url,
         tag_advertisement_key_sha256_base64url:
           input.tagAdvertisementKeySha256Base64url,
       }),
@@ -85,6 +87,7 @@ export class PinqevaBackendClient {
     deviceId: string;
     serialNumber: string;
     tagAdvertisementKeySha256Base64url: string;
+    tagChallengeBase64url: string;
     idempotencyKey: string;
   }): Promise<DeviceReleaseStart> {
     return this.request<DeviceReleaseStart>(
@@ -94,6 +97,7 @@ export class PinqevaBackendClient {
         headers: { "Idempotency-Key": input.idempotencyKey },
         body: JSON.stringify({
           serial_number: input.serialNumber,
+          tag_challenge_base64url: input.tagChallengeBase64url,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
         }),

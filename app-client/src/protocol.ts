@@ -8,11 +8,16 @@ export const PROVISIONING_STATUS_UUID = "a6f0f004-3e4d-4b1a-9c2e-72d24c8f0a01";
 export const KEY_FINGERPRINT_UUID = "a6f0f005-3e4d-4b1a-9c2e-72d24c8f0a01";
 export const TAG_CONTROL_KEY_UUID = "a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01";
 export const AUTHENTICATED_RESET_UUID = "a6f0f007-3e4d-4b1a-9c2e-72d24c8f0a01";
+export const TAG_CHALLENGE_UUID = "a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01";
+export const TAG_AUTHORIZATION_PROOF_UUID = "a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01";
 
 export const ADVERTISEMENT_KEY_LENGTH = 28;
 export const KEY_FINGERPRINT_LENGTH = 32;
 export const TAG_CONTROL_KEY_LENGTH = 32;
+export const TAG_CHALLENGE_LENGTH = 32;
+export const TAG_AUTHORIZATION_PROOF_LENGTH = 32;
 export const RESET_COMMAND_LENGTH = 64;
+export const TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
 
 export type ProtocolInformation = {
