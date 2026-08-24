@@ -291,7 +291,7 @@ The existing Supabase migrations define these entities:
 | `device` | Tracker identity, name, status, and firmware version. |
 | `ownership` | Time-bounded relationship between a user and a device. |
 | `plan` | Available subscription plan, duration, and price. |
-| `subscription` | User/device entitlement and billing period. |
+| `subscription` | Per-device entitlement and billing period; `user_id` records the payer/owner account. |
 | `invoice` | Financial record associated with a subscription. |
 | `payment_event` | Idempotent record of payment-provider webhook events. |
 
@@ -299,7 +299,7 @@ Row Level Security currently limits profile, ownership, and device reads to the 
 
 ### 3.8 Subscription architecture
 
-Subscriptions are associated with both a user and a device. This allows one customer to own several trackers with different plan periods. An active subscription is required to use a Pinqeva tag as a finder-network tracker.
+A subscription belongs to one physical tag, not to the account as a whole. `subscription.device_id` is the subscribed resource; `subscription.user_id` records the account paying for or currently owning it. One account may therefore hold several current subscriptions, but only one current/nonterminal subscription may exist for any one tag. Terminal `cancelled` and `ended` rows remain as billing history and do not prevent a later subscription for that tag. An active subscription is required to use a Pinqeva tag as a finder-network tracker.
 
 The backend is authoritative for billing and issues a cryptographically signed, device-bound entitlement after confirming payment. The mobile application transfers this entitlement to the tag through BLE. Firmware verifies the signature using an embedded backend public key and transmits finder advertising data only until the entitlement expires.
 

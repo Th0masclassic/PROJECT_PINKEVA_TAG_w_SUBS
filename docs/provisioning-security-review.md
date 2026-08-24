@@ -1,6 +1,6 @@
 # Pinqeva provisioning security and scenario review
 
-**Review scope:** protocol-v1.2 QR-free connection authorization, key generation, claim/resume, App-to-Tag BLE transfer, ESP32-C3 storage, one-owner enforcement, authenticated release, and subscription cancellation.
+**Review scope:** protocol-v1.2 QR-free connection authorization, key generation, claim/resume, authenticated mobile discovery/setup, App-to-Tag BLE transfer, ESP32-C3 storage, one-owner enforcement, authenticated release, and subscription cancellation.
 
 ## Security outcome
 
@@ -40,6 +40,7 @@ An advertisement key is public material, but an attacker who replaces it can den
 | Reboot after key receipt | Tag fails closed into subscription-suspended maintenance mode. |
 | Missing signed entitlement | Finder payload remains disabled. |
 | Secret logging | New backend/app/firmware paths do not log bootstrap keys, authorization proofs, bearer tokens, advertisement bytes, private scalars, or ciphertext. |
+| Mobile error display | BLE and API failures are reduced to localized, fixed categories; backend bodies, tokens, cryptographic values, and low-level radio details are not shown to the user. |
 
 ## Residual risks and required production work
 

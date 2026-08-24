@@ -1,0 +1,62 @@
+{
+  "expo": {
+    "name": "Pinkeva",
+    "slug": "pinkeva",
+    "scheme": "com.pinkeva.mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "backgroundColor": "#FFFFFF",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pinkeva.mobile",
+      "appleTeamId": "4P5765BPRH",
+      "infoPlist": {
+        "CFBundleAllowMixedLocalizations": true
+      },
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.pinkeva.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#06163A",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-system-ui",
+      "expo-secure-store",
+      "expo-web-browser",
+      "expo-font",
+      "./plugins/withPersonalTeamDevelopment",
+      [
+        "@sfourdrinier/react-native-ble-plx",
+        {
+          "isBackgroundEnabled": false,
+          "neverForLocation": false,
+          "bluetoothAlwaysPermission": "Pinkeva uses Bluetooth when you add, update, or configure a nearby tag.",
+          "iosEnableRestoration": false,
+          "androidEnableForegroundService": false
+        }
+      ]
+    ]
+  }
+}

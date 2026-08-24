@@ -1,98 +1,99 @@
 #!/usr/bin/env bash
 
-cleanup() {
-    echo "cleanup ..."
-    rm "$KEYFILE"
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+FIRMWARE_DIR="${SCRIPT_DIR}/firmware"
+PORT=""
+BAUDRATE=460800
+
+usage() {
+    cat <<'EOF'
+Flash the Pinkeva ESP32-C3 provisioning firmware.
+
+Usage:
+  ./flash_esp32.sh --port <serial-port> [--slow]
+
+Options:
+  -p, --port <path>  Serial interface for the ESP32-C3 (required).
+  -s, --slow         Use 115200 baud instead of 460800.
+  -h, --help         Show this help.
+
+The NVS partition is intentionally preserved because it contains the
+per-device factory bootstrap key. This script never writes an advertisement
+key and never flashes the legacy OpenHaystack image.
+EOF
 }
 
-# Directory of this script
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
-
-# Defaults: Serial port to access the ESP32
-PORT=/dev/ttyUSB0
-
-# Defaults: Fast baud rate
-BAUDRATE=921600
-
-# Parameter parsing
 while [[ $# -gt 0 ]]; do
-    KEY="$1"
-    case "$KEY" in
+    case "$1" in
         -p|--port)
+            if [[ $# -lt 2 ]]; then
+                echo "Missing value for $1" >&2
+                usage >&2
+                exit 2
+            fi
             PORT="$2"
-            shift
-            shift
-        ;;
+            shift 2
+            ;;
         -s|--slow)
             BAUDRATE=115200
             shift
-        ;;
+            ;;
         -h|--help)
-            echo "flash_esp32.sh - Flash the OpenHaystack firmware onto an ESP32 module"
-            echo ""
-            echo "Call: flash_esp32.sh [-p <port>] [-s] PUBKEY"
-            echo ""
-            echo "Required Arguments:"
-            echo "  PUBKEY"
-            echo "      The base64-encoded advertisement key"
-            echo ""
-            echo "Optional Arguments:"
-            echo "  -h, --help"
-            echo "      Show this message and exit."
-            echo "  -p, --port <port>"
-	    echo "      Specify the serial interface to which the device is connected. (default: $PORT)"
-            echo "  -s, --slow"
-            echo "      Use 115200 instead of 921600 baud when flashing."
-            echo "      Might be required for long/bad USB cables or slow USB-to-Serial converters."
-            exit 1
-        ;;
+            usage
+            exit 0
+            ;;
         *)
-            if [[ -z "$PUBKEY" ]]; then
-                PUBKEY="$1"
-                shift
-            else
-                echo "Got unexpected parameter $1"
-                exit 1
-            fi
-        ;;
+            echo "Unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
     esac
 done
 
-# Sanity check: Pubkey exists
-if [[ -z "$PUBKEY" ]]; then
-    echo "Missing advertisement key, call with --help for usage"
-    exit 1
+if [[ -z "$PORT" ]]; then
+    echo "A serial port is required; use --port <path>." >&2
+    usage >&2
+    exit 2
 fi
-
-# Sanity check: Port
 if [[ ! -e "$PORT" ]]; then
-    echo "$PORT does not exist, please specify a valid serial interface with the -p argument"
+    echo "Serial port does not exist: $PORT" >&2
     exit 1
 fi
 
+BOOTLOADER="${FIRMWARE_DIR}/bootloader-esp32c3.bin"
+PARTITION_TABLE="${FIRMWARE_DIR}/partition-table.bin"
+APPLICATION="${FIRMWARE_DIR}/Pinkeva-ESP32-C3.bin"
+for image in "$BOOTLOADER" "$PARTITION_TABLE" "$APPLICATION"; do
+    if [[ ! -f "$image" ]]; then
+        echo "Missing firmware image: $image" >&2
+        echo "Run 'idf.py set-target esp32c3 && idf.py build' first." >&2
+        exit 1
+    fi
+done
 
-# Prepare the key
-KEYFILE="$SCRIPT_DIR/tmp.key"
-if [[ -f "$KEYFILE" ]]; then
-    echo "$KEYFILE already exists, stopping here not to override files..."
+if command -v esptool.py >/dev/null 2>&1; then
+    ESPTOOL=(esptool.py)
+elif command -v python >/dev/null 2>&1 && python -c 'import esptool' >/dev/null 2>&1; then
+    ESPTOOL=(python -m esptool)
+else
+    echo "esptool.py was not found. Activate the ESP-IDF environment first." >&2
     exit 1
 fi
-echo "$PUBKEY" | python3 -m base64 -d - > "$KEYFILE"
-if [[ $? != 0 ]]; then
-    echo "Could not parse the advertisment key. Please provide valid base64 input"
-    exit 1
-fi
 
-# Call esptool.py. Errors from here on are critical
-set -e
-trap cleanup INT TERM EXIT
+"${ESPTOOL[@]}" \
+    --chip esp32c3 \
+    --before default_reset \
+    --after hard_reset \
+    --baud "$BAUDRATE" \
+    --port "$PORT" \
+    write_flash \
+    --flash_mode dio \
+    --flash_freq 80m \
+    --flash_size 2MB \
+    0x0 "$BOOTLOADER" \
+    0x8000 "$PARTITION_TABLE" \
+    0x10000 "$APPLICATION"
 
-# Clear NVM
-esptool.py --after no_reset --port "$PORT" \
-    erase_region 0x9000 0x5000
-esptool.py --before no_reset --baud $BAUDRATE --port "$PORT" \
-    write_flash 0x1000  "$SCRIPT_DIR/build/bootloader/bootloader.bin" \
-                0x8000  "$SCRIPT_DIR/build/partition_table/partition-table.bin" \
-                0xe000  "$KEYFILE" \
-                0x10000 "$SCRIPT_DIR/build/openhaystack.bin"
-
+echo "Pinkeva ESP32-C3 firmware flashed. NVS was preserved."

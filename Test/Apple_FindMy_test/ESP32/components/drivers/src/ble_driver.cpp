@@ -33,11 +33,16 @@ constexpr size_t MAX_STAGED_VALUE_SIZE = RESET_COMMAND_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
 
-// ESP-IDF stores 128-bit UUIDs least-significant byte first.
-constexpr uint8_t SERVICE_UUID[ESP_UUID_LEN_128] = {
+// ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
+// canonical string next to the wire representation so the mobile app,
+// advertisement packet, and GATT database cannot silently drift apart.
+constexpr char PINKEVA_SERVICE_UUID_STRING[] =
+    "a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01";
+constexpr uint8_t PINKEVA_SERVICE_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x00, 0xF0, 0xF0, 0xA6,
 };
+static_assert(sizeof(PINKEVA_SERVICE_UUID) == ESP_UUID_LEN_128);
 constexpr uint8_t PROTOCOL_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x01, 0xF0, 0xF0, 0xA6,
@@ -130,6 +135,7 @@ uint16_t active_connection_id = 0;
 bool connected = false;
 bool notifications_enabled = false;
 bool service_started = false;
+bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
 uint8_t pending_adv_configuration = 0;
@@ -149,10 +155,13 @@ uint8_t setup_adv_data[3 + 18] = {
     ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT,
     0x11,
     ESP_BLE_AD_TYPE_128SRV_CMPL,
-    SERVICE_UUID[0], SERVICE_UUID[1], SERVICE_UUID[2], SERVICE_UUID[3],
-    SERVICE_UUID[4], SERVICE_UUID[5], SERVICE_UUID[6], SERVICE_UUID[7],
-    SERVICE_UUID[8], SERVICE_UUID[9], SERVICE_UUID[10], SERVICE_UUID[11],
-    SERVICE_UUID[12], SERVICE_UUID[13], SERVICE_UUID[14], SERVICE_UUID[15],
+    PINKEVA_SERVICE_UUID[0], PINKEVA_SERVICE_UUID[1], PINKEVA_SERVICE_UUID[2],
+    PINKEVA_SERVICE_UUID[3], PINKEVA_SERVICE_UUID[4], PINKEVA_SERVICE_UUID[5],
+    PINKEVA_SERVICE_UUID[6], PINKEVA_SERVICE_UUID[7], PINKEVA_SERVICE_UUID[8],
+    PINKEVA_SERVICE_UUID[9], PINKEVA_SERVICE_UUID[10],
+    PINKEVA_SERVICE_UUID[11], PINKEVA_SERVICE_UUID[12],
+    PINKEVA_SERVICE_UUID[13], PINKEVA_SERVICE_UUID[14],
+    PINKEVA_SERVICE_UUID[15],
 };
 uint8_t setup_scan_response[2 + (DEVICE_ID_LEN - 1)] = {};
 
@@ -186,7 +195,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           ESP_GATT_PERM_READ,
           ESP_UUID_LEN_128,
           ESP_UUID_LEN_128,
-          const_cast<uint8_t *>(SERVICE_UUID)}},
+          const_cast<uint8_t *>(PINKEVA_SERVICE_UUID)}},
 
     [PROTOCOL_DECLARATION] =
         {{ESP_GATT_AUTO_RSP},
@@ -451,7 +460,8 @@ void erase_all_bonds() {
 }
 
 void try_start_maintenance_advertising() {
-    if (!connected && service_started && pending_adv_configuration == 0) {
+    if (!connected && service_started && pending_adv_configuration == 0 &&
+        !advertising_configuration_failed) {
         esp_ble_adv_params_t *parameters = ble_mode == BLEMode::SETUP
                                                ? &setup_adv_params
                                                : &suspended_adv_params;
@@ -794,19 +804,32 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 break;
             }
             active_gatts_if = gatts_if;
-            esp_ble_gap_set_device_name(device_id);
+            esp_err_t error = esp_ble_gap_set_device_name(device_id);
+            if (error != ESP_OK) {
+                ESP_LOGE(LOG_TAG, "Could not set device name: %s",
+                         esp_err_to_name(error));
+            }
 
             pending_adv_configuration = ADV_CONFIG_FLAG | SCAN_RSP_CONFIG_FLAG;
-            if (esp_ble_gap_config_adv_data_raw(setup_adv_data,
-                                                sizeof(setup_adv_data)) != ESP_OK) {
+            advertising_configuration_failed = false;
+            error = esp_ble_gap_config_adv_data_raw(setup_adv_data,
+                                                    sizeof(setup_adv_data));
+            if (error != ESP_OK) {
+                advertising_configuration_failed = true;
+                ESP_LOGE(LOG_TAG, "Could not configure Pinkeva service advertisement: %s",
+                         esp_err_to_name(error));
                 pending_adv_configuration &= ~ADV_CONFIG_FLAG;
             }
-            if (esp_ble_gap_config_scan_rsp_data_raw(
-                    setup_scan_response, sizeof(setup_scan_response)) != ESP_OK) {
+            error = esp_ble_gap_config_scan_rsp_data_raw(
+                setup_scan_response, sizeof(setup_scan_response));
+            if (error != ESP_OK) {
+                advertising_configuration_failed = true;
+                ESP_LOGE(LOG_TAG, "Could not configure Pinkeva scan response: %s",
+                         esp_err_to_name(error));
                 pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
             }
 
-            esp_err_t error = esp_ble_gatts_create_attr_tab(
+            error = esp_ble_gatts_create_attr_tab(
                 provisioning_gatt_db, gatts_if, ATTRIBUTE_COUNT,
                 SERVICE_INSTANCE_ID);
             if (error != ESP_OK) {
@@ -815,7 +838,7 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             break;
         }
-        case ESP_GATTS_CREAT_ATTR_TAB_EVT:
+        case ESP_GATTS_CREAT_ATTR_TAB_EVT: {
             if (param->add_attr_tab.status != ESP_GATT_OK ||
                 param->add_attr_tab.num_handle != ATTRIBUTE_COUNT) {
                 ESP_LOGE(LOG_TAG, "Provisioning GATT table creation failed");
@@ -823,11 +846,18 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             std::memcpy(attribute_handles, param->add_attr_tab.handles,
                         sizeof(attribute_handles));
-            esp_ble_gatts_start_service(attribute_handles[SERVICE]);
+            esp_err_t error = esp_ble_gatts_start_service(attribute_handles[SERVICE]);
+            if (error != ESP_OK) {
+                ESP_LOGE(LOG_TAG, "Could not start Pinkeva GATT service %s: %s",
+                         PINKEVA_SERVICE_UUID_STRING, esp_err_to_name(error));
+            }
             break;
+        }
         case ESP_GATTS_START_EVT:
             if (param->start.status == ESP_GATT_OK) {
                 service_started = true;
+                ESP_LOGI(LOG_TAG, "Pinkeva GATT service ready: %s",
+                         PINKEVA_SERVICE_UUID_STRING);
                 try_start_maintenance_advertising();
             }
             break;
@@ -921,10 +951,20 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                   esp_ble_gap_cb_param_t *param) {
     switch (event) {
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
+            if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                advertising_configuration_failed = true;
+                ESP_LOGE(LOG_TAG, "Pinkeva service advertisement rejected: %d",
+                         param->adv_data_raw_cmpl.status);
+            }
             pending_adv_configuration &= ~ADV_CONFIG_FLAG;
             try_start_maintenance_advertising();
             break;
         case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
+            if (param->scan_rsp_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                advertising_configuration_failed = true;
+                ESP_LOGE(LOG_TAG, "Pinkeva scan response rejected: %d",
+                         param->scan_rsp_data_raw_cmpl.status);
+            }
             pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
             try_start_maintenance_advertising();
             break;
@@ -1010,6 +1050,7 @@ std::optional<ERROR_TAG> ble_init() {
         .arg = nullptr,
         .dispatch_method = ESP_TIMER_TASK,
         .name = "ble_auth",
+        .skip_unhandled_events = false,
     };
     error = esp_timer_create(&authorization_timer_arguments,
                              &authorization_timeout_timer);

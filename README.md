@@ -6,7 +6,7 @@ Pinqeva is a prototype Bluetooth item-tracking system built around an ESP32-base
 
 The same tag can be attached to personal belongings or left inside a vehicle. When used in a car, the application will associate the tag with owner-provided vehicle information and display the car's last reported location.
 
-> Pinqeva is currently an engineering prototype. The key-provisioning backend, App-to-Tag client module, ESP32-C3 GATT receiver, and database foundation exist; the product UI, signed entitlements, report worker, map, and production hardening are not yet complete.
+> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32-C3 GATT receiver, and database foundation exist; signed entitlements, the report worker, a real finder map, and production hardening are not yet complete.
 
 ## Project overview
 
@@ -46,7 +46,7 @@ The complete architecture and proposed communication contract are documented in 
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
 | Supabase database | Partial | Adds encrypted key custody, permanent device allocation, idempotency, one-active-owner enforcement, audited release, subscription cancellation, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
-| Mobile client | Provisioning module | A typed React Native service performs QR-free, backend-authorized BLE challenge-response, verifies fingerprints, safely claims/resumes, and performs authenticated two-phase release. A product UI is still needed. |
+| Mobile client | Provisioning UI implemented | The authenticated iOS/Android product UI scans for canonical `PKV-XXXXXXXXXXXX` tags, shows nearby candidates, performs the backend-authorized BLE challenge-response, verifies the committed fingerprint, and refreshes the claimed ownership. Physical-device validation is still required. |
 | Backend API and worker | Provisioning module | Conditional one-time key generation, encrypted private-key custody, one-owner claim, release, and local subscription cancellation are implemented. The payment outbox worker, entitlements, and location worker remain. |
 | Pinqeva map and vehicle UI | Not implemented | The map, location history, and vehicle profile experience are currently architectural requirements. |
 | Subscription enforcement | Fail-closed placeholder | Suspended state is enforced; signed lease issuance and verification remain to be implemented. |
@@ -86,6 +86,8 @@ stateDiagram-v2
 
 An active subscription is required to use the tag as a finder-network tracker.
 
+- Billing is per physical tag, not per account. An account with several tags needs one subscription for each tag.
+- A tag can have at most one current/nonterminal subscription; cancelled and ended rows remain as billing history.
 - The backend will issue a signed, device-bound subscription entitlement after confirming payment.
 - The mobile application will transfer that entitlement to the tag over BLE.
 - Firmware will verify the backend signature, device binding, anti-rollback value, and expiry.
@@ -116,7 +118,7 @@ The tag does not currently provide speed, fuel level, engine state, mileage, or 
 
 | Location | Contents |
 |---|---|
-| [`Test/Apple_FindMy_test/ESP32`](Test/Apple_FindMy_test/ESP32) | Current ESP-IDF tracker firmware and archived test artifacts. |
+| [`Test/Apple_FindMy_test/ESP32`](Test/Apple_FindMy_test/ESP32) | Current ESP-IDF tracker firmware, Pinkeva BLE provisioning service, and flash images. |
 | [`Test/Apple_FindMy_test`](Test/Apple_FindMy_test) | Experimental key generation and Apple Find My report-retrieval scripts. |
 | [`Test/anisette-v3-server`](Test/anisette-v3-server) | Experimental anisette server used by the report-retrieval test flow. |
 | [`supabase/migrations`](supabase/migrations) | PostgreSQL schema, authentication profile trigger, and initial RLS policies. |
@@ -124,26 +126,29 @@ The tag does not currently provide speed, fuel level, engine state, mileage, or 
 | [`docs/system-architecture-and-protocol.md`](docs/system-architecture-and-protocol.md) | Hardware/software architecture, BLE protocol, API proposal, subscription model, and roadmap. |
 | [`backend`](backend) | Authenticated provisioning API, key custody, manufacturing helper, and tests. |
 | [`app-client`](app-client) | React Native App-to-Tag provisioning bridge and protocol tests. |
+| [`mobile-app`](mobile-app) | Expo/React Native product application for iOS, Android, and web. |
 | [`docs/provisioning-security-review.md`](docs/provisioning-security-review.md) | Threat scenarios, implemented controls, residual risks, and recovery decisions. |
+| [`docs/supabase-cloud-deployment.md`](docs/supabase-cloud-deployment.md) | Hosted database, Auth-provider, backend-secret, and mobile setup. |
 
 ## Building the firmware
 
-The provisioning firmware has an ESP32-C3 baseline and has been compiled with ESP-IDF 5.4 for `esp32c3`. The exact ESP32-C3-MINI board, flash size, GPIO mapping, RF design, and hardware behavior still require on-device validation.
+The provisioning firmware has an ESP32-C3 baseline and is built with ESP-IDF 5.4 for `esp32c3`. The checked-in application image contains the Pinkeva setup service `a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01`. The exact ESP32-C3-MINI board, flash size, GPIO mapping, RF design, and hardware behavior still require on-device validation.
 
-Install and activate ESP-IDF, then run:
+Install and activate ESP-IDF, then build from the firmware directory:
 
-```powershell
-Set-Location Test/Apple_FindMy_test/ESP32
-idf.py -B build-c3 -DIDF_TARGET=esp32c3 -DSDKCONFIG=sdkconfig.c3 build
+```sh
+cd Test/Apple_FindMy_test/ESP32
+idf.py set-target esp32c3
+idf.py build
 ```
 
-To flash and monitor a connected development board:
+To flash the checked-in C3 images without erasing the per-device NVS/bootstrap key:
 
-```powershell
-idf.py -p COMx flash monitor
+```sh
+./flash_esp32.sh --port /dev/tty.usbmodemXXXX
 ```
 
-Replace `COMx` with the board's serial port. Firmware behavior must be validated on real hardware; the presence of checked-in build artifacts is not proof that the current source builds or works on every target.
+Replace the port with the connected board's serial interface. Firmware behavior must still be validated on real hardware; a successful build and the UUID in the image are not a substitute for testing the exact board.
 
 ## Next milestone
 
@@ -153,7 +158,7 @@ The next milestone completes subscription authorization and proves this slice on
 2. Implement signed entitlement issuance, atomic storage, signature/device/counter/expiry checks, and trusted time.
 3. Activate finder advertising only after entitlement verification and stop it at expiry.
 4. Test scan, pairing, fragmented write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on ESP32-C3-MINI with iOS and Android.
-5. Build the product provisioning UI around the checked-in app service.
+5. Validate the implemented product provisioning UI on physical iOS and Android devices, including denial, timeout, retry, and interrupted-setup states.
 6. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
 
 After this contract is tested end to end, the rest of the client, backend, map, vehicle profile, and payment experience can be developed against a stable interface.

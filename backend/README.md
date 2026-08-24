@@ -18,7 +18,18 @@ python -m pip install -e '.[test]'
 uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
+For a hosted project, follow
+[`docs/supabase-cloud-deployment.md`](../docs/supabase-cloud-deployment.md).
+The hosted database URL must use TLS and must never be placed in Expo/Xcode.
+`SUPABASE_URL` is enough for the backend to derive the public JWT issuer and
+JWKS endpoints.
+
 The API deliberately disables interactive documentation in its production app object. Generate a separate internal OpenAPI artifact during deployment if operators need it.
+
+All public error responses contain a stable code, a short safe message, and a
+correlation ID. Validation input, access tokens, keys, database errors, and
+stack traces are never returned to the client. Server logs record only the
+correlation ID and exception type for unexpected failures.
 
 ## Provisioning API
 
@@ -60,6 +71,8 @@ Retries with the same session return the same ownership result. A deadline never
 
 One device can have only one active owner. Transfer rotates the finder key; the old key is never reassigned to the next account.
 
+Subscriptions are also device-scoped: one account may pay for multiple tags, but each tag can have at most one current/nonterminal subscription. `subscription.user_id` identifies the payer/owner account; it is not an account-wide entitlement. Cancelled and ended records are retained as history.
+
 1. The current owner connects to the exact tag and reads its fingerprint.
 2. `POST /v1/devices/{device_id}/release` verifies active ownership and the fingerprint, then returns a nonce plus HMAC reset command.
 3. The tag verifies that HMAC using the control key installed during its original claim, erases both NVS keys, reports an empty fingerprint, and clears BLE bonds on disconnect.
@@ -67,6 +80,86 @@ One device can have only one active owner. Transfer rotates the finder key; the 
 5. Only then may another authenticated account claim the empty tag, creating an entirely new P-224 key pair and tag-control key.
 
 The outbox is not the payment-provider API. A production worker must process it and the signed provider webhook must confirm that external billing stopped.
+
+## Per-tag Stripe subscriptions
+
+Billing is attached to a physical tag, not to an account-wide entitlement. A
+single account has one Stripe Customer and may own several subscriptions, but
+the database and Checkout reservation table allow only one current
+subscription or payable Checkout flow per tag.
+
+The authenticated mobile contract is:
+
+```http
+GET /v1/devices/{device_id}/subscription
+POST /v1/devices/{device_id}/subscription/checkout  {"plan_code":"monthly_basic"}
+POST /v1/devices/{device_id}/subscription/portal  {"action":"update"}
+```
+
+Every endpoint verifies that the caller is the tag's current owner. The client
+never sends an amount, Stripe Price ID, customer ID, provider metadata, or
+redirect URL. Plan codes are looked up in the active `public.plan` table and
+resolved through the server-only `STRIPE_PRICE_MAP_JSON`. Each configured entry
+contains both the exact Stripe Price and Product IDs. Before showing a plan or
+opening Checkout, the backend retrieves Stripe's catalog and verifies that the
+Price and Product are active and that amount, currency, recurring interval, and
+licensed usage exactly match `public.plan`. The API currently supports only a
+one-month plan (`billing_interval: month`) and a twelve-month plan
+(`billing_interval: year`). Checkout and Customer creation use stable
+idempotency keys. The optional portal action is strictly
+`update` (the default when the body is omitted) or `cancel`; it starts the
+corresponding Stripe `subscription_update` or `subscription_cancel` deep-link
+flow for that exact provider subscription. It never falls back to an
+account-wide portal homepage, so another tag's subscription is not exposed by
+this endpoint. The selected Billing Portal configuration must enable both flows.
+
+Configure a Stripe webhook endpoint at:
+
+```text
+POST https://YOUR_API_HOST/v1/billing/stripe/webhook
+```
+
+Subscribe it to `checkout.session.completed`, `checkout.session.expired`,
+`customer.subscription.created`, `customer.subscription.updated`,
+`customer.subscription.deleted`, and the invoice lifecycle events used by the
+service. Set the webhook endpoint to the same pinned API version as
+`STRIPE_API_VERSION`. The handler verifies the signature over the untouched raw
+request body before parsing it. `payment_event` stores only the payload digest
+and a small allow-listed summary (event type, provider object ID, timestamp,
+mode and result), never Stripe's full event payload, address, card or customer
+details. Recognized events are reconciled against the current Stripe object, and
+provider timestamps plus event IDs make same-second updates deterministic. A
+webhook that races the local Checkout binding returns a retryable response. If
+ownership ended while Stripe created a subscription, local entitlement is
+stopped immediately in the webhook transaction and a durable outbox requests
+immediate cancellation without proration or a final invoice; only a later
+provider-terminal signed webhook confirms that cancellation.
+
+Dashboard setup still requires an operator to:
+
+1. Create one recurring Stripe Price for each active plan. Store its `prod_...`
+   Product ID in `public.plan.provider_product_id` and place the exact
+   `{price_id, product_id}` pair under that plan code in the server secret map.
+   The database amount, uppercase currency, and one-month/twelve-month duration
+   must exactly match Stripe or billing fails closed.
+2. Create a Billing Portal configuration whose update products contain the
+   same allowed prices, then set `STRIPE_PORTAL_CONFIGURATION_ID`.
+3. Create the webhook endpoint, copy its `whsec_...` signing secret to the
+   backend secret manager, and test the full event set in Stripe's sandbox.
+4. Configure the fixed HTTPS success/cancel/return universal links.
+
+Do not put `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, the database URL, or a
+Supabase service-role key in the mobile application. No Stripe credentials are
+required to build the app; live billing tests require sandbox Dashboard setup.
+
+### App Store and Play billing policy
+
+Stripe Checkout is appropriate only when the subscription pays for service
+whose primary value is tied to the physical tag or another policy-permitted
+real-world service. If it unlocks digital features consumed in the iOS or
+Android app, Apple and Google may require their in-app purchase systems instead.
+This product classification must be confirmed before store submission; the
+technical integration does not override either store's current review policy.
 
 ## Secret handling
 

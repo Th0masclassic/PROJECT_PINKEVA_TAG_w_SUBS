@@ -21,3 +21,9 @@ Test/Apple_FindMy_test/ESP32/sdkconfig.c3
 **/*.keys
 **/tmp.key
 **/reports.db
+**/*.p8
+**/*.p12
+**/*.mobileprovision
+
+# Supabase CLI link metadata and local runtime state
+supabase/.temp/

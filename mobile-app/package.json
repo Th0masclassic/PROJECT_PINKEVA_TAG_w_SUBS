@@ -1,0 +1,49 @@
+{
+  "name": "pinkeva-mobile",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.ts",
+  "dependencies": {
+    "@expo/metro-runtime": "~57.0.13",
+    "@expo/vector-icons": "^15.0.2",
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@sfourdrinier/react-native-ble-plx": "^3.9.3",
+    "@supabase/supabase-js": "^2.112.4",
+    "base64-js": "^1.5.1",
+    "expo": "~57.0.16",
+    "expo-apple-authentication": "~57.0.1",
+    "expo-auth-session": "~57.0.9",
+    "expo-crypto": "~57.0.2",
+    "expo-font": "~57.0.1",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-linking": "~57.0.7",
+    "expo-secure-store": "~57.0.1",
+    "expo-splash-screen": "~57.0.8",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.2",
+    "expo-web-browser": "~57.0.2",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.86.2",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-url-polyfill": "^4.0.0",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/model.test.ts src/auth/*.test.ts src/billing/*.test.ts src/provisioning/*.test.ts src/trackers/*.test.ts",
+    "check": "npm run typecheck && npm test",
+    "export:web": "expo export --platform web --output-dir dist",
+    "export:ios": "expo export --platform ios --output-dir dist-ios",
+    "export:android": "expo export --platform android --output-dir dist-android"
+  },
+  "private": true
+}

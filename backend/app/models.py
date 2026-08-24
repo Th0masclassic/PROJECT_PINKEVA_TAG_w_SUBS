@@ -154,6 +154,49 @@ class DeviceReleaseResponse(StrictModel):
     next_action: Literal["ready_for_new_owner"]
 
 
+class PlanSummary(StrictModel):
+    code: str
+    name: str
+    amount_minor: int = Field(ge=0)
+    currency: str = Field(min_length=3, max_length=3)
+    billing_interval: Literal["month", "year"]
+
+
+class DeviceSubscriptionResponse(StrictModel):
+    device_id: UUID
+    status: str
+    plan_code: str | None = None
+    plan_name: str | None = None
+    amount_minor: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    billing_interval: Literal["month", "year"] | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    cancel_at_period_end: bool = False
+    available_plans: list[PlanSummary]
+
+
+class SubscriptionCheckoutRequest(StrictModel):
+    plan_code: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+    )
+
+
+class SubscriptionPortalRequest(StrictModel):
+    action: Literal["update", "cancel"] = "update"
+
+
+class BillingUrlResponse(StrictModel):
+    url: str
+
+
+class StripeWebhookResponse(StrictModel):
+    received: Literal[True] = True
+    duplicate: bool = False
+
+
 IdempotencyKey = Annotated[str, Field(min_length=16, max_length=128)]
 
 

@@ -1,0 +1,130 @@
+# Pinkeva mobile app
+
+Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirrors the supplied Pinkeva mockups, uses Supabase Auth, and hydrates each signed-in account from its active hosted Supabase device ownerships.
+
+## Included flows
+
+- Seven-language welcome gate before login: English, Portuguese, French, German, Mandarin Chinese, Italian, and Spanish.
+- Supabase email/password login, registration, email confirmation, and password recovery.
+- RLS-scoped active ownership loading with canonical hosted device UUIDs; account changes and foreground returns refresh the catalog without allowing stale responses to cross accounts.
+- Google OAuth on iOS, Android, and web, plus native Sign in with Apple on iOS.
+- Home dashboard with one locally persisted main tracker and up to two most recently opened trackers.
+- Tracker list, real nearby-tag setup for authenticated users, main-device selection, rename/remove actions, and locally persisted icon overrides.
+- Card, keys, bag, and car presentations. Card is the default and therefore requires no stored override.
+- Map, location history, lost-mode demo, settings, and localized support pages.
+- Per-tag advertising interval and software-update flows.
+- A visible subscription state on every tracker plus a dedicated per-tag plan,
+  renewal, cancellation-at-period-end, checkout, and management screen.
+
+## Connection model
+
+Pinkeva tags are not shown as permanently connected. During normal use a tag is shown as `Nearby`, `Away`, or with its last-reported time. A temporary `Connecting` / `Connected` state appears only while adding a tag, changing its advertising interval, or installing tag software.
+
+## Configure tag setup
+
+Set `EXPO_PUBLIC_API_URL` to the HTTPS provisioning backend. An authenticated
+user can then choose **Add Tracker** to scan for the provisioning service. The
+app displays only canonical `PKV-XXXXXXXXXXXX` tags, connects to the selected
+tag, verifies the protocol identity and stored-key fingerprint, requests a
+challenge-bound authorization from the backend, installs the one-time control
+and advertisement keys, verifies the committed fingerprint, and completes the
+device ownership association.
+
+Bluetooth setup needs a native development or release build on a physical
+iPhone or Android phone. It is unavailable in Expo Go, the web build, and the
+iOS Simulator. The current firmware deliberately finishes in suspended
+maintenance mode after a successful claim; finder advertising remains disabled
+until signed per-tag subscription entitlements are implemented.
+
+Before a physical tag can be claimed, manufacturing must inject its unique
+`boot_key` and register the matching encrypted bootstrap credential in the
+backend database. Never place that credential or a backend secret in the mobile
+environment.
+
+## Configure authentication
+
+Copy `.env.example` to `.env` and set the cloud project's public URL and publishable key. Do not use a Supabase secret or service-role key in a mobile build.
+
+In Supabase Auth, enable the providers you intend to offer and allow these redirect URLs:
+
+- Native: `com.pinkeva.mobile://auth/callback`
+- Native password reset: `com.pinkeva.mobile://auth/reset`
+- Email confirmation bridge: `https://<project-ref>.supabase.co/functions/v1/auth-callback/signup`
+- Password recovery bridge: `https://<project-ref>.supabase.co/functions/v1/auth-callback/reset`
+- Web development: the callback URLs produced by the local Expo web origin
+
+The bridge is an unauthenticated HTTPS Supabase Edge Function. It displays a
+safe SVG confirmation page in Mail/Safari and only opens the native app after
+the user taps **Open Pinkeva**. This avoids the “invalid address” page shown by
+Safari when a custom app scheme is opened on a device without the app
+installed. On desktop the page confirms the account without attempting to open
+a mobile scheme; close it and sign in from the phone app.
+
+Google must also be configured in Supabase and Google Cloud. For Apple, enable the capability for `com.pinkeva.mobile` and include that bundle identifier in the Apple provider's accepted client IDs in Supabase. Native OAuth callbacks and Apple authentication require a development build; they are not fully testable in Expo Go.
+
+## Configure per-tag billing
+
+Set `EXPO_PUBLIC_API_URL` to the HTTPS backend. The app authenticates each
+billing request with the current Supabase access token and uses these routes:
+
+- `GET /v1/devices/{device_id}/subscription`
+- `POST /v1/devices/{device_id}/subscription/checkout` with a `plan_code`
+- `POST /v1/devices/{device_id}/subscription/portal` with
+  `{ "action": "update" }` or `{ "action": "cancel" }`
+
+Each subscription is displayed and managed for one tag. No Stripe secret,
+publishable key, or card form belongs in the mobile app; checkout and portal
+URLs are validated and opened in the system's secure browser.
+
+Starting an external subscription is fail-closed. It is enabled only when
+`EXPO_PUBLIC_ENABLE_EXTERNAL_BILLING=true`. Keep it off until the final
+hardware/service classification, distribution regions, and current Apple App
+Store and Google Play billing rules have been reviewed. This feature gate is
+not a claim of store-policy compliance. Existing subscription status and
+tag-scoped cancellation remain available when purchasing is disabled; Checkout
+and paid plan changes remain blocked.
+
+Static tracker and billing preview states require the explicit development-only **Preview
+demo** entry on the login page, even when hosted Auth is configured. They never report a fake successful charge,
+create an auth session, or appear in a release build. An authenticated release
+with a missing billing API fails closed and displays billing as unavailable.
+
+Live billing accepts only canonical Supabase device UUIDs hydrated through an
+active ownership and safe device projection. Static pairing remains available
+only inside the explicit development demo; it is excluded from subscription
+requests. Local and demo IDs are deliberately rejected by the billing API
+client instead of being sent to Stripe.
+
+## Run locally
+
+```sh
+npm install
+npm run start
+```
+
+From Expo, press `i` for the iOS Simulator, `a` for an Android emulator, or `w` for web. Native Apple authentication requires a development build generated after the Supabase and Apple configuration is complete. You can also use:
+
+```sh
+npm run ios
+npm run android
+npm run web
+```
+
+For local iPhone testing with a free Personal Team, Apple Sign In is disabled
+by default because Apple does not allow that entitlement for Personal Teams.
+Email and Google authentication remain available. Set
+`EXPO_PUBLIC_ENABLE_APPLE_SIGN_IN=true` and use a paid Apple Developer team
+before enabling the production Apple provider; then regenerate the native
+project and configure the App ID in Apple Developer and Supabase.
+
+## Verification
+
+```sh
+npm run typecheck
+npm test
+npm run export:web
+npm run export:ios
+npm run export:android
+```
+
+Supabase sessions are persisted with iOS/Android secure storage (and browser storage on web). Language is device-local. Main tracker, recent tracker IDs, and non-default tracker icons are locally namespaced by the authenticated Supabase user so one account cannot inherit another account's choices. Local pairing previews are not synced or billable and reset when the demo process reloads.
