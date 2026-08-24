@@ -916,7 +916,8 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 esp_ble_gatts_close(gatts_if, param->connect.conn_id);
                 break;
             }
-            // Encryption and bonding are enforced by the key characteristic.
+            // Encryption is enforced by the key characteristic; this build
+            // intentionally does not persist a BLE bond.
             // No-MITM is an explicit prototype limitation until QR/OOB pairing
             // or a physical confirmation control is present on production tags.
             esp_ble_set_encryption(param->connect.remote_bda,
@@ -1049,7 +1050,10 @@ esp_err_t initialize_device_id() {
 }
 
 esp_err_t configure_ble_security() {
-    esp_ble_auth_req_t auth_request = ESP_LE_AUTH_REQ_SC_BOND;
+    // Keep link encryption, but do not persist a phone-specific BLE bond.
+    // This lets a freshly reset/setup tag establish a new Secure Connections
+    // session without depending on an LTK left over on the phone.
+    esp_ble_auth_req_t auth_request = ESP_LE_AUTH_REQ_SC_ONLY;
     esp_ble_io_cap_t io_capability = ESP_IO_CAP_NONE;
     uint8_t key_size = 16;
     uint8_t key_mask = ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK;
@@ -1113,6 +1117,7 @@ std::optional<ERROR_TAG> ble_init() {
 
     uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
     if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
+        ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
         // Fail closed: finder advertising requires a signed entitlement, which
         // is the next milestone. Never emit the finder payload on key alone.
         ble_mode = BLEMode::SUSPENDED;
