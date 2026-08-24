@@ -19,4 +19,15 @@ config PINQEVA_LOG_ADVERTISEMENT_KEY
         keys are public protocol material, but logging them can expose device
         identity material. Keep this disabled for production hardware.
 
+config PINQEVA_DEV_BYPASS_ENTITLEMENT
+    bool "Advertise finder payload when an advertisement key exists (development only)"
+    depends on PINQEVA_DEV_BYPASS_BOOTSTRAP
+    default n
+    help
+        Development-only bypass for the signed-subscription entitlement. When
+        enabled, a tag with a stored advertisement key immediately emits the
+        Apple-style offline-finding manufacturer payload. This firmware does
+        not verify an entitlement in this mode and must never be used on a
+        production tag.
+
 endmenu
