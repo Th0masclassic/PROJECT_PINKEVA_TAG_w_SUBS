@@ -10,13 +10,13 @@ ERASE_NVS=false
 
 usage() {
     cat <<'EOF'
-Flash the Pinkeva ESP32-C3 provisioning firmware.
+Flash the Pinkeva classic ESP32 provisioning firmware.
 
 Usage:
   ./flash_esp32.sh --port <serial-port> [--slow] [--erase-nvs]
 
 Options:
-  -p, --port <path>  Serial interface for the ESP32-C3 (required).
+  -p, --port <path>  Serial interface for the ESP32 (required).
   -s, --slow         Use 115200 baud instead of 460800.
       --erase-nvs    Development-only: erase the NVS partition before flashing.
   -h, --help         Show this help.
@@ -69,13 +69,13 @@ if [[ ! -e "$PORT" ]]; then
     exit 1
 fi
 
-BOOTLOADER="${FIRMWARE_DIR}/bootloader-esp32c3.bin"
+BOOTLOADER="${FIRMWARE_DIR}/bootloader-esp32.bin"
 PARTITION_TABLE="${FIRMWARE_DIR}/partition-table.bin"
-APPLICATION="${FIRMWARE_DIR}/Pinkeva-ESP32-C3.bin"
+APPLICATION="${FIRMWARE_DIR}/Pinkeva-ESP32.bin"
 for image in "$BOOTLOADER" "$PARTITION_TABLE" "$APPLICATION"; do
     if [[ ! -f "$image" ]]; then
         echo "Missing firmware image: $image" >&2
-        echo "Run 'idf.py set-target esp32c3 && idf.py build' first." >&2
+        echo "Run 'idf.py set-target esp32 && idf.py build' first." >&2
         exit 1
     fi
 done
@@ -89,12 +89,12 @@ else
     exit 1
 fi
 
-if ! "${ESPTOOL[@]}" --chip esp32c3 image_info "$APPLICATION" >/dev/null 2>&1; then
-    echo "The application image is not a valid ESP32-C3 image; refusing to flash." >&2
+if ! "${ESPTOOL[@]}" --chip esp32 image_info "$APPLICATION" >/dev/null 2>&1; then
+    echo "The application image is not a valid ESP32 image; refusing to flash." >&2
     exit 1
 fi
-if ! "${ESPTOOL[@]}" --chip esp32c3 image_info "$BOOTLOADER" >/dev/null 2>&1; then
-    echo "The bootloader image is not a valid ESP32-C3 image; refusing to flash." >&2
+if ! "${ESPTOOL[@]}" --chip esp32 image_info "$BOOTLOADER" >/dev/null 2>&1; then
+    echo "The bootloader image is not a valid ESP32 image; refusing to flash." >&2
     exit 1
 fi
 
@@ -105,7 +105,7 @@ if [[ "$ERASE_NVS" == true ]]; then
     fi
     echo "Erasing development NVS partition (old tag keys will be removed)."
     "${ESPTOOL[@]}" \
-        --chip esp32c3 \
+        --chip esp32 \
         --before default_reset \
         --after no_reset \
         --port "$PORT" \
@@ -113,17 +113,21 @@ if [[ "$ERASE_NVS" == true ]]; then
 fi
 
 "${ESPTOOL[@]}" \
-    --chip esp32c3 \
+    --chip esp32 \
     --before default_reset \
     --after hard_reset \
     --baud "$BAUDRATE" \
     --port "$PORT" \
     write_flash \
     --flash_mode dio \
-    --flash_freq 80m \
+    --flash_freq 40m \
     --flash_size 2MB \
-    0x0 "$BOOTLOADER" \
+    0x1000 "$BOOTLOADER" \
     0x8000 "$PARTITION_TABLE" \
     0x10000 "$APPLICATION"
 
-echo "Pinkeva ESP32-C3 firmware flashed. NVS was preserved."
+if [[ "$ERASE_NVS" == true ]]; then
+    echo "Pinkeva ESP32 firmware flashed after clearing development NVS."
+else
+    echo "Pinkeva ESP32 firmware flashed. NVS was preserved."
+fi

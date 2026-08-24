@@ -1,6 +1,6 @@
-# Pinkeva ESP32-C3 provisioning firmware
+# Pinkeva ESP32 provisioning firmware
 
-This directory contains the Pinkeva setup firmware for the ESP32-C3. It is
+This directory contains the Pinkeva setup firmware for the classic ESP32. It is
 not the legacy OpenHaystack image. During setup the tag advertises its
 `PKV-XXXXXXXXXXXX` name and the Pinkeva provisioning service:
 
@@ -14,21 +14,27 @@ so iOS and Android can find the tag before it is claimed.
 Install ESP-IDF 5.4 or newer, then run from this directory:
 
 ```sh
-idf.py set-target esp32c3
+idf.py set-target esp32
 idf.py build
 ```
 
-The project defaults to the ESP32-C3 target. Do not reuse the old
+The project defaults to the classic ESP32 target. Do not reuse the old
 `git_ready/build/openhaystack.bin` artifact; it does not contain the Pinkeva
 GATT service.
 
 The checked-in `sdkconfig` is the development profile used by the current
-hardware test: it disables the factory-bootstrap requirement and does not
+hardware test. This setting is also stored in `sdkconfig.defaults`, so running
+`idf.py set-target esp32` cannot silently re-enable pairing. It disables the
+factory-bootstrap requirement and does not
 ask iOS or Android to pair/bond for the provisioning characteristics. This is
 why a board with its `boot_key` removed can still advertise and accept the
 mobile setup flow. The protocol advertises capability `0x20` so the app can
 reject the older pairing-dependent profile. The resulting image is deliberately
 marked `development-no-bootstrap-no-bond` in `firmware/manifest.json`.
+During setup, the firmware uses a versioned static-random BLE address derived
+from the board MAC. The visible `PKV-XXXXXXXXXXXX` device ID stays unchanged,
+but iOS sees a new CoreBluetooth identity instead of attempting to reuse an old
+LTK from the previous public BLE address.
 
 This is not a production security profile: bootstrap proof verification is
 bypassed and the development radio link does not provide authentication or key
@@ -39,7 +45,7 @@ credential.
 
 ## Flash
 
-The checked-in images under `firmware/` are built for ESP32-C3. The flash
+The checked-in images under `firmware/` are built for the classic ESP32. The flash
 script verifies the image target before writing it. Flash them with:
 
 ```sh
@@ -61,3 +67,12 @@ ESP32 NVS partition (`0x9000`–`0xEFFF`); it does not erase the application.
 After flashing, refresh the device in nRF Connect. The connected services
 should include the Pinkeva UUID above, in addition to Generic Access and
 Generic Attribute. The advertisement view should also list the same UUID.
+
+On Windows with an ESP32 on `COM5`, a completely clean source build is:
+
+```cmd
+idf.py fullclean
+idf.py set-target esp32
+idf.py -p COM5 erase-flash
+idf.py -p COM5 flash monitor
+```

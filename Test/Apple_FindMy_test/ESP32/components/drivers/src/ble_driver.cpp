@@ -156,6 +156,12 @@ constexpr uint16_t SETUP_READ_PERMISSION = ESP_GATT_PERM_READ_ENCRYPTED;
 constexpr uint16_t SETUP_WRITE_PERMISSION = ESP_GATT_PERM_WRITE_ENCRYPTED;
 #endif
 char device_id[DEVICE_ID_LEN] = {};
+// A versioned, deterministic static-random address keeps setup stable across
+// reboots while separating it from an old public-address bond cached by iOS.
+// Increment the version only when development devices must intentionally
+// appear as a new CoreBluetooth peripheral.
+constexpr uint8_t SETUP_BLE_IDENTITY_VERSION = 2;
+esp_bd_addr_t setup_ble_address = {};
 uint8_t status_value[STATUS_VALUE_SIZE] = {
     static_cast<uint8_t>(ProvisioningState::UNPROVISIONED),
     static_cast<uint8_t>(ProvisioningResult::SUCCESS),
@@ -209,7 +215,7 @@ esp_ble_adv_params_t setup_adv_params = {
     .adv_int_min = 0x00A0,  // 100 ms while actively setting up.
     .adv_int_max = 0x0190,  // 250 ms.
     .adv_type = ADV_TYPE_IND,
-    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .peer_addr = {0},
     .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL,
@@ -1027,6 +1033,22 @@ void gatts_callback(esp_gatts_cb_event_t event,
 void gap_callback(esp_gap_ble_cb_event_t event,
                   esp_ble_gap_cb_param_t *param) {
     switch (event) {
+        case ESP_GAP_BLE_SET_STATIC_RAND_ADDR_EVT:
+            if (param->set_rand_addr_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                ESP_LOGE(LOG_TAG, "Could not activate setup BLE identity: %d",
+                         param->set_rand_addr_cmpl.status);
+                break;
+            }
+            ESP_LOGI(LOG_TAG,
+                     "Setup BLE identity v%u ready: %02X:%02X:%02X:%02X:%02X:%02X",
+                     SETUP_BLE_IDENTITY_VERSION, setup_ble_address[0],
+                     setup_ble_address[1], setup_ble_address[2],
+                     setup_ble_address[3], setup_ble_address[4],
+                     setup_ble_address[5]);
+            if (esp_ble_gatts_app_register(APP_ID) != ESP_OK) {
+                ESP_LOGE(LOG_TAG, "Could not register GATT application");
+            }
+            break;
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
             if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
                 advertising_configuration_failed = true;
@@ -1074,6 +1096,17 @@ esp_err_t initialize_device_id() {
     std::snprintf(device_id, sizeof(device_id),
                   "PKV-%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2],
                   mac[3], mac[4], mac[5]);
+
+    // XOR keeps the address unique per board. The two most-significant bits
+    // must be 1 for a Bluetooth static-random address.
+    constexpr uint8_t SETUP_ADDRESS_MASK[6] = {
+        0x15, 0x50, 0x4B, 0x56, 0xA5, SETUP_BLE_IDENTITY_VERSION,
+    };
+    for (size_t index = 0; index < sizeof(setup_ble_address); ++index) {
+        setup_ble_address[index] = mac[index] ^ SETUP_ADDRESS_MASK[index];
+    }
+    setup_ble_address[0] =
+        static_cast<uint8_t>((setup_ble_address[0] & 0x3FU) | 0xC0U);
 
     setup_scan_response[0] = DEVICE_ID_LEN;
     setup_scan_response[1] = ESP_BLE_AD_TYPE_NAME_CMPL;
@@ -1196,9 +1229,16 @@ std::optional<ERROR_TAG> ble_init() {
     if (error != ESP_OK) {
         return ERROR_TAG("BLE security configuration failed", LOG_TAG);
     }
-    error = esp_ble_gatts_app_register(APP_ID);
-    if (error != ESP_OK) {
-        return ERROR_TAG("GATT application registration failed", LOG_TAG);
+    if (ble_mode == BLEMode::SETUP) {
+        error = esp_ble_gap_set_rand_addr(setup_ble_address);
+        if (error != ESP_OK) {
+            return ERROR_TAG("Setup BLE identity configuration failed", LOG_TAG);
+        }
+    } else {
+        error = esp_ble_gatts_app_register(APP_ID);
+        if (error != ESP_OK) {
+            return ERROR_TAG("GATT application registration failed", LOG_TAG);
+        }
     }
 
     ESP_LOGI(LOG_TAG, "Bluetooth initialized for %s", device_id);
