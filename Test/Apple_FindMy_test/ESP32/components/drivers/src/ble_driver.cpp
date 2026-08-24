@@ -41,6 +41,8 @@ constexpr uint64_t AUTHORIZATION_TIMEOUT_MICROSECONDS = 30ULL * 1000ULL * 1000UL
 constexpr size_t MAX_STAGED_VALUE_SIZE = RESET_COMMAND_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
+constexpr uint16_t TAG_AUTHORIZATION_CAPABILITY = 0x0010;
+constexpr uint16_t NON_BONDING_SETUP_CAPABILITY = 0x0020;
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
 // canonical string next to the wire representation so the mobile app,
@@ -121,9 +123,38 @@ constexpr uint8_t WRITE_PROPERTY = ESP_GATT_CHAR_PROP_BIT_WRITE;
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-// Protocol 1.2, firmware 0.1. Capability bit 0x10 requires a backend-issued,
-// nonce-bound authorization proof before any provisioning/reset write.
-uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {1, 2, 0, 1, 0x1F, 0x00};
+// Protocol 1.3, firmware 0.1. Capability bit 0x10 requires a backend-issued,
+// nonce-bound authorization proof before any provisioning/reset write. The
+// checked-in development profile also advertises bit 0x20: setup deliberately
+// avoids OS pairing/bonding and therefore must never be shipped as the final
+// production transport until application-layer key confidentiality is added.
+uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
+    1,
+    3,
+    0,
+    1,
+    static_cast<uint8_t>(
+        0x000F | TAG_AUTHORIZATION_CAPABILITY |
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+        NON_BONDING_SETUP_CAPABILITY
+#else
+        0x0000
+#endif
+        ),
+    0x00,
+};
+
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+// Development hardware uses application authorization without asking iOS or
+// Android to create a system pairing/bond. This keeps the current hardware
+// workflow testable, but it does not provide production-grade confidentiality
+// for the key material on the radio link.
+constexpr uint16_t SETUP_READ_PERMISSION = ESP_GATT_PERM_READ;
+constexpr uint16_t SETUP_WRITE_PERMISSION = ESP_GATT_PERM_WRITE;
+#else
+constexpr uint16_t SETUP_READ_PERMISSION = ESP_GATT_PERM_READ_ENCRYPTED;
+constexpr uint16_t SETUP_WRITE_PERMISSION = ESP_GATT_PERM_WRITE_ENCRYPTED;
+#endif
 char device_id[DEVICE_ID_LEN] = {};
 uint8_t status_value[STATUS_VALUE_SIZE] = {
     static_cast<uint8_t>(ProvisioningState::UNPROVISIONED),
@@ -252,7 +283,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
         {{ESP_GATT_RSP_BY_APP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(ADVERTISEMENT_KEY_UUID),
-          ESP_GATT_PERM_WRITE_ENCRYPTED,
+          SETUP_WRITE_PERMISSION,
           PUBLIC_KEY_SIZE,
           0,
           advertisement_key_attribute}},
@@ -294,7 +325,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
         {{ESP_GATT_AUTO_RSP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(KEY_FINGERPRINT_UUID),
-          ESP_GATT_PERM_READ_ENCRYPTED,
+          SETUP_READ_PERMISSION,
           sizeof(key_fingerprint_attribute),
           sizeof(key_fingerprint_attribute),
           key_fingerprint_attribute}},
@@ -311,7 +342,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
         {{ESP_GATT_RSP_BY_APP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(CONTROL_KEY_UUID),
-          ESP_GATT_PERM_WRITE_ENCRYPTED,
+          SETUP_WRITE_PERMISSION,
           sizeof(control_key_attribute),
           0,
           control_key_attribute}},
@@ -328,7 +359,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
         {{ESP_GATT_RSP_BY_APP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(AUTHENTICATED_RESET_UUID),
-          ESP_GATT_PERM_WRITE_ENCRYPTED,
+          SETUP_WRITE_PERMISSION,
           sizeof(reset_command_attribute),
           0,
           reset_command_attribute}},
@@ -345,7 +376,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
         {{ESP_GATT_AUTO_RSP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(TAG_CHALLENGE_UUID),
-          ESP_GATT_PERM_READ_ENCRYPTED,
+          SETUP_READ_PERMISSION,
           sizeof(tag_challenge_attribute),
           sizeof(tag_challenge_attribute),
           tag_challenge_attribute}},
@@ -362,7 +393,7 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
         {{ESP_GATT_RSP_BY_APP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(TAG_AUTHORIZATION_PROOF_UUID),
-          ESP_GATT_PERM_WRITE_ENCRYPTED,
+          SETUP_WRITE_PERMISSION,
           sizeof(tag_authorization_proof_attribute),
           0,
           tag_authorization_proof_attribute}},
@@ -916,12 +947,13 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 esp_ble_gatts_close(gatts_if, param->connect.conn_id);
                 break;
             }
-            // Encryption is enforced by the key characteristic; this build
-            // intentionally does not persist a BLE bond.
-            // No-MITM is an explicit prototype limitation until QR/OOB pairing
-            // or a physical confirmation control is present on production tags.
+#if !CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+            // Production keeps link encryption while intentionally omitting
+            // the bond bit. The explicitly insecure development bypass must
+            // not start OS pairing here.
             esp_ble_set_encryption(param->connect.remote_bda,
                                    ESP_BLE_SEC_ENCRYPT_NO_MITM);
+#endif
             break;
         case ESP_GATTS_DISCONNECT_EVT:
             connected = false;

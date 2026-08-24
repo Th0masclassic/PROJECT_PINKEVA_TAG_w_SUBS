@@ -82,7 +82,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     readCharacteristicForService: async (_service: string, characteristic: string) => {
       if (characteristic === PROTOCOL_INFO_UUID) {
         events.push('ble:read:protocol');
-        return { value: toBleBase64(Uint8Array.of(1, 2, 0, 1, 0x10, 0)) };
+        return { value: toBleBase64(Uint8Array.of(1, 3, 0, 1, 0x30, 0)) };
       }
       if (characteristic === DEVICE_IDENTIFIER_UUID) {
         events.push('ble:read:identity');
@@ -126,8 +126,12 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
   } as unknown as Device;
 
   const ble = {
-    connectToDevice: async (peripheralId: string) => {
+    connectToDevice: async (
+      peripheralId: string,
+      options?: { autoConnect?: boolean; timeout?: number },
+    ) => {
       events.push(`ble:connect:${peripheralId}`);
+      assert.deepEqual(options, { autoConnect: false, timeout: 15_000 });
       return device;
     },
     cancelDeviceConnection: async () => {

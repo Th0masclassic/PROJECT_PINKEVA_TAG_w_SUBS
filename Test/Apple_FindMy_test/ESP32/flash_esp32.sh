@@ -22,9 +22,9 @@ Options:
   -h, --help         Show this help.
 
 The NVS partition is preserved by default. --erase-nvs is allowed only for the
-checked-in development-no-bootstrap image and clears old tag keys so the board
-starts a fresh setup flow. This script never writes an advertisement key and
-never flashes the legacy OpenHaystack image.
+checked-in development-no-bootstrap-no-bond image and clears old tag keys so
+the board starts a fresh setup flow. This script never writes an advertisement
+key and never flashes the legacy OpenHaystack image.
 EOF
 }
 
@@ -99,8 +99,8 @@ if ! "${ESPTOOL[@]}" --chip esp32c3 image_info "$BOOTLOADER" >/dev/null 2>&1; th
 fi
 
 if [[ "$ERASE_NVS" == true ]]; then
-    if ! grep -q '"profile": "development-no-bootstrap"' "${FIRMWARE_DIR}/manifest.json"; then
-        echo "--erase-nvs is only available for the development-no-bootstrap image." >&2
+    if ! grep -q '"profile": "development-no-bootstrap-no-bond"' "${FIRMWARE_DIR}/manifest.json"; then
+        echo "--erase-nvs is only available for the development no-bond image." >&2
         exit 1
     fi
     echo "Erasing development NVS partition (old tag keys will be removed)."

@@ -38,9 +38,9 @@ The complete architecture and proposed communication contract are documented in 
 | ESP32 application startup | Implemented | Initializes the status LED and starts BLE initialization in a FreeRTOS task. |
 | Device identity | Implemented | Derives a stable `PKV-XXXXXXXXXXXX` identifier from the factory MAC address. |
 | Firmware mode selection | Implemented provisioning slice | A missing key enters setup; a valid committed key without an entitlement fails closed into suspended maintenance mode. |
-| Setup mode | Implemented | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`, accepts encrypted connections, and resumes after disconnect. |
+| Setup mode | Implemented prototype | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`. The checked-in development profile bypasses bootstrap authentication and OS pairing/bonding; production still needs an authenticated application-layer confidential channel. |
 | Tracker mode | Blocked by entitlement | Finder advertising is intentionally disabled until signed entitlement verification is implemented. |
-| GATT event handling | Implemented provisioning slice | Protocol v1.2 adds QR-free per-connection challenge/proof authorization before one-time control/key writes and HMAC-authenticated reset. |
+| GATT event handling | Implemented provisioning slice | Protocol v1.3 adds QR-free per-connection challenge/proof authorization plus an explicit no-bond development capability before one-time control/key writes and HMAC-authenticated reset. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
@@ -67,7 +67,7 @@ stateDiagram-v2
 ```
 
 - **Setup mode:** the LED indicates setup mode and the tag advertises `PKV-XXXXXXXXXXXX`. A phone can discover and connect to it.
-- **Provisioning:** the app reads the encrypted stored-key fingerprint, installs a 32-byte control key followed by exactly 28 advertisement-key bytes only when empty, and waits for explicit flash read-back confirmation.
+- **Provisioning:** the app requires the non-bonding capability, reads the stored-key fingerprint, installs a 32-byte control key followed by exactly 28 advertisement-key bytes only when empty, and waits for explicit flash read-back confirmation. The checked-in development transport is not confidential and must be replaced by a reviewed application-layer secure channel for production.
 - **Suspended mode:** the public advertisement key remains stored and the maintenance service stays available, but no finder payload is emitted without a signed entitlement.
 - **Release/transfer:** the active owner obtains a backend-authenticated reset command. The tag erases key/control data, the backend ends the single ownership and cancels device subscriptions, and the next owner receives a newly generated keypair.
 
@@ -156,10 +156,10 @@ Replace the port with the connected board's serial interface. Firmware behavior 
 
 The next milestone completes subscription authorization and proves this slice on hardware:
 
-1. Validate the implemented per-device challenge-response on hardware, then add physical-presence/MITM-resistant pairing and a tag-signed provisioning receipt.
+1. Validate the implemented per-device challenge-response on hardware, then add a reviewed application-layer encrypted no-bond channel, physical presence/OOB, and a tag-signed provisioning receipt.
 2. Implement signed entitlement issuance, atomic storage, signature/device/counter/expiry checks, and trusted time.
 3. Activate finder advertising only after entitlement verification and stop it at expiry.
-4. Test scan, pairing, fragmented write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on ESP32-C3-MINI with iOS and Android.
+4. Test scan, no-bond connection, fragmented write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on ESP32-C3-MINI with iOS and Android.
 5. Validate the implemented product provisioning UI on physical iOS and Android devices, including denial, timeout, retry, and interrupted-setup states.
 6. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
 

@@ -24,12 +24,18 @@ GATT service.
 
 The checked-in `sdkconfig` is the development profile used by the current
 hardware test: it disables the factory-bootstrap requirement and does not
-persist phone-specific BLE bonds. This is why a board with its `boot_key`
-removed can still advertise and accept the mobile setup flow. The resulting
-image is deliberately marked `development-no-bootstrap` in `firmware/manifest.json`.
-It is not a production security profile. Production tags must be built with
-`CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP=n`, injected with a unique `boot_key`, and
-registered with the matching encrypted backend credential.
+ask iOS or Android to pair/bond for the provisioning characteristics. This is
+why a board with its `boot_key` removed can still advertise and accept the
+mobile setup flow. The protocol advertises capability `0x20` so the app can
+reject the older pairing-dependent profile. The resulting image is deliberately
+marked `development-no-bootstrap-no-bond` in `firmware/manifest.json`.
+
+This is not a production security profile: bootstrap proof verification is
+bypassed and the development radio link does not provide authentication or key
+confidentiality. Production tags must use a reviewed application-layer secure
+channel before retaining the no-bond UX, re-enable the factory bootstrap,
+inject a unique `boot_key`, and register the matching encrypted backend
+credential.
 
 ## Flash
 

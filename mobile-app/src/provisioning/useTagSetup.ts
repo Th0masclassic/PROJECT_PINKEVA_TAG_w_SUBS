@@ -37,6 +37,21 @@ const IDLE_STATE: TagSetupState = {
   error: null,
 };
 
+function logDevelopmentSetupFailure(context: string, error: unknown): void {
+  if (!__DEV__) return;
+  const source = error && typeof error === 'object' ? (error as Record<string, unknown>) : {};
+  console.warn('[Pinkeva BLE]', context, {
+    name: error instanceof Error ? error.name : typeof error,
+    code: typeof source.code === 'string' ? source.code : undefined,
+    reason: typeof source.reason === 'string' ? source.reason : undefined,
+    attErrorCode:
+      typeof source.attErrorCode === 'number' ? source.attErrorCode : undefined,
+    iosErrorCode:
+      typeof source.iosErrorCode === 'number' ? source.iosErrorCode : undefined,
+    message: error instanceof Error ? error.message : undefined,
+  });
+}
+
 export function useTagSetup(input: {
   getAccessToken: () => Promise<string | null>;
   apiConfig: ProvisioningApiConfig | null;
@@ -104,6 +119,7 @@ export function useTagSetup(input: {
         },
         (error) => {
           if (currentSequence !== sequence.current) return;
+          logDevelopmentSetupFailure('scan callback', error);
           setState((current) => ({
             ...current,
             phase: 'error',
@@ -119,6 +135,7 @@ export function useTagSetup(input: {
       setState((current) => ({ ...current, phase: 'scanning' }));
     } catch (error) {
       if (currentSequence !== sequence.current) return;
+      logDevelopmentSetupFailure('scan start', error);
       setState({
         ...IDLE_STATE,
         phase: 'error',
@@ -199,6 +216,7 @@ export function useTagSetup(input: {
       setState((current) => ({ ...current, phase: 'success', claim, error: null }));
     } catch (error) {
       if (currentSequence !== sequence.current) return;
+      logDevelopmentSetupFailure('provision', error);
       setState((current) => ({
         ...current,
         phase: 'error',

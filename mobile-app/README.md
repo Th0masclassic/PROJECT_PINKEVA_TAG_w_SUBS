@@ -42,6 +42,15 @@ iOS Simulator. The current firmware deliberately finishes in suspended
 maintenance mode after a successful claim; finder advertising remains disabled
 until signed per-tag subscription entitlements are implemented.
 
+The mobile client uses a temporary, non-bonding BLE session for setup. It does
+not call a platform bond/pair API, does not enable automatic reconnect, and
+does not persist a peripheral identifier. It requires protocol capability
+`0x20`, which is exposed by the current development no-bond firmware. That
+development profile bypasses bootstrap proof verification and does not request
+OS-level GATT encryption. It is suitable for the present hardware workflow
+only; production must add a reviewed authenticated application-layer secure
+channel to preserve key confidentiality without introducing an OS bond.
+
 Before a physical tag can be claimed, manufacturing must inject its unique
 `boot_key` and register the matching encrypted bootstrap credential in the
 backend database. Never place that credential or a backend secret in the mobile

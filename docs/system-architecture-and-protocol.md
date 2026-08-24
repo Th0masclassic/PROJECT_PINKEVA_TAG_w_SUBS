@@ -337,7 +337,7 @@ The most important trust boundaries are:
 - Between the payment provider and webhook receiver.
 - Between location data and any requester.
 
-Protocol v1.2 removes the customer QR step. Manufacturing injects one random 32-byte bootstrap key into each tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. Production should additionally require a physical setup action or MITM-resistant LE Secure Connections association to limit nearby relay/race attacks.
+Protocol v1.3 removes the customer QR step and adds capability `0x20` for the current non-bonding development transport. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
 
 ## 4. Communication Protocol
 
@@ -369,11 +369,11 @@ The following UUIDs define implemented provisioning protocol version 1.2.
 | Device Identifier | `a6f0f002-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | UTF-8 `PKV-XXXXXXXXXXXX`. |
 | Advertisement Key | `a6f0f003-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response | Exactly 28 raw binary bytes. |
 | Provisioning Status | `a6f0f004-3e4d-4b1a-9c2e-72d24c8f0a01` | Read and Notify | Current state and result code. |
-| Key Fingerprint | `a6f0f005-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted read | SHA-256 of the 28-byte key, or 32 zero bytes when empty. |
-| Tag Control Key | `a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted write with response | One-time 32-byte secret for authenticated reset; identical setup retries only. |
-| Authenticated Reset | `a6f0f007-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted write with response | 32-byte nonce plus 32-byte HMAC; erases key/control material after verification. |
-| Tag Challenge | `a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted read | Fresh random 32-byte value generated for each BLE connection. |
-| Tag Authorization Proof | `a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01` | Encrypted write with response | `HMAC-SHA256(device_bootstrap_key, domain || serial || challenge)`. Unlocks sensitive writes for this connection only. |
+| Key Fingerprint | `a6f0f005-3e4d-4b1a-9c2e-72d24c8f0a01` | Read; application-channel protection required in production | SHA-256 of the 28-byte key, or 32 zero bytes when empty. |
+| Tag Control Key | `a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; application-channel protection required in production | One-time 32-byte secret for authenticated reset; identical setup retries only. |
+| Authenticated Reset | `a6f0f007-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; application-channel protection required in production | 32-byte nonce plus 32-byte HMAC; erases key/control material after verification. |
+| Tag Challenge | `a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | Fresh random 32-byte value generated for each BLE connection. |
+| Tag Authorization Proof | `a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response | `HMAC-SHA256(device_bootstrap_key, domain || serial || challenge)`. Unlocks sensitive writes for this connection only. |
 | Subscription Entitlement | `a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01` | Future | Reserved proposal; not implemented. |
 
 GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for the 32-byte authorization proof, 28-byte advertisement key, 32-byte control key, and 64-byte reset command. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
@@ -460,7 +460,7 @@ sequenceDiagram
     participant Tag as Pinqeva tracker
 
     App->>Tag: BLE connect
-    App->>Tag: Read version, device ID, challenge, and encrypted key fingerprint
+    App->>Tag: Read version, device ID, challenge, and key fingerprint
     Tag-->>App: Version, PKV ID, fresh challenge, empty or stored fingerprint
     App->>API: Start/resume claim (PKV ID + challenge + observed fingerprint)
     API->>Store: Lock device; reuse allocation or generate once; bind immediately
@@ -537,7 +537,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Device identifier derived from the factory MAC address.
 - Setup and subscription-suspended firmware modes for the provisioning slice.
 - Connectable advertisement containing the provisioning service UUID, with the `PKV-` name in scan response data.
-- Protocol-v1.2 GATT service with a per-connection challenge/proof gate, 30-second unauthorized-client timeout, encrypted key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
+- Protocol-v1.3 GATT service with a per-connection challenge/proof gate, explicit no-bond development capability, 30-second unauthorized-client timeout, key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
 - Validated factory-bootstrap plus one-time NVS key/control persistence, commit/read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
 - React Native claim/release service that automatically obtains and writes backend authorization proofs, verifies fingerprints, avoids rewrites, installs key material in safe order, and confirms reset before backend release.
 - Authenticated API that decrypts device bootstrap credentials to issue nonce-bound proofs, conditionally generates P-224 material once, binds allocations atomically, encrypts private scalars, completes one ownership, and performs two-phase release.
@@ -562,11 +562,11 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 
 The next milestone completes authorization and validates the provisioning slice on physical hardware:
 
-1. Add authenticated OOB/physical-presence pairing and a cryptographic provisioning receipt.
+1. Add an authenticated application-layer encrypted no-bond channel, physical presence/OOB, and a cryptographic provisioning receipt.
 2. Implement signed entitlement issuance, storage, verification, anti-rollback, and trusted time.
 3. Reboot the tracker and verify that it enters tracker mode only with both a stored key and an active entitlement.
 4. Verify that an expired entitlement stops the finder payload while the renewal channel remains available.
-5. Validate scan, pairing, fragmented write, disconnect, persistence, reboot, expiry, and renewal on ESP32-C3-MINI from iOS and Android.
+5. Validate scan, no-bond connection, fragmented write, disconnect, persistence, reboot, expiry, and renewal on ESP32-C3-MINI from iOS and Android.
 6. Replace the development envelope key with KMS/HSM-backed per-record data keys.
 
 The milestone is complete when a blank tracker can be provisioned from the mobile client, receives a signed entitlement, survives a reboot, broadcasts the expected tracker payload only during the paid period, enters suspended mode after expiry, can be renewed, and appears under the correct authenticated account.
@@ -577,4 +577,4 @@ Pinqeva is an end-to-end Bluetooth tracking platform rather than only an embedde
 
 The architecture separates low-power hardware from mobile onboarding, cloud location processing, subscriptions, vehicle and map presentation, and administration. The tracker stores the advertisement public key and a signed subscription entitlement, while the backend protects the private key and controls entitlement issuance.
 
-The current firmware distinguishes a device with a stored advertisement key from one that must enter setup mode and fails closed into suspended maintenance mode after provisioning or reboot. The immediate engineering task is signed entitlement issuance and verification, authenticated BLE/OOB pairing, and physical hardware testing. Only a valid key together with an active signed entitlement may eventually permit finder advertising.
+The current firmware distinguishes a device with a stored advertisement key from one that must enter setup mode and fails closed into suspended maintenance mode after provisioning or reboot. The immediate engineering task is signed entitlement issuance and verification, an authenticated and confidential application-layer no-bond transport with physical presence/OOB, and physical hardware testing. Only a valid key together with an active signed entitlement may eventually permit finder advertising.

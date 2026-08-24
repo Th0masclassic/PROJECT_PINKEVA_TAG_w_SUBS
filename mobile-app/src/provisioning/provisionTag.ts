@@ -14,6 +14,7 @@ import {
   ADVERTISEMENT_KEY_UUID,
   DEVICE_IDENTIFIER_UUID,
   KEY_FINGERPRINT_UUID,
+  NON_BONDING_SETUP_CAPABILITY,
   PINKEVA_SERVICE_UUID,
   PROTOCOL_INFO_UUID,
   PROVISIONING_STATUS_UUID,
@@ -43,6 +44,17 @@ export type ProvisioningProgress =
   | 'installing'
   | 'associating';
 
+// Provisioning is a one-shot BLE session. The app deliberately does not call
+// any platform pairing/bonding API (the BLE library does not expose one), does
+// not request an automatic reconnect, and never persists the peripheral ID.
+// The required protocol capability confirms that the firmware will not mark
+// setup characteristics as OS-encryption-required, because iOS treats that as
+// a system pairing flow.
+const NON_BONDING_CONNECTION_OPTIONS = Object.freeze({
+  autoConnect: false,
+  timeout: 15_000,
+});
+
 export class TagProvisioner {
   private readonly ble: BleManager;
   private readonly backend: PinqevaProvisioningClient;
@@ -67,7 +79,10 @@ export class TagProvisioner {
 
     try {
       input.onProgress?.('connecting');
-      device = await this.ble.connectToDevice(input.peripheralId, { timeout: 15_000 });
+      device = await this.ble.connectToDevice(
+        input.peripheralId,
+        NON_BONDING_CONNECTION_OPTIONS,
+      );
       device = await device.discoverAllServicesAndCharacteristics();
       device = await device.requestMTU(128).catch(() => device as Device);
 
@@ -97,11 +112,12 @@ export class TagProvisioner {
       const protocol = parseProtocolInformation(decodeBleBase64(protocolValue.value));
       if (
         protocol.protocolMajor !== 1 ||
-        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
+        (protocol.capabilities & NON_BONDING_SETUP_CAPABILITY) === 0
       ) {
         throw new ProvisioningClientError(
           'UNSUPPORTED_PROTOCOL',
-          'The tag does not support secure app provisioning',
+          'The tag does not support non-bonding app provisioning',
         );
       }
 

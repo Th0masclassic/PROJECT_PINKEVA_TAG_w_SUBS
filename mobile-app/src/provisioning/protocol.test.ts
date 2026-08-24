@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  NON_BONDING_SETUP_CAPABILITY,
   ProvisioningClientError,
   bytesEqual,
   decodeDeviceIdentifier,
@@ -19,13 +20,14 @@ test('accepts only canonical advertised PKV serials', () => {
 });
 
 test('parses protocol v1 capability bytes and the GATT serial', () => {
-  assert.deepEqual(parseProtocolInformation(Uint8Array.of(1, 2, 1, 4, 0x10, 0)), {
+  assert.deepEqual(parseProtocolInformation(Uint8Array.of(1, 3, 1, 4, 0x30, 0)), {
     protocolMajor: 1,
-    protocolMinor: 2,
+    protocolMinor: 3,
     firmwareMajor: 1,
     firmwareMinor: 4,
-    capabilities: 0x10,
+    capabilities: 0x30,
   });
+  assert.equal(0x30 & NON_BONDING_SETUP_CAPABILITY, NON_BONDING_SETUP_CAPABILITY);
   assert.equal(
     decodeDeviceIdentifier(Uint8Array.from(Buffer.from('PKV-AABBCCDDEEFF', 'ascii'))),
     'PKV-AABBCCDDEEFF',

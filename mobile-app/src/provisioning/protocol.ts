@@ -16,6 +16,7 @@ export const TAG_CONTROL_KEY_LENGTH = 32;
 export const TAG_CHALLENGE_LENGTH = 32;
 export const TAG_AUTHORIZATION_PROOF_LENGTH = 32;
 export const TAG_AUTHORIZATION_CAPABILITY = 0x0010;
+export const NON_BONDING_SETUP_CAPABILITY = 0x0020;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
 export const PINKEVA_SERIAL_PATTERN = /^PKV-[0-9A-F]{12}$/;
 
