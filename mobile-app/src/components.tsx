@@ -360,6 +360,12 @@ export function SettingRow({
 const tabs: { id: MainTab; labelKey: TranslationKey; icon: IconName; activeIcon: IconName }[] = [
   { id: 'home', labelKey: 'common.home', icon: 'home-outline', activeIcon: 'home' },
   { id: 'trackers', labelKey: 'common.trackers', icon: 'wallet-outline', activeIcon: 'wallet' },
+  {
+    id: 'subscriptions',
+    labelKey: 'common.subscriptions',
+    icon: 'card-outline',
+    activeIcon: 'card',
+  },
   { id: 'settings', labelKey: 'common.settings', icon: 'settings-outline', activeIcon: 'settings' },
 ];
 
@@ -544,7 +550,7 @@ const styles = StyleSheet.create({
   settingValue: { color: colors.muted, fontSize: 16, maxWidth: 110 },
   bottomSafeArea: { backgroundColor: 'rgba(255,255,255,0.98)' },
   bottomNav: {
-    height: 82,
+    minHeight: 82,
     flexDirection: 'row',
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,

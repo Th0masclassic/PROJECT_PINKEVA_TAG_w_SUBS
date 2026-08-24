@@ -1,4 +1,4 @@
-export type MainTab = 'home' | 'trackers' | 'settings';
+export type MainTab = 'home' | 'trackers' | 'subscriptions' | 'settings';
 
 export type PairingPhase = 'idle' | 'searching' | 'connecting' | 'installing' | 'success';
 

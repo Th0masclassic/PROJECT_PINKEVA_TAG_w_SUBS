@@ -46,6 +46,7 @@ import { PairingModal } from './src/screens/PairingModal';
 import { PasswordResetScreen } from './src/screens/PasswordResetScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { SubscriptionScreen } from './src/screens/SubscriptionScreen';
+import { SubscriptionsScreen } from './src/screens/SubscriptionsScreen';
 import { TrackerDetailScreen } from './src/screens/TrackerDetailScreen';
 import { TrackersScreen } from './src/screens/TrackersScreen';
 import { colors } from './src/theme';
@@ -308,6 +309,10 @@ function AppContent() {
       return true;
     }
     if (route.name === 'interval' || route.name === 'firmware' || route.name === 'subscription') {
+      if (route.name === 'subscription' && activeTab === 'subscriptions') {
+        setRoute({ name: 'main' });
+        return true;
+      }
       setRoute({ name: 'tracker', trackerId: route.trackerId });
       return true;
     }
@@ -316,7 +321,7 @@ function AppContent() {
       return true;
     }
     return false;
-  }, [pairingPhase, route, tagSetup.close, tagSetup.state.phase]);
+  }, [activeTab, pairingPhase, route, tagSetup.close, tagSetup.state.phase]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', back);
@@ -455,7 +460,13 @@ function AppContent() {
           error={billing.errors[selectedTracker.id]}
           mode={billing.mode}
           purchasesEnabled={billing.purchasesEnabled}
-          onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
+          onBack={() => {
+            if (activeTab === 'subscriptions') {
+              setRoute({ name: 'main' });
+            } else {
+              setRoute({ name: 'tracker', trackerId: selectedTracker.id });
+            }
+          }}
           onRetry={() => billing.refreshDevice(selectedTracker.id)}
           onCheckout={(planCode) => billing.startCheckout(selectedTracker.id, planCode)}
           onPortal={(action) => billing.openPortal(selectedTracker.id, action)}
@@ -530,6 +541,21 @@ function AppContent() {
           onNotice={showNotice}
           subscriptions={billing.subscriptions}
           subscriptionLoadingIds={billing.loadingIds}
+        />
+      );
+    }
+
+    if (activeTab === 'subscriptions') {
+      return (
+        <SubscriptionsScreen
+          trackers={displayTrackers}
+          subscriptions={billing.subscriptions}
+          subscriptionLoadingIds={billing.loadingIds}
+          onOpenSubscription={(trackerId) => {
+            setActiveTab('subscriptions');
+            setRoute({ name: 'subscription', trackerId });
+          }}
+          onAddTracker={openPairing}
         />
       );
     }
