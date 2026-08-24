@@ -6,22 +6,25 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 FIRMWARE_DIR="${SCRIPT_DIR}/firmware"
 PORT=""
 BAUDRATE=460800
+ERASE_NVS=false
 
 usage() {
     cat <<'EOF'
 Flash the Pinkeva ESP32-C3 provisioning firmware.
 
 Usage:
-  ./flash_esp32.sh --port <serial-port> [--slow]
+  ./flash_esp32.sh --port <serial-port> [--slow] [--erase-nvs]
 
 Options:
   -p, --port <path>  Serial interface for the ESP32-C3 (required).
   -s, --slow         Use 115200 baud instead of 460800.
+      --erase-nvs    Development-only: erase the NVS partition before flashing.
   -h, --help         Show this help.
 
-The NVS partition is intentionally preserved because it contains the
-per-device factory bootstrap key. This script never writes an advertisement
-key and never flashes the legacy OpenHaystack image.
+The NVS partition is preserved by default. --erase-nvs is allowed only for the
+checked-in development-no-bootstrap image and clears old tag keys so the board
+starts a fresh setup flow. This script never writes an advertisement key and
+never flashes the legacy OpenHaystack image.
 EOF
 }
 
@@ -38,6 +41,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -s|--slow)
             BAUDRATE=115200
+            shift
+            ;;
+        --erase-nvs)
+            ERASE_NVS=true
             shift
             ;;
         -h|--help)
@@ -80,6 +87,29 @@ elif command -v python >/dev/null 2>&1 && python -c 'import esptool' >/dev/null 
 else
     echo "esptool.py was not found. Activate the ESP-IDF environment first." >&2
     exit 1
+fi
+
+if ! "${ESPTOOL[@]}" --chip esp32c3 image_info "$APPLICATION" >/dev/null 2>&1; then
+    echo "The application image is not a valid ESP32-C3 image; refusing to flash." >&2
+    exit 1
+fi
+if ! "${ESPTOOL[@]}" --chip esp32c3 image_info "$BOOTLOADER" >/dev/null 2>&1; then
+    echo "The bootloader image is not a valid ESP32-C3 image; refusing to flash." >&2
+    exit 1
+fi
+
+if [[ "$ERASE_NVS" == true ]]; then
+    if ! grep -q '"profile": "development-no-bootstrap"' "${FIRMWARE_DIR}/manifest.json"; then
+        echo "--erase-nvs is only available for the development-no-bootstrap image." >&2
+        exit 1
+    fi
+    echo "Erasing development NVS partition (old tag keys will be removed)."
+    "${ESPTOOL[@]}" \
+        --chip esp32c3 \
+        --before default_reset \
+        --after no_reset \
+        --port "$PORT" \
+        erase_region 0x9000 0x6000
 fi
 
 "${ESPTOOL[@]}" \

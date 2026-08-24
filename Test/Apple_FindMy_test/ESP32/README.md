@@ -22,20 +22,35 @@ The project defaults to the ESP32-C3 target. Do not reuse the old
 `git_ready/build/openhaystack.bin` artifact; it does not contain the Pinkeva
 GATT service.
 
+The checked-in `sdkconfig` is the development profile used by the current
+hardware test: it disables the factory-bootstrap requirement and does not
+persist phone-specific BLE bonds. This is why a board with its `boot_key`
+removed can still advertise and accept the mobile setup flow. The resulting
+image is deliberately marked `development-no-bootstrap` in `firmware/manifest.json`.
+It is not a production security profile. Production tags must be built with
+`CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP=n`, injected with a unique `boot_key`, and
+registered with the matching encrypted backend credential.
+
 ## Flash
 
-The checked-in images under `firmware/` are built for ESP32-C3. Flash them
-with:
+The checked-in images under `firmware/` are built for ESP32-C3. The flash
+script verifies the image target before writing it. Flash them with:
 
 ```sh
 ./flash_esp32.sh --port /dev/tty.usbmodemXXXX
 ```
 
-The script updates the bootloader, partition table, and application without
-erasing the NVS partition. This preserves the per-device factory bootstrap
-key required before BLE setup can start. New devices must receive that key
-through the controlled manufacturing flow; it must never be placed in this
-repository or in the mobile app.
+By default the script updates the bootloader, partition table, and application
+without erasing NVS. To start this development board as a completely new tag,
+including removing old advertisement/control/bootstrap data, use the explicit
+development-only reset:
+
+```sh
+./flash_esp32.sh --port /dev/tty.usbmodemXXXX --erase-nvs
+```
+
+That option is refused for a production-profile manifest and erases only the
+ESP32 NVS partition (`0x9000`–`0xEFFF`); it does not erase the application.
 
 After flashing, refresh the device in nRF Connect. The connected services
 should include the Pinkeva UUID above, in addition to Generic Access and

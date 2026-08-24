@@ -1,14 +1,17 @@
 {
   "target": "esp32c3",
   "idf_version": "5.4.2",
+  "profile": "development-no-bootstrap",
+  "requires_factory_bootstrap": false,
+  "warning": "Development image only. It bypasses factory bootstrap authentication and must not be used for production tags.",
   "service_uuid": "a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01",
   "application": {
     "file": "Pinkeva-ESP32-C3.bin",
-    "sha256": "c1b4213ee09479bde3a4c280dbd1d7e2a4007cee8e9395a13173e413630d5af1"
+    "sha256": "e574fa3c32345a2d7787c61489b51cababfbd31563d29fe94528d6fe2910efd5"
   },
   "bootloader": {
     "file": "bootloader-esp32c3.bin",
-    "sha256": "dc00817e08689af15d07fdc60af06d1b1535a2176bf7f47c68c501f7b8e5bf5b"
+    "sha256": "55da14a3f4d74579ee19bbfa0f4ba89b48ed0316b9a20850b296738472a31685"
   },
   "partition_table": {
     "file": "partition-table.bin",
