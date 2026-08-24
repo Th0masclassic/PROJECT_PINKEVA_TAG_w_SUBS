@@ -122,7 +122,7 @@ function AppContent() {
     [showNotice, t, trackerCatalog.refresh],
   );
   const tagSetup = useTagSetup({
-    accessToken: auth.session?.access_token ?? null,
+    getAccessToken: auth.getAccessToken,
     apiConfig: PROVISIONING_API_CONFIG,
     onClaimed: handleTagClaimed,
   });

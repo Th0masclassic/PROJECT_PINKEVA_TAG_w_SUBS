@@ -51,6 +51,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [pendingFeedback, setPendingFeedback] = useState<AuthFeedback | null>(null);
   const busyRef = useRef<AuthOperation | null>(null);
   const handledCallbacks = useRef(new Set<string>());
+  const accessTokenCache = useRef<{ token: string; refreshedAt: number } | null>(null);
 
   const runOperation = useCallback(
     async (
@@ -88,6 +89,31 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return result.handled;
   }, []);
 
+  const getAccessToken = useCallback(async (): Promise<string | null> => {
+    if (!supabase) return null;
+    const cached = accessTokenCache.current;
+    if (cached && Date.now() - cached.refreshedAt < 10_000) return cached.token;
+    try {
+      // Force a refresh here. This also replaces access tokens minted with a previous
+      // Supabase signing key, which otherwise look current locally but are rejected by
+      // the provisioning API.
+      const { data, error } = await supabase.auth.refreshSession();
+      if (error) {
+        accessTokenCache.current = null;
+        setSession(null);
+        return null;
+      }
+      setSession(data.session);
+      const token = data.session?.access_token ?? null;
+      accessTokenCache.current = token ? { token, refreshedAt: Date.now() } : null;
+      return token;
+    } catch {
+      accessTokenCache.current = null;
+      setSession(null);
+      return null;
+    }
+  }, []);
+
   useEffect(() => {
     if (!supabase) {
       setReady(true);
@@ -99,6 +125,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, nextSession) => {
       if (!active) return;
+      if (nextSession?.access_token) {
+        // Auth events already carry the newest token. Keep it so a pairing tap
+        // immediately after an automatic refresh does not rotate the refresh
+        // token a second time.
+        accessTokenCache.current = {
+          token: nextSession.access_token,
+          refreshedAt: Date.now(),
+        };
+      } else if (event === 'SIGNED_OUT') {
+        accessTokenCache.current = null;
+      }
       setSession(nextSession);
       if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
       if (event === 'SIGNED_OUT') setPasswordRecovery(false);
@@ -252,6 +289,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       passwordRecovery,
       pendingFeedback,
       clearPendingFeedback: () => setPendingFeedback(null),
+      getAccessToken,
       signInWithEmail,
       signInWithGoogle,
       signInWithApple,
@@ -262,6 +300,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }),
     [
       busy,
+      getAccessToken,
       passwordRecovery,
       pendingFeedback,
       ready,

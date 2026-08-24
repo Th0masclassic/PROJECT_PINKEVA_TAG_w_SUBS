@@ -34,6 +34,7 @@ export type AuthContextValue = {
   passwordRecovery: boolean;
   pendingFeedback: AuthFeedback | null;
   clearPendingFeedback: () => void;
+  getAccessToken: () => Promise<string | null>;
   signInWithEmail: (input: EmailAuthInput) => Promise<AuthFeedback>;
   signInWithGoogle: () => Promise<AuthFeedback>;
   signInWithApple: () => Promise<AuthFeedback>;

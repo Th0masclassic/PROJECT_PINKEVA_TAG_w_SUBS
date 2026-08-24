@@ -38,7 +38,7 @@ const IDLE_STATE: TagSetupState = {
 };
 
 export function useTagSetup(input: {
-  accessToken: string | null;
+  getAccessToken: () => Promise<string | null>;
   apiConfig: ProvisioningApiConfig | null;
   onClaimed: (claim: DeviceClaim) => Promise<void>;
 }) {
@@ -63,6 +63,25 @@ export function useTagSetup(input: {
     const currentSequence = ++sequence.current;
     await releaseRadio();
     if (currentSequence !== sequence.current) return;
+
+    // Do not open a BLE scan that can never complete. The claim flow needs both
+    // a live Supabase session and the separately deployed provisioning API; a
+    // missing API URL is a build/configuration problem, not a tag discovery
+    // problem. Failing before scanning also avoids leaving a physical tag in
+    // setup mode while the app cannot finish the ownership transaction.
+    const { getAccessToken, apiConfig } = latestInput.current;
+    // Always use a freshly validated Supabase token. Falling back to a cached
+    // token here can repeat the same 401 after a signing-key/session change.
+    const liveAccessToken = await getAccessToken();
+    if (currentSequence !== sequence.current) return;
+    if (!liveAccessToken || !apiConfig) {
+      setState({
+        ...IDLE_STATE,
+        phase: 'error',
+        error: !liveAccessToken ? 'authentication' : 'configuration',
+      });
+      return;
+    }
 
     const currentRadio = createTagRadio();
     radio.current = currentRadio;
@@ -124,8 +143,10 @@ export function useTagSetup(input: {
     if (currentStop) await currentStop().catch(() => undefined);
     if (currentSequence !== sequence.current) return;
 
-    const { accessToken, apiConfig, onClaimed } = latestInput.current;
-    if (!accessToken) {
+    const { getAccessToken, apiConfig, onClaimed } = latestInput.current;
+    const liveAccessToken = await getAccessToken();
+    if (currentSequence !== sequence.current) return;
+    if (!liveAccessToken) {
       setState((current) => ({
         ...current,
         phase: 'error',
@@ -145,7 +166,8 @@ export function useTagSetup(input: {
     }
 
     const backend = new PinqevaProvisioningClient(apiConfig, async () => {
-      const currentToken = latestInput.current.accessToken;
+      const currentInput = latestInput.current;
+      const currentToken = await currentInput.getAccessToken();
       if (!currentToken) throw new Error('Session unavailable');
       return currentToken;
     });

@@ -2,15 +2,35 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
+import logging
+import ssl
 from typing import Annotated
 from uuid import UUID
 
+import certifi
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.concurrency import run_in_threadpool
 from jwt import PyJWKClient
 
 from .config import Settings, get_settings
+
+
+logger = logging.getLogger("pinqeva.auth")
+
+
+def _safe_auth_failure_code(error: BaseException) -> str:
+    """Return a non-sensitive reason for local/operational diagnostics."""
+    return {
+        "ExpiredSignatureError": "expired",
+        "InvalidAudienceError": "audience",
+        "InvalidIssuerError": "issuer",
+        "InvalidSignatureError": "signature",
+        "MissingRequiredClaimError": "missing_claim",
+        "PyJWKClientError": "jwks",
+        "PyJWKClientConnectionError": "jwks",
+        "DecodeError": "malformed",
+    }.get(type(error).__name__, "invalid")
 
 
 @dataclass(frozen=True)
@@ -20,7 +40,12 @@ class Principal:
 
 @lru_cache
 def _jwks_client(url: str) -> PyJWKClient:
-    return PyJWKClient(url, cache_jwk_set=True, lifespan=300)
+    # The macOS Python distribution used for local development does not always
+    # expose the system CA bundle to OpenSSL. Use certifi explicitly so the
+    # public Supabase JWKS can be fetched and tokens can be verified reliably
+    # in both local and hosted environments.
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    return PyJWKClient(url, cache_jwk_set=True, lifespan=300, ssl_context=ssl_context)
 
 
 def _bearer_token(request: Request) -> str:
@@ -53,7 +78,13 @@ async def authenticated_principal(
             options={"require": ["exp", "iat", "sub", "aud"]},
         )
         user_id = UUID(claims["sub"])
-    except (jwt.PyJWTError, ValueError, KeyError):
+    except (jwt.PyJWTError, ValueError, KeyError) as error:
+        logger.warning(
+            "supabase_auth_rejected reason=%s error_type=%s request_id=%s",
+            _safe_auth_failure_code(error),
+            type(error).__name__,
+            getattr(request.state, "request_id", "unknown"),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="The access token is invalid or expired",

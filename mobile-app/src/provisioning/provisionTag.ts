@@ -8,7 +8,7 @@ import type {
 import {
   PinqevaProvisioningClient,
   type DeviceClaim,
-} from './api';
+} from './api.ts';
 import {
   ADVERTISEMENT_KEY_LENGTH,
   ADVERTISEMENT_KEY_UUID,
@@ -34,7 +34,7 @@ import {
   parseProtocolInformation,
   provisioningStatusIsReady,
   toBleBase64,
-} from './protocol';
+} from './protocol.ts';
 
 export type ProvisioningProgress =
   | 'connecting'
@@ -44,10 +44,16 @@ export type ProvisioningProgress =
   | 'associating';
 
 export class TagProvisioner {
+  private readonly ble: BleManager;
+  private readonly backend: PinqevaProvisioningClient;
+
   constructor(
-    private readonly ble: BleManager,
-    private readonly backend: PinqevaProvisioningClient,
-  ) {}
+    ble: BleManager,
+    backend: PinqevaProvisioningClient,
+  ) {
+    this.ble = ble;
+    this.backend = backend;
+  }
 
   async provision(input: {
     peripheralId: string;
@@ -66,13 +72,27 @@ export class TagProvisioner {
       device = await device.requestMTU(128).catch(() => device as Device);
 
       input.onProgress?.('verifying');
-      const [protocolValue, identifierValue, fingerprintValue, challengeValue] =
-        await Promise.all([
-          device.readCharacteristicForService(PINKEVA_SERVICE_UUID, PROTOCOL_INFO_UUID),
-          device.readCharacteristicForService(PINKEVA_SERVICE_UUID, DEVICE_IDENTIFIER_UUID),
-          device.readCharacteristicForService(PINKEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
-          device.readCharacteristicForService(PINKEVA_SERVICE_UUID, TAG_CHALLENGE_UUID),
-        ]);
+      // Read the public identity first, then the encrypted setup values in
+      // sequence. On iOS and some Android stacks, the first encrypted GATT
+      // operation triggers link encryption; issuing the fingerprint and
+      // challenge reads concurrently can race that handshake and make a valid
+      // tag look unavailable.
+      const protocolValue = await device.readCharacteristicForService(
+        PINKEVA_SERVICE_UUID,
+        PROTOCOL_INFO_UUID,
+      );
+      const identifierValue = await device.readCharacteristicForService(
+        PINKEVA_SERVICE_UUID,
+        DEVICE_IDENTIFIER_UUID,
+      );
+      const fingerprintValue = await device.readCharacteristicForService(
+        PINKEVA_SERVICE_UUID,
+        KEY_FINGERPRINT_UUID,
+      );
+      const challengeValue = await device.readCharacteristicForService(
+        PINKEVA_SERVICE_UUID,
+        TAG_CHALLENGE_UUID,
+      );
 
       const protocol = parseProtocolInformation(decodeBleBase64(protocolValue.value));
       if (

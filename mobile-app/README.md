@@ -30,6 +30,11 @@ challenge-bound authorization from the backend, installs the one-time control
 and advertisement keys, verifies the committed fingerprint, and completes the
 device ownership association.
 
+The app checks this setting before opening Bluetooth. If it is missing, **Add
+Tracker** stops with a configuration message instead of scanning for a tag that
+it cannot finish claiming. After changing `.env`, restart Expo so the value is
+included in the native build.
+
 Bluetooth setup needs a native development or release build on a physical
 iPhone or Android phone. It is unavailable in Expo Go, the web build, and the
 iOS Simulator. The current firmware deliberately finishes in suspended
