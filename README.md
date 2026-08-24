@@ -6,7 +6,7 @@ Pinqeva is a prototype Bluetooth item-tracking system built around an ESP32-base
 
 The same tag can be attached to personal belongings or left inside a vehicle. When used in a car, the application will associate the tag with owner-provided vehicle information and display the car's last reported location.
 
-> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32-C3 GATT receiver, and database foundation exist; signed entitlements, the report worker, a real finder map, and production hardening are not yet complete.
+> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32-C3 GATT receiver, Stripe subscription workflow, native map surface, and secured admin console exist; signed tag entitlements, the finder-report worker, and final production validation are not yet complete.
 
 ## Project overview
 
@@ -44,11 +44,12 @@ The complete architecture and proposed communication contract are documented in 
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
-| Supabase database | Partial | Adds encrypted key custody, permanent device allocation, idempotency, one-active-owner enforcement, audited release, subscription cancellation, and provider outbox rows. |
+| Supabase database | Partial | Adds encrypted key custody, permanent device allocation, one-active-owner enforcement, per-tag subscriptions, stored last locations, admin RBAC/audit, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
 | Mobile client | Provisioning UI implemented | The authenticated iOS/Android product UI scans for canonical `PKV-XXXXXXXXXXXX` tags, shows nearby candidates, performs the backend-authorized BLE challenge-response, verifies the committed fingerprint, and refreshes the claimed ownership. Physical-device validation is still required. |
-| Backend API and worker | Provisioning module | Conditional one-time key generation, encrypted private-key custody, one-owner claim, release, and local subscription cancellation are implemented. The payment outbox worker, entitlements, and location worker remain. |
-| Pinqeva map and vehicle UI | Not implemented | The map, location history, and vehicle profile experience are currently architectural requirements. |
+| Backend API and worker | Provisioning, billing, and admin modules | Key custody, claims/releases, server-side Stripe Checkout/webhooks, cancellation worker, MFA-gated administration, and audit are implemented. Signed entitlements and the location-report worker remain. |
+| Pinqeva map and vehicle UI | Map UI implemented | iOS/Android use native Google Maps when restricted SDK keys are configured and render only stored tracker coordinates. Location ingestion/history and the vehicle profile remain. |
+| Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
 | Subscription enforcement | Fail-closed placeholder | Suspended state is enforced; signed lease issuance and verification remain to be implemented. |
 
 ## Current tag behavior
@@ -125,6 +126,7 @@ The tag does not currently provide speed, fuel level, engine state, mileage, or 
 | [`supabase/seed.sql`](supabase/seed.sql) | Initial database seed data. |
 | [`docs/system-architecture-and-protocol.md`](docs/system-architecture-and-protocol.md) | Hardware/software architecture, BLE protocol, API proposal, subscription model, and roadmap. |
 | [`backend`](backend) | Authenticated provisioning API, key custody, manufacturing helper, and tests. |
+| [`admin-panel`](admin-panel) | MFA-gated browser console for user, tracker, subscription, price, device, role, and audit operations. |
 | [`app-client`](app-client) | React Native App-to-Tag provisioning bridge and protocol tests. |
 | [`mobile-app`](mobile-app) | Expo/React Native product application for iOS, Android, and web. |
 | [`docs/provisioning-security-review.md`](docs/provisioning-security-review.md) | Threat scenarios, implemented controls, residual risks, and recovery decisions. |

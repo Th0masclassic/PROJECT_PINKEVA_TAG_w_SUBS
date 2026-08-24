@@ -7,8 +7,9 @@ from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
+from .admin import AdminError, AdminService, router as admin_router
 from .auth import AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
@@ -53,6 +54,17 @@ SAFE_BILLING_MESSAGES = {
     "BILLING_EVENT_DEFERRED": "The billing event will be retried.",
 }
 
+SAFE_ADMIN_MESSAGES = {
+    "ADMIN_ACCESS_DENIED": "Administrator access is required.",
+    "ADMIN_OWNER_REQUIRED": "Owner access is required for this action.",
+    "ADMIN_MFA_REQUIRED": "Multi-factor authentication is required.",
+    "ADMIN_RESOURCE_NOT_FOUND": "The requested resource was not found.",
+    "ADMIN_CONFLICT": "The resource changed or already exists. Refresh and try again.",
+    "ADMIN_OWNER_IMMUTABLE": "Environment owners cannot be removed here.",
+    "ADMIN_PROVIDER_UNAVAILABLE": "The payment provider is temporarily unavailable.",
+    "ADMIN_INVALID_REQUEST": "Please check the information and try again.",
+}
+
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", str(uuid4()))
@@ -89,6 +101,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = database
     app.state.service = ProvisioningService(settings)
     app.state.billing = BillingService(settings)
+    app.state.admin = AdminService(settings)
+    app.state.settings = settings
+    await app.state.billing.bootstrap_catalog(database)
     try:
         yield
     finally:
@@ -102,13 +117,51 @@ app = FastAPI(
     redoc_url=None,
     lifespan=lifespan,
 )
+app.include_router(admin_router)
 
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     request.state.request_id = str(uuid4())
+    is_admin_request = request.url.path.startswith("/v1/admin")
+    origin = request.headers.get("Origin")
+    settings = getattr(request.app.state, "settings", None)
+    allowed_origins = settings.admin_allowed_origins if settings else ()
+    if is_admin_request and origin and origin not in allowed_origins:
+        return _error_response(
+            request,
+            status_code=status.HTTP_403_FORBIDDEN,
+            code="REQUEST_FORBIDDEN",
+            message="This request is not allowed.",
+        )
+    if (
+        is_admin_request
+        and origin
+        and request.method == "OPTIONS"
+        and request.headers.get("Access-Control-Request-Method")
+    ):
+        return Response(
+            status_code=status.HTTP_204_NO_CONTENT,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Max-Age": "600",
+                "Vary": "Origin",
+                "X-Request-ID": request.state.request_id,
+                "Cache-Control": "no-store",
+            },
+        )
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
+    if is_admin_request:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
     return response
 
 
@@ -173,6 +226,18 @@ async def billing_error_handler(request: Request, exc: BillingError):
         status_code=exc.status_code,
         code=exc.code,
         message=SAFE_BILLING_MESSAGES.get(
+            exc.code, "The request could not be completed."
+        ),
+    )
+
+
+@app.exception_handler(AdminError)
+async def admin_error_handler(request: Request, exc: AdminError):
+    return _error_response(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        message=SAFE_ADMIN_MESSAGES.get(
             exc.code, "The request could not be completed."
         ),
     )

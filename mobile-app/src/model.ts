@@ -23,6 +23,9 @@ export type Tracker = {
   isLost: boolean;
   firmwareVersion: string;
   firmwareUpdateVersion?: string;
+  latitude?: number;
+  longitude?: number;
+  lastLocationAt?: string;
 };
 
 export type InfoTopic =
@@ -71,6 +74,8 @@ export const CARD_TRACKER: Tracker = {
   isLost: false,
   firmwareVersion: '1.0.4',
   firmwareUpdateVersion: '1.1.0',
+  latitude: 37.7749,
+  longitude: -122.4194,
 };
 
 export const DEMO_TRACKERS: Tracker[] = [
@@ -87,6 +92,8 @@ export const DEMO_TRACKERS: Tracker[] = [
     intervalMs: 1000,
     isLost: false,
     firmwareVersion: '1.1.0',
+    latitude: 37.7936,
+    longitude: -122.3965,
   },
   {
     id: 'backpack',
@@ -100,6 +107,8 @@ export const DEMO_TRACKERS: Tracker[] = [
     intervalMs: 1000,
     isLost: false,
     firmwareVersion: '1.1.0',
+    latitude: 37.7786,
+    longitude: -122.4147,
   },
 ];
 

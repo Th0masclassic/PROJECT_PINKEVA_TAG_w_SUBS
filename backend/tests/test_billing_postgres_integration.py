@@ -222,6 +222,13 @@ async def test_former_owner_compensation_is_atomic_and_webhook_confirmed(
                     'monthly_basic', 'Monthly', 1, 299, 'EUR', true,
                     'prod_MONTH1234567'
                 )
+                ON CONFLICT (code) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    duration_months = EXCLUDED.duration_months,
+                    price_cents = EXCLUDED.price_cents,
+                    currency = EXCLUDED.currency,
+                    active = EXCLUDED.active,
+                    provider_product_id = EXCLUDED.provider_product_id
                 """
             )
             await connection.execute(

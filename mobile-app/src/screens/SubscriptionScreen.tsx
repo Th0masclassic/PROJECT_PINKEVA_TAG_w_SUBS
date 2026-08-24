@@ -144,6 +144,7 @@ export function SubscriptionScreen({
     subscription?.interval ?? null,
     copy.month,
     copy.year,
+    subscription?.intervalCount ?? 1,
   );
 
   return (
@@ -365,7 +366,12 @@ export function SubscriptionScreen({
     onPress: () => void;
   }) {
     const price = formatBillingMoney(plan.amountMinor, plan.currency, language);
-    const interval = billingIntervalLabel(plan.interval, copy.month, copy.year);
+    const interval = billingIntervalLabel(
+      plan.interval,
+      copy.month,
+      copy.year,
+      plan.intervalCount,
+    );
     return (
       <Pressable
         accessibilityRole="radio"

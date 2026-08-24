@@ -377,6 +377,14 @@ class PostgresCancellationRepository:
                                   AND active_ownership.ended_at IS NULL
                            )
                        )
+                       OR
+                       (
+                           queue.cancellation_reason = 'admin_revoked'
+                           AND queue.device_release_id IS NULL
+                           AND subscription.status IN ('cancelled', 'ended')
+                           AND subscription.ended_reason = 'admin_revoked'
+                           AND subscription.provider_terminal_event_at IS NULL
+                       )
                    )
                  FOR UPDATE OF queue, subscription, device
                 """,

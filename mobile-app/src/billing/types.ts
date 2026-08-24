@@ -19,6 +19,8 @@ export type BillingPlan = {
   amountMinor: number;
   currency: string;
   interval: BillingInterval;
+  intervalCount: number;
+  durationMonths: 1 | 3 | 6 | 12;
 };
 
 export type DeviceSubscription = {
@@ -29,6 +31,8 @@ export type DeviceSubscription = {
   amountMinor: number | null;
   currency: string | null;
   interval: BillingInterval | null;
+  intervalCount: number | null;
+  durationMonths: 1 | 3 | 6 | 12 | null;
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;

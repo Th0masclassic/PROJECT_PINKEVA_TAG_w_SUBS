@@ -34,7 +34,7 @@ function parseUuid(value: unknown): string {
 }
 
 function parseNullableText(value: unknown, maxLength: number): string | null {
-  if (value === null) return null;
+  if (value === null || value === undefined) return null;
   if (typeof value !== 'string') throw new OwnedTrackerError('invalid-response');
 
   const trimmed = value.trim();
@@ -53,6 +53,29 @@ function parseStartedAt(value: unknown): void {
   ) {
     throw new OwnedTrackerError('invalid-response');
   }
+}
+
+function parseNullableCoordinate(
+  value: unknown,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new OwnedTrackerError('invalid-response');
+  }
+  return value;
+}
+
+function relativeLastSeen(value: string | null): string {
+  if (!value) return '—';
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw new OwnedTrackerError('invalid-response');
+  const minutes = Math.max(0, Math.floor((Date.now() - timestamp) / 60_000));
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} h ago`;
+  return new Date(timestamp).toLocaleDateString();
 }
 
 function mapHostedStatus(value: unknown): Tracker['status'] {
@@ -80,6 +103,13 @@ function parseOwnedTrackerRow(value: unknown, expectedUserId: string): Tracker {
 
   const name = parseNullableText(value.device.name, 120) ?? 'Pinkeva Card';
   const firmwareVersion = parseNullableText(value.device.firmware_version, 64) ?? '—';
+  const latitude = parseNullableCoordinate(value.device.last_latitude, -90, 90);
+  const longitude = parseNullableCoordinate(value.device.last_longitude, -180, 180);
+  if ((latitude === undefined) !== (longitude === undefined)) {
+    throw new OwnedTrackerError('invalid-response');
+  }
+  const lastLocationAt = parseNullableText(value.device.last_location_at, 64);
+  const lastPlace = parseNullableText(value.device.last_place, 160);
 
   return {
     id: deviceId,
@@ -87,12 +117,16 @@ function parseOwnedTrackerRow(value: unknown, expectedUserId: string): Tracker {
     name,
     kind: 'card',
     status: mapHostedStatus(value.device.status),
-    lastSeen: '—',
-    place: '—',
-    address: '—',
+    lastSeen: relativeLastSeen(lastLocationAt),
+    place: lastPlace ?? '—',
+    address: lastPlace ?? '—',
     intervalMs: 1000,
     isLost: false,
     firmwareVersion,
+    ...(latitude !== undefined && longitude !== undefined
+      ? { latitude, longitude }
+      : {}),
+    ...(lastLocationAt ? { lastLocationAt } : {}),
   };
 }
 
@@ -117,7 +151,7 @@ export async function fetchOwnedTrackers(
   const { data, error, status } = await client
     .from('ownership')
     .select(
-      'user_id,device_id,started_at,ended_at,device:device!inner(id,name,status,firmware_version)',
+      'user_id,device_id,started_at,ended_at,device:device!inner(id,name,status,firmware_version,last_latitude,last_longitude,last_location_at,last_place)',
     )
     .eq('user_id', normalizedUserId)
     .is('ended_at', null)

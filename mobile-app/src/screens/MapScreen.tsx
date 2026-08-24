@@ -1,18 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppSafeArea, TrackerArtwork } from '../components';
 import { formatRelativeTime, useI18n } from '../i18n';
-import { MapBackdrop } from '../MapBackdrop';
+import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
 import { colors, radii, shadow } from '../theme';
-
-const pinPositions = [
-  { left: '55%', top: '34%' },
-  { left: '34%', top: '50%' },
-  { right: '18%', top: '59%' },
-  { left: '72%', top: '43%' },
-] as const;
 
 export function MapScreen({
   trackers,
@@ -27,11 +21,18 @@ export function MapScreen({
 }) {
   const { t } = useI18n();
   const mapTrackers = trackers;
+  const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
+  const [recenterToken, setRecenterToken] = useState(0);
 
   return (
     <AppSafeArea style={styles.safeArea}>
       <View style={styles.container} testID="map-screen">
-        <MapBackdrop style={styles.mapImage} />
+        <GoogleTrackerMap
+          trackers={mapTrackers}
+          mapType={mapType}
+          recenterToken={recenterToken}
+          onOpenTracker={onOpenTracker}
+        />
         <View style={styles.mapWash} pointerEvents="none" />
 
         <View style={styles.searchRow}>
@@ -58,23 +59,17 @@ export function MapScreen({
           </Pressable>
         </View>
 
-        <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.changeMapLayers')} onPress={() => onNotice(t('map.layerChanged'))} style={[styles.layersButton, styles.roundControl, shadow]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.changeMapLayers')} onPress={() => {
+          setMapType((current) => current === 'standard' ? 'satellite' : 'standard');
+          onNotice(t('map.layerChanged'));
+        }} style={[styles.layersButton, styles.roundControl, shadow]}>
           <Ionicons name="layers-outline" size={29} color={colors.mutedDark} />
         </Pressable>
 
-        {mapTrackers.slice(0, pinPositions.length).map((tracker, index) => {
-          const linkedTrackerId = resolveMapTrackerId(tracker, trackers);
-          return (
-            <MapPin
-              key={tracker.id}
-              tracker={tracker}
-              position={pinPositions[index] ?? pinPositions[0]}
-              onPress={linkedTrackerId ? () => onOpenTracker(linkedTrackerId) : undefined}
-            />
-          );
-        })}
-
-        <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.recenterMap')} onPress={() => onNotice(t('map.recentered'))} style={[styles.recenterButton, styles.roundControl, shadow]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.recenterMap')} onPress={() => {
+          setRecenterToken((current) => current + 1);
+          onNotice(t('map.recentered'));
+        }} style={[styles.recenterButton, styles.roundControl, shadow]}>
           <Ionicons name="navigate" size={28} color={colors.blue} />
         </Pressable>
 
@@ -125,41 +120,9 @@ function resolveMapTrackerId(tracker: Tracker, accountTrackers: Tracker[]): stri
   return accountTrackers.some((candidate) => candidate.id === tracker.id) ? tracker.id : undefined;
 }
 
-function MapPin({
-  tracker,
-  position,
-  onPress,
-}: {
-  tracker: Tracker;
-  position: { left?: `${number}%`; right?: `${number}%`; top: `${number}%` };
-  onPress?: () => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <Pressable
-      accessibilityRole={onPress ? 'button' : 'image'}
-      accessibilityLabel={
-        onPress
-          ? t('a11y.openTrackerFromMap', { name: tracker.name })
-          : t('a11y.mapMarker', { name: tracker.name })
-      }
-      disabled={!onPress}
-      onPress={onPress}
-      style={({ pressed }) => [styles.pinWrap, position, pressed && styles.pressed]}
-    >
-      <View style={styles.pinBadge}>
-        <TrackerArtwork kind={tracker.kind} style={styles.pinImage} decorative carIconSize={26} />
-      </View>
-      <View style={styles.pinPoint} />
-      <Text style={styles.pinLabel}>{tracker.name}</Text>
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: colors.mapWater },
   container: { flex: 1, overflow: 'hidden' },
-  mapImage: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   mapWash: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(228,243,255,0.16)' },
   searchRow: { position: 'absolute', top: 18, left: 18, right: 18, flexDirection: 'row', gap: 12, alignItems: 'center' },
   searchBox: { flex: 1, minHeight: 58, borderRadius: 29, backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5 },
@@ -168,11 +131,6 @@ const styles = StyleSheet.create({
   roundControl: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
   layersButton: { position: 'absolute', right: 22, top: 94 },
   recenterButton: { position: 'absolute', right: 22, bottom: '43%' },
-  pinWrap: { position: 'absolute', alignItems: 'center', width: 92, marginLeft: -46 },
-  pinBadge: { width: 52, height: 52, borderRadius: 26, backgroundColor: colors.navy, borderWidth: 3, borderColor: '#FFFFFF', overflow: 'hidden', alignItems: 'center', justifyContent: 'center', ...shadow },
-  pinImage: { width: 45, height: 40 },
-  pinPoint: { width: 13, height: 13, backgroundColor: colors.navy, transform: [{ rotate: '45deg' }], marginTop: -8, zIndex: -1 },
-  pinLabel: { color: colors.text, fontSize: 12, fontWeight: '700', marginTop: 3, textShadowColor: '#FFFFFF', textShadowRadius: 4 },
   bottomSheet: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '41%', minHeight: 300, backgroundColor: '#FFFFFF', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingTop: 20, ...shadow },
   sheetHandle: { width: 48, height: 5, borderRadius: 3, backgroundColor: '#D0D4DF', alignSelf: 'center', marginBottom: 10 },
   sheetHeader: { minHeight: 48, paddingHorizontal: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },

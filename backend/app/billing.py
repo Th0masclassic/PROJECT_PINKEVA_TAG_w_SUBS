@@ -156,12 +156,16 @@ def _binding(metadata_value: Any) -> tuple[UUID, UUID, str, UUID]:
     return user_id, device_id, plan_code, checkout_id
 
 
-def _billing_interval(duration_months: int) -> Literal["month", "year"]:
-    if duration_months == 1:
-        return "month"
+def _billing_terms(duration_months: int) -> tuple[Literal["month", "year"], int]:
+    if duration_months in {1, 3, 6}:
+        return "month", duration_months
     if duration_months == 12:
-        return "year"
+        return "year", 1
     raise BillingError("BILLING_UNAVAILABLE", 503)
+
+
+def _billing_interval(duration_months: int) -> Literal["month", "year"]:
+    return _billing_terms(duration_months)[0]
 
 
 def _safe_stripe_url(value: Any, expected_host: str) -> str:
@@ -351,16 +355,75 @@ class BillingService:
         self.settings = settings
         self.gateway = gateway or StripeGateway(settings)
 
+    def _plan_price_id(self, plan: Mapping[str, Any]) -> str | None:
+        value = plan.get("provider_price_id")
+        if isinstance(value, str) and value:
+            return value
+        code = plan.get("code")
+        return self.settings.stripe_price_for(str(code)) if code is not None else None
+
+    def _plan_product_id(self, plan: Mapping[str, Any]) -> str | None:
+        value = plan.get("provider_product_id")
+        if isinstance(value, str) and value:
+            return value
+        code = plan.get("code")
+        return self.settings.stripe_product_for(str(code)) if code is not None else None
+
+    async def bootstrap_catalog(self, database: Database) -> None:
+        """Fill initially configured Stripe bindings without overwriting admin prices."""
+        async with database.transaction() as connection:
+            for plan_code, price_id, product_id in self.settings.stripe_price_map:
+                updated = await connection.execute(
+                    """
+                    UPDATE public.plan
+                       SET provider_price_id = COALESCE(provider_price_id, %s),
+                           provider_product_id = COALESCE(provider_product_id, %s),
+                           updated_at = now()
+                     WHERE code = %s
+                       AND (provider_product_id IS NULL OR provider_product_id = %s)
+                    RETURNING code, duration_months, price_cents, currency,
+                              price_version, provider_price_id,
+                              provider_product_id
+                    """,
+                    (price_id, product_id, plan_code, product_id),
+                )
+                plan = await updated.fetchone()
+                if plan is None:
+                    continue
+                await connection.execute(
+                    """
+                    UPDATE public.plan_price_history
+                       SET active_for_new = false
+                     WHERE plan_code = %s
+                       AND provider_price_id <> %s
+                       AND active_for_new = true
+                    """,
+                    (plan_code, plan["provider_price_id"]),
+                )
+                await connection.execute(
+                    """
+                    INSERT INTO public.plan_price_history (
+                        plan_code, provider_price_id, provider_product_id,
+                        amount_cents, currency, duration_months, price_version,
+                        active_for_new
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, true)
+                    ON CONFLICT (provider_price_id) DO NOTHING
+                    """,
+                    (
+                        plan_code,
+                        plan["provider_price_id"],
+                        plan["provider_product_id"],
+                        plan["price_cents"],
+                        plan["currency"],
+                        plan["duration_months"],
+                        plan["price_version"],
+                    ),
+                )
+
     async def _validate_plan_catalog(self, plan: Mapping[str, Any]) -> None:
-        plan_code = str(plan["code"])
-        expected_price_id = self.settings.stripe_price_for(plan_code)
-        expected_product_id = self.settings.stripe_product_for(plan_code)
-        database_product_id = plan.get("provider_product_id")
-        if (
-            expected_price_id is None
-            or expected_product_id is None
-            or database_product_id != expected_product_id
-        ):
+        expected_price_id = self._plan_price_id(plan)
+        expected_product_id = self._plan_product_id(plan)
+        if expected_price_id is None or expected_product_id is None:
             raise BillingError("BILLING_UNAVAILABLE", 503)
         try:
             price = await self.gateway.retrieve_price(expected_price_id)
@@ -379,28 +442,16 @@ class BillingService:
         *,
         require_active: bool,
     ) -> None:
-        plan_code = str(plan["code"])
-        expected_price_id = self.settings.stripe_price_for(plan_code)
-        expected_product_id = self.settings.stripe_product_for(plan_code)
-        database_product_id = plan.get("provider_product_id")
-        if (
-            expected_price_id is None
-            or expected_product_id is None
-            or database_product_id != expected_product_id
-        ):
+        expected_price_id = self._plan_price_id(plan)
+        expected_product_id = self._plan_product_id(plan)
+        if expected_price_id is None or expected_product_id is None:
             raise BillingError("BILLING_UNAVAILABLE", 503)
 
         product = price.get("product")
         recurring = price.get("recurring")
-        duration_months = int(plan["duration_months"])
-        if duration_months == 12:
-            expected_interval = "year"
-            expected_interval_count = 1
-        elif duration_months == 1:
-            expected_interval = "month"
-            expected_interval_count = 1
-        else:
-            raise BillingError("BILLING_UNAVAILABLE", 503)
+        expected_interval, expected_interval_count = _billing_terms(
+            int(plan["duration_months"])
+        )
         try:
             provider_amount = _integer(price.get("unit_amount"))
             provider_currency = _currency(price.get("currency"))
@@ -431,7 +482,7 @@ class BillingService:
             plan_query = await connection.execute(
                 """
                 SELECT code, name, duration_months, price_cents, currency,
-                       provider_product_id
+                       provider_price_id, provider_product_id
                   FROM public.plan
                  WHERE active = true
                  ORDER BY price_cents, code
@@ -442,11 +493,27 @@ class BillingService:
                 """
                 SELECT s.status, s.plan_code, s.starts_at,
                        s.current_period_end, s.cancel_at_period_end,
-                       p.name AS plan_name, p.duration_months,
-                       p.price_cents, p.currency, p.provider_product_id,
+                       p.name AS plan_name,
+                       COALESCE(history.duration_months, p.duration_months)
+                         AS duration_months,
+                       COALESCE(history.amount_cents, p.price_cents)
+                         AS price_cents,
+                       COALESCE(history.currency, p.currency) AS currency,
+                       COALESCE(
+                         history.provider_price_id,
+                         s.provider_price_id,
+                         p.provider_price_id
+                       ) AS provider_price_id,
+                       COALESCE(
+                         history.provider_product_id,
+                         p.provider_product_id
+                       ) AS provider_product_id,
                        p.active AS plan_active
                   FROM public.subscription s
                   JOIN public.plan p ON p.code = s.plan_code
+                  LEFT JOIN public.plan_price_history history
+                    ON history.plan_code = s.plan_code
+                   AND history.provider_price_id = s.provider_price_id
                  WHERE s.device_id = %s
                    AND s.user_id = %s
                    AND s.status NOT IN ('cancelled', 'ended')
@@ -458,9 +525,7 @@ class BillingService:
             subscription = await subscription_query.fetchone()
 
         configured_plans = [
-            row
-            for row in plans
-            if self.settings.stripe_price_for(row["code"]) is not None
+            row for row in plans if self._plan_price_id(row) is not None
         ]
         for plan in configured_plans:
             await self._validate_plan_catalog(plan)
@@ -471,6 +536,7 @@ class BillingService:
                     "duration_months": subscription["duration_months"],
                     "price_cents": subscription["price_cents"],
                     "currency": subscription["currency"],
+                    "provider_price_id": subscription["provider_price_id"],
                     "provider_product_id": subscription[
                         "provider_product_id"
                     ],
@@ -488,6 +554,10 @@ class BillingService:
                 amount_minor=int(row["price_cents"]),
                 currency=str(row["currency"]).upper(),
                 billing_interval=_billing_interval(int(row["duration_months"])),
+                billing_interval_count=_billing_terms(
+                    int(row["duration_months"])
+                )[1],
+                duration_months=int(row["duration_months"]),
             )
             for row in configured_plans
         ]
@@ -507,6 +577,10 @@ class BillingService:
             billing_interval=_billing_interval(
                 int(subscription["duration_months"])
             ),
+            billing_interval_count=_billing_terms(
+                int(subscription["duration_months"])
+            )[1],
+            duration_months=int(subscription["duration_months"]),
             current_period_start=subscription["starts_at"],
             current_period_end=subscription["current_period_end"],
             cancel_at_period_end=bool(
@@ -543,6 +617,7 @@ class BillingService:
                         "duration_months": preparation.duration_months,
                         "price_cents": preparation.amount_minor,
                         "currency": preparation.currency,
+                        "provider_price_id": preparation.price_id,
                         "provider_product_id": preparation.product_id,
                     }
                 )
@@ -905,7 +980,7 @@ class BillingService:
         plan_query = await connection.execute(
             """
             SELECT code, duration_months, price_cents, currency, active,
-                   provider_product_id
+                   provider_price_id, provider_product_id
               FROM public.plan
              WHERE code = %s
             """,
@@ -914,8 +989,8 @@ class BillingService:
         plan = await plan_query.fetchone()
         if plan is None or (existing is None and plan["active"] is not True):
             raise BillingError("PLAN_UNAVAILABLE", 400)
-        price_id = self.settings.stripe_price_for(effective_plan_code)
-        product_id = self.settings.stripe_product_for(effective_plan_code)
+        price_id = self._plan_price_id(plan)
+        product_id = self._plan_product_id(plan)
         if price_id is None or product_id is None:
             raise BillingError("PLAN_UNAVAILABLE", 400)
 
@@ -1508,19 +1583,14 @@ class BillingService:
         if not isinstance(price, Mapping):
             raise BillingEventDeferred("authoritative Price is not expanded")
         price_id = _identifier(price.get("id"), "price_")
-        configured_plan = next(
+        configured_plan_code = next(
             (
                 configured_code
-                for configured_code, configured_price, _ in (
-                    self.settings.stripe_price_map
-                )
+                for configured_code, configured_price, _ in self.settings.stripe_price_map
                 if configured_price == price_id
             ),
             None,
         )
-        if configured_plan is None:
-            raise BillingEventIgnored("price mismatch")
-        plan_code = configured_plan
 
         starts_at = _epoch(
             item.get("current_period_start", subscription.get("start_date"))
@@ -1547,15 +1617,42 @@ class BillingService:
         plan_query = await connection.execute(
             """
             SELECT code, duration_months, price_cents, currency, active,
-                   provider_product_id
-              FROM public.plan
-             WHERE code = %s
+                   provider_price_id, provider_product_id
+              FROM (
+                SELECT p.code, history.duration_months,
+                       history.amount_cents AS price_cents, history.currency,
+                       p.active, history.provider_price_id,
+                       history.provider_product_id, 1 AS priority
+                  FROM public.plan_price_history history
+                  JOIN public.plan p ON p.code = history.plan_code
+                 WHERE history.provider_price_id = %s
+                UNION ALL
+                SELECT p.code, p.duration_months, p.price_cents, p.currency,
+                       p.active, p.provider_price_id, p.provider_product_id,
+                       2 AS priority
+                  FROM public.plan p
+                 WHERE p.provider_price_id = %s
+                UNION ALL
+                SELECT p.code, p.duration_months, p.price_cents, p.currency,
+                       p.active, %s AS provider_price_id,
+                       p.provider_product_id, 3 AS priority
+                  FROM public.plan p
+                 WHERE p.code = %s
+              ) catalog
+             ORDER BY priority
+             LIMIT 1
             """,
-            (plan_code,),
+            (
+                price_id,
+                price_id,
+                price_id,
+                configured_plan_code,
+            ),
         )
         plan = await plan_query.fetchone()
         if plan is None or (status != "ended" and plan["active"] is not True):
             raise BillingEventDeferred("local billing plan unavailable")
+        plan_code = str(plan["code"])
         try:
             self._assert_price_matches_plan(
                 plan,

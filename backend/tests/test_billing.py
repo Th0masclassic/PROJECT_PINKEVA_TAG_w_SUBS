@@ -368,6 +368,73 @@ async def test_subscription_status_is_per_tag_and_lists_only_configured_plans(
     assert response.available_plans[0].billing_interval == "month"
 
 
+@pytest.mark.asyncio
+async def test_existing_subscription_uses_its_historical_stripe_price(
+    settings: Settings,
+) -> None:
+    class HistoricalGateway(FakeGateway):
+        async def retrieve_price(self, price_id: str) -> dict[str, Any]:
+            if price_id == "price_NEWPRICE1234":
+                return {
+                    **await super().retrieve_price("price_MONTH1234567"),
+                    "id": price_id,
+                    "unit_amount": 499,
+                }
+            return await super().retrieve_price(price_id)
+
+    user_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    started_at = datetime.now(UTC) - timedelta(days=10)
+    period_end = started_at + timedelta(days=30)
+    connection = ScriptedConnection(
+        [
+            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            (
+                "SELECT code, name, duration_months",
+                [
+                    {
+                        "code": "monthly_basic",
+                        "name": "Monthly",
+                        "duration_months": 1,
+                        "price_cents": 499,
+                        "currency": "EUR",
+                        "provider_price_id": "price_NEWPRICE1234",
+                        "provider_product_id": "prod_MONTH1234567",
+                    }
+                ],
+            ),
+            (
+                "SELECT s.status, s.plan_code",
+                {
+                    "status": "active",
+                    "plan_code": "monthly_basic",
+                    "starts_at": started_at,
+                    "current_period_end": period_end,
+                    "cancel_at_period_end": False,
+                    "plan_name": "Monthly",
+                    "duration_months": 1,
+                    "price_cents": 299,
+                    "currency": "EUR",
+                    "provider_price_id": "price_MONTH1234567",
+                    "provider_product_id": "prod_MONTH1234567",
+                    "plan_active": True,
+                },
+            ),
+            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+        ]
+    )
+
+    response = await BillingService(
+        settings, HistoricalGateway()
+    ).get_device_subscription(
+        FakeDatabase(connection), user_id=user_id, device_id=device_id
+    )
+
+    assert response.amount_minor == 299
+    assert response.available_plans[0].amount_minor == 499
+    assert "LEFT JOIN public.plan_price_history" in connection.executions[2][0]
+
+
 @pytest.mark.parametrize(
     "mismatch",
     [

@@ -99,13 +99,15 @@ POST /v1/devices/{device_id}/subscription/portal  {"action":"update"}
 Every endpoint verifies that the caller is the tag's current owner. The client
 never sends an amount, Stripe Price ID, customer ID, provider metadata, or
 redirect URL. Plan codes are looked up in the active `public.plan` table and
-resolved through the server-only `STRIPE_PRICE_MAP_JSON`. Each configured entry
+resolved through a server-only catalog binding. Initial bindings come from
+`STRIPE_PRICE_MAP_JSON`; later prices created by the admin console are versioned
+in the database. Each configured entry
 contains both the exact Stripe Price and Product IDs. Before showing a plan or
 opening Checkout, the backend retrieves Stripe's catalog and verifies that the
 Price and Product are active and that amount, currency, recurring interval, and
-licensed usage exactly match `public.plan`. The API currently supports only a
-one-month plan (`billing_interval: month`) and a twelve-month plan
-(`billing_interval: year`). Checkout and Customer creation use stable
+licensed usage exactly match `public.plan`. The API supports 1, 3, 6, and
+12-month plans. Three and six months use Stripe monthly recurrence with an
+interval count; twelve months uses yearly recurrence. Checkout and Customer creation use stable
 idempotency keys. The optional portal action is strictly
 `update` (the default when the body is omitted) or `cancel`; it starts the
 corresponding Stripe `subscription_update` or `subscription_cancel` deep-link
@@ -140,7 +142,7 @@ Dashboard setup still requires an operator to:
 1. Create one recurring Stripe Price for each active plan. Store its `prod_...`
    Product ID in `public.plan.provider_product_id` and place the exact
    `{price_id, product_id}` pair under that plan code in the server secret map.
-   The database amount, uppercase currency, and one-month/twelve-month duration
+   The database amount, uppercase currency, and 1/3/6/12-month duration
    must exactly match Stripe or billing fails closed.
 2. Create a Billing Portal configuration whose update products contain the
    same allowed prices, then set `STRIPE_PORTAL_CONFIGURATION_ID`.

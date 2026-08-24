@@ -11,7 +11,8 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
 - Home dashboard with one locally persisted main tracker and up to two most recently opened trackers.
 - Tracker list, real nearby-tag setup for authenticated users, main-device selection, rename/remove actions, and locally persisted icon overrides.
 - Card, keys, bag, and car presentations. Card is the default and therefore requires no stored override.
-- Map, location history, lost-mode demo, settings, and localized support pages.
+- Native Google Maps UI for the latest stored tracker reports, plus lost-mode
+  demo, settings, and localized support pages.
 - Per-tag advertising interval and software-update flows.
 - A visible subscription state on every tracker plus a dedicated per-tag plan,
   renewal, cancellation-at-period-end, checkout, and management screen.
@@ -81,13 +82,11 @@ Each subscription is displayed and managed for one tag. No Stripe secret,
 publishable key, or card form belongs in the mobile app; checkout and portal
 URLs are validated and opened in the system's secure browser.
 
-Starting an external subscription is fail-closed. It is enabled only when
-`EXPO_PUBLIC_ENABLE_EXTERNAL_BILLING=true`. Keep it off until the final
-hardware/service classification, distribution regions, and current Apple App
-Store and Google Play billing rules have been reviewed. This feature gate is
-not a claim of store-policy compliance. Existing subscription status and
-tag-scoped cancellation remain available when purchasing is disabled; Checkout
-and paid plan changes remain blocked.
+Checkout buttons are enabled whenever the authenticated app has a valid HTTPS
+`EXPO_PUBLIC_API_URL`. Missing API/auth configuration still fails closed. The
+backend alone selects Stripe Price IDs and returns a validated Stripe-hosted
+Checkout URL. Confirm the final hardware/service classification and current
+Apple App Store and Google Play billing rules before store submission.
 
 Static tracker and billing preview states require the explicit development-only **Preview
 demo** entry on the login page, even when hosted Auth is configured. They never report a fake successful charge,
@@ -99,6 +98,20 @@ active ownership and safe device projection. Static pairing remains available
 only inside the explicit development demo; it is excluded from subscription
 requests. Local and demo IDs are deliberately rejected by the billing API
 client instead of being sent to Stripe.
+
+## Configure Google Maps
+
+Set `EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY` and
+`EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY`, then regenerate/rebuild the native
+projects. Use separate Google Cloud keys restricted respectively to the iOS
+bundle identifier and Android package plus signing certificate fingerprints.
+Enable Maps SDK for iOS and Maps SDK for Android only. An optional
+`EXPO_PUBLIC_GOOGLE_MAP_ID` may identify cloud map styling.
+
+The UI places markers only when `device.last_latitude` and
+`device.last_longitude` contain an accepted report. It never fabricates a live
+GPS position from Bluetooth RSSI. The iOS Simulator can render the UI, but BLE
+setup and real tag reporting still require a physical phone.
 
 ## Run locally
 

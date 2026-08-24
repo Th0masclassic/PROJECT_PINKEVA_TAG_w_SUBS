@@ -31,6 +31,9 @@ trigger exists, and `anon`/`authenticated` have no privileges on:
 - `device_release`
 - `subscription_cancellation_outbox`
 - `device_bootstrap_credential`
+- `plan_price_history`
+- `admin_role_assignment`
+- `admin_audit_log`
 
 The migration intentionally exposes only safe column projections for profiles,
 ownerships, devices, plans, subscriptions, and invoices.
@@ -117,12 +120,44 @@ not a superuser and can access only the tables used by provisioning. It has
 `BYPASSRLS` because backend-only key-custody tables intentionally have no client
 policies, so its credential must be treated as a high-value production secret.
 
-## Mobile runtime values
+After applying the administration migration to an existing deployment, run
+`backend/sql/upgrade_runtime_role_admin.sql` as the database owner. It adds only
+the new table and sequence privileges needed by that same runtime role.
+
+## Stripe and administrator runtime values
+
+Create one recurring Stripe Product/Price pair for each 1, 3, 6, and 12-month
+plan, then put the four pairs in `STRIPE_PRICE_MAP_JSON`. Configure the Checkout
+and Portal return URLs, create a webhook endpoint for
+`/v1/billing/stripe/webhook`, and
+store its signing secret in `STRIPE_WEBHOOK_SECRET`. The app never receives a
+Stripe secret or chooses a Price ID or amount; it sends a validated plan code
+and the backend resolves the current database binding.
+
+Set `PINQEVA_ADMIN_OWNER_USER_IDS` to the first trusted Supabase user UUID. This
+environment-owned role is the recovery root and is the only role allowed to
+grant or revoke database administrators. Set `PINQEVA_ADMIN_ALLOWED_ORIGINS` to
+the exact HTTPS admin-console origins and keep
+`PINQEVA_ADMIN_REQUIRE_AAL2=true`. Every privileged operation then requires a
+fresh Supabase bearer token, an active role, verified TOTP/AAL2, and produces an
+append-only audit record. Never use a service-role key in the browser console.
+
+## Mobile and map runtime values
 
 Copy `mobile-app/.env.example` to the local ignored `.env` and set only the
 project URL and publishable key. Row Level Security is the security boundary;
 never put a database password, service-role key, provider secret, or backend
 encryption root in an `EXPO_PUBLIC_` variable.
+
+Also create separate restricted Google Maps SDK keys for iOS and Android. Bind
+the iOS key to the final bundle ID and the Android key to the package name and
+release signing-certificate fingerprints. A native rebuild is required after
+adding these values. The browser administration panel uses a third public key,
+restricted to its exact HTTPS origins and Maps JavaScript API only.
+
+Copy `admin-panel/.env.example` to an ignored `.env`, set its public Supabase,
+API, and browser Maps values, and deploy the production build behind the CSP and
+security headers documented in `admin-panel/README.md`.
 
 ## Public-repository incident
 

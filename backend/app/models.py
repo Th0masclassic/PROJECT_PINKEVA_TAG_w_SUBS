@@ -160,6 +160,8 @@ class PlanSummary(StrictModel):
     amount_minor: int = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
     billing_interval: Literal["month", "year"]
+    billing_interval_count: int = Field(ge=1, le=12)
+    duration_months: Literal[1, 3, 6, 12]
 
 
 class DeviceSubscriptionResponse(StrictModel):
@@ -170,6 +172,8 @@ class DeviceSubscriptionResponse(StrictModel):
     amount_minor: int | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     billing_interval: Literal["month", "year"] | None = None
+    billing_interval_count: int | None = Field(default=None, ge=1, le=12)
+    duration_months: Literal[1, 3, 6, 12] | None = None
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     cancel_at_period_end: bool = False

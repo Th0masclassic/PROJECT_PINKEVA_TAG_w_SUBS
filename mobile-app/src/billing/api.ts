@@ -103,6 +103,8 @@ function parsePlan(value: unknown): BillingPlan | null {
   const amountMinor = value.amount_minor;
   const currency = nullableString(value.currency, 3)?.toUpperCase() ?? null;
   const interval = parseInterval(value.billing_interval);
+  const intervalCount = value.billing_interval_count;
+  const durationMonths = value.duration_months;
 
   if (
     !code ||
@@ -113,12 +115,25 @@ function parsePlan(value: unknown): BillingPlan | null {
     amountMinor < 0 ||
     !currency ||
     !/^[A-Z]{3}$/.test(currency) ||
-    !interval
+    !interval ||
+    typeof intervalCount !== 'number' ||
+    !Number.isSafeInteger(intervalCount) ||
+    intervalCount < 1 ||
+    intervalCount > 12 ||
+    ![1, 3, 6, 12].includes(durationMonths as number)
   ) {
     return null;
   }
 
-  return { code, name, amountMinor, currency, interval };
+  return {
+    code,
+    name,
+    amountMinor,
+    currency,
+    interval,
+    intervalCount,
+    durationMonths: durationMonths as 1 | 3 | 6 | 12,
+  };
 }
 
 export function parseDeviceSubscription(
@@ -144,6 +159,18 @@ export function parseDeviceSubscription(
       : null;
   const currency = nullableString(value.currency, 3)?.toUpperCase() ?? null;
   const interval = parseInterval(value.billing_interval);
+  const rawIntervalCount = value.billing_interval_count;
+  const intervalCount =
+    typeof rawIntervalCount === 'number' &&
+    Number.isSafeInteger(rawIntervalCount) &&
+    rawIntervalCount >= 1 &&
+    rawIntervalCount <= 12
+      ? rawIntervalCount
+      : null;
+  const rawDurationMonths = value.duration_months;
+  const durationMonths = [1, 3, 6, 12].includes(rawDurationMonths as number)
+    ? (rawDurationMonths as 1 | 3 | 6 | 12)
+    : null;
 
   if (currency && !/^[A-Z]{3}$/.test(currency)) {
     throw new BillingApiError('invalid_response');
@@ -157,6 +184,8 @@ export function parseDeviceSubscription(
     amountMinor: parsedAmount,
     currency,
     interval,
+    intervalCount,
+    durationMonths,
     currentPeriodStart: nullableDate(value.current_period_start),
     currentPeriodEnd: nullableDate(value.current_period_end),
     cancelAtPeriodEnd: value.cancel_at_period_end === true,

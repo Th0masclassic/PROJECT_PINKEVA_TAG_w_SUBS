@@ -7,6 +7,26 @@ export const DEMO_BILLING_PLANS: BillingPlan[] = [
     amountMinor: 299,
     currency: 'EUR',
     interval: 'month',
+    intervalCount: 1,
+    durationMonths: 1,
+  },
+  {
+    code: 'quarterly_standard',
+    name: 'Pinkeva 3 Months',
+    amountMinor: 799,
+    currency: 'EUR',
+    interval: 'month',
+    intervalCount: 3,
+    durationMonths: 3,
+  },
+  {
+    code: 'semiannual_plus',
+    name: 'Pinkeva 6 Months',
+    amountMinor: 1499,
+    currency: 'EUR',
+    interval: 'month',
+    intervalCount: 6,
+    durationMonths: 6,
   },
   {
     code: 'yearly_pro',
@@ -14,6 +34,8 @@ export const DEMO_BILLING_PLANS: BillingPlan[] = [
     amountMinor: 2999,
     currency: 'EUR',
     interval: 'year',
+    intervalCount: 1,
+    durationMonths: 12,
   },
 ];
 
@@ -34,6 +56,8 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
       amountMinor: plan.amountMinor,
       currency: plan.currency,
       interval: plan.interval,
+      intervalCount: plan.intervalCount,
+      durationMonths: plan.durationMonths,
       currentPeriodStart: DEMO_PERIOD_START,
       currentPeriodEnd: DEMO_MONTH_END,
       cancelAtPeriodEnd: false,
@@ -42,7 +66,7 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
   }
 
   if (deviceId === 'backpack') {
-    const plan = availablePlans[1];
+    const plan = availablePlans[3];
     return {
       deviceId,
       status: 'active',
@@ -51,6 +75,8 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
       amountMinor: plan.amountMinor,
       currency: plan.currency,
       interval: plan.interval,
+      intervalCount: plan.intervalCount,
+      durationMonths: plan.durationMonths,
       currentPeriodStart: '2025-12-14T12:00:00.000Z',
       currentPeriodEnd: DEMO_YEAR_END,
       cancelAtPeriodEnd: true,
@@ -66,6 +92,8 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
     amountMinor: null,
     currency: null,
     interval: null,
+    intervalCount: null,
+    durationMonths: null,
     currentPeriodStart: null,
     currentPeriodEnd: null,
     cancelAtPeriodEnd: false,

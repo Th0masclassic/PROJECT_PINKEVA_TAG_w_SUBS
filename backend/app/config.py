@@ -8,6 +8,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlparse
+from uuid import UUID
 
 
 class ConfigurationError(RuntimeError):
@@ -143,6 +144,45 @@ def validate_stripe_secret(
     return value
 
 
+def parse_boolean(name: str, value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes"}:
+        return True
+    if normalized in {"0", "false", "no"}:
+        return False
+    raise ConfigurationError(f"{name} must be true or false")
+
+
+def parse_uuid_set(name: str, value: str) -> frozenset[UUID]:
+    result: set[UUID] = set()
+    for item in value.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        try:
+            result.add(UUID(normalized))
+        except ValueError:
+            raise ConfigurationError(f"{name} contains an invalid UUID") from None
+    return frozenset(result)
+
+
+def parse_allowed_origins(value: str) -> tuple[str, ...]:
+    result: set[str] = set()
+    for item in value.split(","):
+        normalized = item.strip()
+        if not normalized:
+            continue
+        validated = validate_https_url("PINQEVA_ADMIN_ALLOWED_ORIGINS", normalized)
+        parsed = urlparse(validated)
+        if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
+            raise ConfigurationError(
+                "PINQEVA_ADMIN_ALLOWED_ORIGINS entries must contain only an origin"
+            )
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        result.add(f"{parsed.scheme}://{parsed.hostname}{port}")
+    return tuple(sorted(result))
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str
@@ -163,6 +203,9 @@ class Settings:
     stripe_portal_return_url: str = ""
     stripe_portal_configuration_id: str | None = None
     stripe_api_version: str = "2025-08-27.basil"
+    admin_owner_user_ids: frozenset[UUID] = frozenset()
+    admin_allowed_origins: tuple[str, ...] = ()
+    admin_require_aal2: bool = True
 
     def __post_init__(self) -> None:
         if len(
@@ -288,4 +331,15 @@ def get_settings() -> Settings:
         ),
         stripe_portal_configuration_id=portal_configuration or None,
         stripe_api_version=stripe_api_version,
+        admin_owner_user_ids=parse_uuid_set(
+            "PINQEVA_ADMIN_OWNER_USER_IDS",
+            os.getenv("PINQEVA_ADMIN_OWNER_USER_IDS", ""),
+        ),
+        admin_allowed_origins=parse_allowed_origins(
+            os.getenv("PINQEVA_ADMIN_ALLOWED_ORIGINS", "")
+        ),
+        admin_require_aal2=parse_boolean(
+            "PINQEVA_ADMIN_REQUIRE_AAL2",
+            os.getenv("PINQEVA_ADMIN_REQUIRE_AAL2", "true"),
+        ),
     )

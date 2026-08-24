@@ -36,6 +36,8 @@ def _safe_auth_failure_code(error: BaseException) -> str:
 @dataclass(frozen=True)
 class Principal:
     user_id: UUID
+    assurance_level: str = "aal1"
+    session_id: UUID | None = None
 
 
 @lru_cache
@@ -78,6 +80,11 @@ async def authenticated_principal(
             options={"require": ["exp", "iat", "sub", "aud"]},
         )
         user_id = UUID(claims["sub"])
+        assurance_level = str(claims.get("aal", "aal1"))
+        if assurance_level not in {"aal1", "aal2"}:
+            raise ValueError("invalid assurance level")
+        raw_session_id = claims.get("session_id")
+        session_id = UUID(raw_session_id) if isinstance(raw_session_id, str) else None
     except (jwt.PyJWTError, ValueError, KeyError) as error:
         logger.warning(
             "supabase_auth_rejected reason=%s error_type=%s request_id=%s",
@@ -90,7 +97,11 @@ async def authenticated_principal(
             detail="The access token is invalid or expired",
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
-    return Principal(user_id=user_id)
+    return Principal(
+        user_id=user_id,
+        assurance_level=assurance_level,
+        session_id=session_id,
+    )
 
 
 AuthenticatedPrincipal = Annotated[Principal, Depends(authenticated_principal)]

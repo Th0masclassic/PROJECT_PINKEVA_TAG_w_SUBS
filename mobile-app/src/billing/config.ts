@@ -38,8 +38,3 @@ export function parseBillingApiConfig(value: unknown): BillingApiConfig | null {
 export const BILLING_API_CONFIG = parseBillingApiConfig(
   process.env.EXPO_PUBLIC_API_URL,
 );
-
-// External subscription purchase links are deliberately opt-in. App-store rules
-// depend on the final product classification and distribution region.
-export const EXTERNAL_BILLING_PURCHASES_ENABLED =
-  process.env.EXPO_PUBLIC_ENABLE_EXTERNAL_BILLING === 'true';

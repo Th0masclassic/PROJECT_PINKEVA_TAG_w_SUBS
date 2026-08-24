@@ -8,10 +8,7 @@ import {
   getDeviceSubscription,
   safeBillingErrorCode,
 } from './api';
-import {
-  BILLING_API_CONFIG,
-  EXTERNAL_BILLING_PURCHASES_ENABLED,
-} from './config';
+import { BILLING_API_CONFIG } from './config';
 import { createDemoSubscription } from './demo';
 import { resolveBillingMode } from './types';
 import type {
@@ -213,7 +210,6 @@ export function useTrackerBilling(
     async (deviceId: string, planCode: string): Promise<BillingActionResult> => {
       if (mode === 'demo') return { kind: 'demo' };
       if (mode === 'unavailable') return { kind: 'error', code: 'configuration' };
-      if (!EXTERNAL_BILLING_PURCHASES_ENABLED) return { kind: 'disabled' };
       if (!BILLING_API_CONFIG || !accessToken) {
         return { kind: 'error', code: 'configuration' };
       }
@@ -241,9 +237,6 @@ export function useTrackerBilling(
     ): Promise<BillingActionResult> => {
       if (mode === 'demo') return { kind: 'demo' };
       if (mode === 'unavailable') return { kind: 'error', code: 'configuration' };
-      if (action === 'update' && !EXTERNAL_BILLING_PURCHASES_ENABLED) {
-        return { kind: 'disabled' };
-      }
       if (!BILLING_API_CONFIG || !accessToken) {
         return { kind: 'error', code: 'configuration' };
       }
@@ -264,8 +257,7 @@ export function useTrackerBilling(
     loadingIds,
     errors,
     mode,
-    purchasesEnabled:
-      mode === 'demo' || (mode === 'live' && EXTERNAL_BILLING_PURCHASES_ENABLED),
+    purchasesEnabled: mode === 'demo' || mode === 'live',
     refreshDevice,
     startCheckout,
     openPortal,
