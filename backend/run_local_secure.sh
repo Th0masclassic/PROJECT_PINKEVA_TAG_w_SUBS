@@ -26,6 +26,10 @@ fi
 
 export DATABASE_URL="postgresql://pinqeva_backend.${project_ref}:${runtime_password}@${pooler_host}:5432/postgres?sslmode=require"
 export SUPABASE_URL="https://${project_ref}.supabase.co"
+export SUPABASE_JWKS_URL="https://${project_ref}.supabase.co/auth/v1/.well-known/jwks.json"
+export SUPABASE_JWT_ISSUER="https://${project_ref}.supabase.co/auth/v1"
+export SUPABASE_JWT_AUDIENCE="authenticated"
+export SUPABASE_JWT_ALGORITHMS="ES256,RS256"
 
 exec .venv/bin/uvicorn app.main:app \
   --host 127.0.0.1 \
