@@ -68,4 +68,3 @@ test('does not expose an upstream error body to the app', async () => {
     globalThis.fetch = originalFetch;
   }
 });
-

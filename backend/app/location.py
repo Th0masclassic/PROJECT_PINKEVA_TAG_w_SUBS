@@ -308,4 +308,3 @@ class LocationService:
             confidence=report.confidence if report else None,
             status_code=report.status if report else None,
         )
-

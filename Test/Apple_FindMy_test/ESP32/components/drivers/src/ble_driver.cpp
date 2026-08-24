@@ -20,11 +20,15 @@
 #include "sdkconfig.h"
 
 #ifndef CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
-#define CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP 0
+#define CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP 1
 #endif
 
 #ifndef CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY
-#define CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY 0
+#define CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY 1
+#endif
+
+#ifndef CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
+#define CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT 1
 #endif
 
 namespace {
@@ -43,6 +47,7 @@ constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
 constexpr uint16_t TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 constexpr uint16_t NON_BONDING_SETUP_CAPABILITY = 0x0020;
+constexpr size_t FINDER_ADV_DATA_SIZE = 31;
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
 // canonical string next to the wire representation so the mobile app,
@@ -162,6 +167,7 @@ char device_id[DEVICE_ID_LEN] = {};
 // appear as a new CoreBluetooth peripheral.
 constexpr uint8_t SETUP_BLE_IDENTITY_VERSION = 2;
 esp_bd_addr_t setup_ble_address = {};
+esp_bd_addr_t finder_ble_address = {};
 uint8_t status_value[STATUS_VALUE_SIZE] = {
     static_cast<uint8_t>(ProvisioningState::UNPROVISIONED),
     static_cast<uint8_t>(ProvisioningResult::SUCCESS),
@@ -210,6 +216,7 @@ uint8_t setup_adv_data[3 + 18] = {
     PINKEVA_SERVICE_UUID[15],
 };
 uint8_t setup_scan_response[2 + (DEVICE_ID_LEN - 1)] = {};
+uint8_t finder_adv_data[FINDER_ADV_DATA_SIZE] = {};
 
 esp_ble_adv_params_t setup_adv_params = {
     .adv_int_min = 0x00A0,  // 100 ms while actively setting up.
@@ -227,6 +234,17 @@ esp_ble_adv_params_t suspended_adv_params = {
     .adv_int_max = 0x0C80,  // 2 seconds; never contains finder payload.
     .adv_type = ADV_TYPE_IND,
     .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .peer_addr = {0},
+    .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .channel_map = ADV_CHNL_ALL,
+    .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
+};
+
+esp_ble_adv_params_t finder_adv_params = {
+    .adv_int_min = 0x01E0,  // 300 ms, matching the legacy ESP32 test script.
+    .adv_int_max = 0x01E0,
+    .adv_type = ADV_TYPE_IND,
+    .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .peer_addr = {0},
     .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL,
@@ -530,15 +548,58 @@ void erase_all_bonds() {
     }
 }
 
+esp_err_t configure_finder_advertisement(const uint8_t *key, size_t length) {
+#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
+    if (!advertisement_key_is_valid(key, length)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // The legacy Find My ESP32 test script uses the first six public-key bytes
+    // as the static-random BLE address and puts the remaining 22 bytes in the
+    // Apple offline-finding manufacturer payload. This is intentionally behind
+    // the development entitlement bypass; production must gate this path with
+    // a verified backend entitlement.
+    finder_ble_address[0] = static_cast<uint8_t>(key[0] | 0xC0U);
+    std::memcpy(finder_ble_address + 1, key + 1, 5);
+
+    std::memset(finder_adv_data, 0, sizeof(finder_adv_data));
+    finder_adv_data[0] = 0x1E;  // 30 bytes follow this length byte.
+    finder_adv_data[1] = 0xFF;  // Manufacturer-specific data.
+    finder_adv_data[2] = 0x4C;  // Apple company identifier, little endian.
+    finder_adv_data[3] = 0x00;
+    finder_adv_data[4] = 0x12;  // Offline Finding type.
+    finder_adv_data[5] = 0x19;  // Offline Finding payload length.
+    finder_adv_data[6] = 0x00;  // State.
+    std::memcpy(finder_adv_data + 7, key + 6, 22);
+    finder_adv_data[29] = static_cast<uint8_t>(key[0] >> 6);
+    finder_adv_data[30] = 0x00;  // Hint.
+
+    ESP_LOGW(LOG_TAG,
+             "DEVELOPMENT MODE: entitlement bypassed; Apple-style finder advertising enabled");
+    ESP_LOGI(LOG_TAG,
+             "Finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
+             finder_ble_address[0], finder_ble_address[1], finder_ble_address[2],
+             finder_ble_address[3], finder_ble_address[4], finder_ble_address[5]);
+    return ESP_OK;
+#else
+    (void)key;
+    (void)length;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 void try_start_maintenance_advertising() {
     if (!connected && service_started && pending_adv_configuration == 0 &&
         !advertising_configuration_failed) {
-        esp_ble_adv_params_t *parameters = ble_mode == BLEMode::SETUP
-                                               ? &setup_adv_params
-                                               : &suspended_adv_params;
+        esp_ble_adv_params_t *parameters = &suspended_adv_params;
+        if (ble_mode == BLEMode::SETUP) {
+            parameters = &setup_adv_params;
+        } else if (ble_mode == BLEMode::TRACKER) {
+            parameters = &finder_adv_params;
+        }
         esp_err_t error = esp_ble_gap_start_advertising(parameters);
         if (error != ESP_OK) {
-            ESP_LOGE(LOG_TAG, "Could not start maintenance advertising: %s",
+            ESP_LOGE(LOG_TAG, "Could not start BLE advertising: %s",
                      esp_err_to_name(error));
         }
     }
@@ -583,11 +644,23 @@ esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
         return ESP_GATT_ERR_UNLIKELY;
     }
 
-    // The mandatory signed entitlement is not implemented yet. Report key
-    // receipt as ready for the app, then remain connectable and fail closed.
+#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
+    if (configure_finder_advertisement(key, length) != ESP_OK) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INTERNAL_ERROR);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+    ble_mode = BLEMode::TRACKER;
+    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
+    ESP_LOGI(LOG_TAG,
+             "Advertisement key committed; finder advertising will start after reboot");
+#else
+    // The production path remains fail closed until a signed entitlement is
+    // received and verified by the firmware.
     ble_mode = BLEMode::SUSPENDED;
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
     ESP_LOGI(LOG_TAG, "Advertisement key committed; awaiting entitlement");
+#endif
     return ESP_GATT_OK;
 }
 
@@ -764,7 +837,7 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
         return false;
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
-        return ble_mode == BLEMode::SUSPENDED;
+        return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
     }
     return (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE] ||
             handle == attribute_handles[CONTROL_KEY_VALUE]) &&
@@ -893,11 +966,16 @@ void gatts_callback(esp_gatts_cb_event_t event,
 
             pending_adv_configuration = ADV_CONFIG_FLAG | SCAN_RSP_CONFIG_FLAG;
             advertising_configuration_failed = false;
-            error = esp_ble_gap_config_adv_data_raw(setup_adv_data,
-                                                    sizeof(setup_adv_data));
+            uint8_t *advertisement_data =
+                ble_mode == BLEMode::TRACKER ? finder_adv_data : setup_adv_data;
+            size_t advertisement_data_size =
+                ble_mode == BLEMode::TRACKER ? sizeof(finder_adv_data)
+                                             : sizeof(setup_adv_data);
+            error = esp_ble_gap_config_adv_data_raw(advertisement_data,
+                                                    advertisement_data_size);
             if (error != ESP_OK) {
                 advertising_configuration_failed = true;
-                ESP_LOGE(LOG_TAG, "Could not configure Pinkeva service advertisement: %s",
+                ESP_LOGE(LOG_TAG, "Could not configure BLE advertisement: %s",
                          esp_err_to_name(error));
                 pending_adv_configuration &= ~ADV_CONFIG_FLAG;
             }
@@ -1030,25 +1108,31 @@ void gatts_callback(esp_gatts_cb_event_t event,
     }
 }
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wswitch"
+#pragma GCC diagnostic ignored "-Wswitch-enum"
 void gap_callback(esp_gap_ble_cb_event_t event,
                   esp_ble_gap_cb_param_t *param) {
-    switch (event) {
-        case ESP_GAP_BLE_SET_STATIC_RAND_ADDR_EVT:
+    switch (static_cast<int>(event)) {
+        case ESP_GAP_BLE_SET_STATIC_RAND_ADDR_EVT: {
             if (param->set_rand_addr_cmpl.status != ESP_BT_STATUS_SUCCESS) {
                 ESP_LOGE(LOG_TAG, "Could not activate setup BLE identity: %d",
                          param->set_rand_addr_cmpl.status);
                 break;
             }
+            const uint8_t *active_address =
+                ble_mode == BLEMode::TRACKER ? finder_ble_address
+                                             : setup_ble_address;
             ESP_LOGI(LOG_TAG,
-                     "Setup BLE identity v%u ready: %02X:%02X:%02X:%02X:%02X:%02X",
-                     SETUP_BLE_IDENTITY_VERSION, setup_ble_address[0],
-                     setup_ble_address[1], setup_ble_address[2],
-                     setup_ble_address[3], setup_ble_address[4],
-                     setup_ble_address[5]);
+                     "%s BLE identity ready: %02X:%02X:%02X:%02X:%02X:%02X",
+                     ble_mode == BLEMode::TRACKER ? "Finder" : "Setup",
+                     active_address[0], active_address[1], active_address[2],
+                     active_address[3], active_address[4], active_address[5]);
             if (esp_ble_gatts_app_register(APP_ID) != ESP_OK) {
                 ESP_LOGE(LOG_TAG, "Could not register GATT application");
             }
             break;
+        }
         case ESP_GAP_BLE_ADV_DATA_RAW_SET_COMPLETE_EVT:
             if (param->adv_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
                 advertising_configuration_failed = true;
@@ -1071,6 +1155,9 @@ void gap_callback(esp_gap_ble_cb_event_t event,
             if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
                 ESP_LOGE(LOG_TAG, "Advertising failed to start: %d",
                          param->adv_start_cmpl.status);
+            } else {
+                ESP_LOGI(LOG_TAG, "%s advertising active",
+                         ble_mode == BLEMode::TRACKER ? "Finder" : "Maintenance");
             }
             break;
         case ESP_GAP_BLE_SEC_REQ_EVT:
@@ -1086,6 +1173,7 @@ void gap_callback(esp_gap_ble_cb_event_t event,
             break;
     }
 }
+#pragma GCC diagnostic pop
 
 esp_err_t initialize_device_id() {
     uint8_t mac[6] = {};
@@ -1183,12 +1271,23 @@ std::optional<ERROR_TAG> ble_init() {
     uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
     if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
         ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
-        // Fail closed: finder advertising requires a signed entitlement, which
-        // is the next milestone. Never emit the finder payload on key alone.
+#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
+        if (configure_finder_advertisement(existing_key, sizeof(existing_key)) !=
+            ESP_OK) {
+            std::memset(existing_key, 0, sizeof(existing_key));
+            return ERROR_TAG("Finder advertisement initialization failed", LOG_TAG);
+        }
+        ble_mode = BLEMode::TRACKER;
+        status_value[0] = static_cast<uint8_t>(ProvisioningState::READY);
+        status_value[1] = static_cast<uint8_t>(ProvisioningResult::SUCCESS);
+#else
+        // Production remains fail closed: the finder payload requires a
+        // verified signed entitlement and is never emitted from the key alone.
         ble_mode = BLEMode::SUSPENDED;
         status_value[0] = static_cast<uint8_t>(ProvisioningState::SUSPENDED);
         status_value[1] =
             static_cast<uint8_t>(ProvisioningResult::ENTITLEMENT_REJECTED);
+#endif
         if (update_key_fingerprint(existing_key) != ESP_OK) {
             std::memset(existing_key, 0, sizeof(existing_key));
             return ERROR_TAG("Key fingerprint initialization failed", "NVS");
@@ -1234,6 +1333,13 @@ std::optional<ERROR_TAG> ble_init() {
         if (error != ESP_OK) {
             return ERROR_TAG("Setup BLE identity configuration failed", LOG_TAG);
         }
+#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
+    } else if (ble_mode == BLEMode::TRACKER) {
+        error = esp_ble_gap_set_rand_addr(finder_ble_address);
+        if (error != ESP_OK) {
+            return ERROR_TAG("Finder BLE identity configuration failed", LOG_TAG);
+        }
+#endif
     } else {
         error = esp_ble_gatts_app_register(APP_ID);
         if (error != ESP_OK) {
