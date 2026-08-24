@@ -1,0 +1,22 @@
+menu "Pinqeva firmware"
+
+config PINQEVA_DEV_BYPASS_BOOTSTRAP
+    bool "Disable factory bootstrap authentication (development only)"
+    default n
+    help
+        Development-only escape hatch for boards that do not have a
+        manufacturing-injected bootstrap key. When enabled, BLE connections
+        are treated as authorized after pairing and the bootstrap HMAC is not
+        checked. Never enable this for production hardware.
+
+config PINQEVA_LOG_ADVERTISEMENT_KEY
+    bool "Log advertisement-key bytes (development only)"
+    depends on PINQEVA_DEV_BYPASS_BOOTSTRAP
+    default n
+    help
+        Log the 28-byte advertisement key received over the encrypted BLE
+        provisioning characteristic as uppercase hexadecimal. Advertisement
+        keys are public protocol material, but logging them can expose device
+        identity material. Keep this disabled for production hardware.
+
+endmenu

@@ -5,6 +5,11 @@
 
 #include "nvs.h"
 #include "nvs_flash.h"
+#include "sdkconfig.h"
+
+#ifndef CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+#define CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP 0
+#endif
 
 namespace {
 constexpr char STORAGE_NAMESPACE[] = "pinqeva";
@@ -243,16 +248,22 @@ esp_err_t erase_provisioning_data() {
 
     uint8_t advertisement_key[ADVERTISEMENT_KEY_SIZE] = {};
     uint8_t control_key[TAG_CONTROL_KEY_SIZE] = {};
-    uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
     esp_err_t advertisement_result =
         load_advertisement_key(advertisement_key, sizeof(advertisement_key));
     esp_err_t control_result =
         load_tag_control_key(control_key, sizeof(control_key));
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+    esp_err_t bootstrap_result = ESP_OK;
+#else
+    uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
     esp_err_t bootstrap_result =
         load_device_bootstrap_key(bootstrap_key, sizeof(bootstrap_key));
+#endif
     std::memset(advertisement_key, 0, sizeof(advertisement_key));
     std::memset(control_key, 0, sizeof(control_key));
+#if !CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
     std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
+#endif
     if (advertisement_result == ESP_OK || control_result == ESP_OK ||
         bootstrap_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;

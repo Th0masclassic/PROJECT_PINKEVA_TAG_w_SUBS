@@ -17,6 +17,15 @@
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs_driver.hpp"
+#include "sdkconfig.h"
+
+#ifndef CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+#define CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP 0
+#endif
+
+#ifndef CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY
+#define CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY 0
+#endif
 
 namespace {
 constexpr char LOG_TAG[] = "BLE_DRIVER";
@@ -400,11 +409,18 @@ esp_err_t begin_connection_authorization() {
     if (error != ESP_OK) {
         return error;
     }
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+    connection_authorized = true;
+    ESP_LOGW(LOG_TAG,
+             "DEVELOPMENT MODE: bootstrap authorization bypassed for this connection");
+    return ESP_OK;
+#else
     if (authorization_timeout_timer == nullptr) {
         return ESP_ERR_INVALID_STATE;
     }
     return esp_timer_start_once(authorization_timeout_timer,
                                 AUTHORIZATION_TIMEOUT_MICROSECONDS);
+#endif
 }
 
 void update_status(ProvisioningState state, ProvisioningResult result) {
@@ -442,6 +458,24 @@ esp_err_t update_key_fingerprint(const uint8_t *key) {
             sizeof(key_fingerprint_attribute), key_fingerprint_attribute);
     }
     return ESP_OK;
+}
+
+void log_received_advertisement_key(const uint8_t *key, size_t length) {
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP && CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY
+    if (key == nullptr || length != PUBLIC_KEY_SIZE) {
+        return;
+    }
+    char encoded_key[PUBLIC_KEY_SIZE * 2 + 1] = {};
+    for (size_t index = 0; index < length; ++index) {
+        std::snprintf(encoded_key + (index * 2), 3, "%02X", key[index]);
+    }
+    ESP_LOGI(LOG_TAG,
+             "Received advertisement key over BLE (%u bytes): %s",
+             static_cast<unsigned>(length), encoded_key);
+#else
+    (void)key;
+    (void)length;
+#endif
 }
 
 void erase_all_bonds() {
@@ -490,6 +524,8 @@ esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
         update_status(ProvisioningState::ERROR, ProvisioningResult::INVALID_VALUE);
         return ESP_GATT_INVALID_PDU;
     }
+
+    log_received_advertisement_key(key, length);
 
     update_status(ProvisioningState::PERSISTING, ProvisioningResult::SUCCESS);
     esp_err_t error = save_advertisement_key(key, length);
@@ -602,6 +638,13 @@ esp_gatt_status_t authorize_connection(const uint8_t *proof, size_t length) {
         return ESP_GATT_INVALID_ATTR_LEN;
     }
 
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+    connection_authorized = true;
+    stop_authorization_timeout();
+    ESP_LOGW(LOG_TAG,
+             "DEVELOPMENT MODE: authorization proof accepted without bootstrap key");
+    return ESP_GATT_OK;
+#else
     uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
     if (load_device_bootstrap_key(bootstrap_key, sizeof(bootstrap_key)) != ESP_OK) {
         std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
@@ -645,6 +688,7 @@ esp_gatt_status_t authorize_connection(const uint8_t *proof, size_t length) {
     stop_authorization_timeout();
     ESP_LOGI(LOG_TAG, "Backend-authorized app connection accepted");
     return ESP_GATT_OK;
+#endif
 }
 
 void send_write_response(esp_gatt_if_t gatts_if,
@@ -1038,12 +1082,17 @@ std::optional<ERROR_TAG> ble_init() {
         return ERROR_TAG("NVS initialization failed", "NVS");
     }
 
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+    ESP_LOGW(LOG_TAG,
+             "DEVELOPMENT MODE: factory bootstrap key is not required");
+#else
     uint8_t bootstrap_key[DEVICE_BOOTSTRAP_KEY_SIZE] = {};
     error = load_device_bootstrap_key(bootstrap_key, sizeof(bootstrap_key));
     std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
     if (error != ESP_OK) {
         return ERROR_TAG("Factory bootstrap key is missing or invalid", "NVS");
     }
+#endif
 
     const esp_timer_create_args_t authorization_timer_arguments = {
         .callback = &authorization_timeout_callback,
