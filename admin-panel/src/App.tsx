@@ -17,7 +17,7 @@ type Config = {
   supabaseUrl: string;
   supabasePublishableKey: string;
   apiUrl: string;
-  googleMapsKey: string;
+  googleMapsKey?: string;
   googleMapId?: string;
 };
 

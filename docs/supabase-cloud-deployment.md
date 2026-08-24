@@ -120,9 +120,10 @@ not a superuser and can access only the tables used by provisioning. It has
 `BYPASSRLS` because backend-only key-custody tables intentionally have no client
 policies, so its credential must be treated as a high-value production secret.
 
-After applying the administration migration to an existing deployment, run
-`backend/sql/upgrade_runtime_role_admin.sql` as the database owner. It adds only
-the new table and sequence privileges needed by that same runtime role.
+The follow-up runtime-grant migration automatically augments an existing
+`pinqeva_backend` role. If the role is created only after the migrations are
+applied, run `backend/sql/upgrade_runtime_role_admin.sql` as the database owner.
+It adds only the new table privileges needed by that same runtime role.
 
 ## Stripe and administrator runtime values
 

@@ -28,12 +28,13 @@ export function GoogleUserMap({
   mapId,
 }: {
   trackers: TrackerSummary[];
-  apiKey: string;
+  apiKey?: string;
   mapId?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    if (!apiKey) return undefined;
     let active = true;
     void loadGoogleMaps(apiKey).then(() => {
       if (!active || !container.current || !window.google?.maps) return;
@@ -61,6 +62,14 @@ export function GoogleUserMap({
     }).catch(() => undefined);
     return () => { active = false; };
   }, [apiKey, mapId, trackers]);
+
+  if (!apiKey) {
+    return (
+      <div className="user-map map-unavailable" role="status">
+        Add the restricted Google Maps browser key to display tracker locations.
+      </div>
+    );
+  }
 
   return <div ref={container} className="user-map" aria-label="User tracker map" />;
 }

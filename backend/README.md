@@ -18,6 +18,12 @@ python -m pip install -e '.[test]'
 uvicorn app.main:app --host 127.0.0.1 --port 8080
 ```
 
+On the configured development Mac, `./run_local_secure.sh` loads application
+settings from the ignored `backend/.env`, keeps the hosted database password in
+macOS Keychain, and starts the same server against Supabase cloud. It is a
+development convenience only; production must use the deployment platform's
+secret manager.
+
 For a hosted project, follow
 [`docs/supabase-cloud-deployment.md`](../docs/supabase-cloud-deployment.md).
 The hosted database URL must use TLS and must never be placed in Expo/Xcode.
