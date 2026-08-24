@@ -122,6 +122,13 @@ The UI places markers only when `device.last_latitude` and
 GPS position from Bluetooth RSSI. The iOS Simulator can render the UI, but BLE
 setup and real tag reporting still require a physical phone.
 
+When an authenticated Home, Map, Trackers, or tracker-detail screen becomes
+visible, the app asks the backend for a fresh report for the relevant hosted
+tag(s). The app sends only its Supabase access token and device UUID; finder
+private keys and advertisement-key hashes remain in the backend. A temporary
+report failure leaves the last accepted location on screen and does not create
+placeholder coordinates.
+
 ## Run locally
 
 ```sh

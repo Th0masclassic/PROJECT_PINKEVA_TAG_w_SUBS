@@ -37,6 +37,34 @@ correlation ID. Validation input, access tokens, keys, database errors, and
 stack traces are never returned to the client. Server logs record only the
 correlation ID and exception type for unexpected failures.
 
+## Location reports
+
+The checked-in `Test/Apple_FindMy_test/request_reports.py` is a manual legacy
+utility that reads local `.keys` files. The mobile API uses the server-side
+adapter in `backend/app/findmy.py` instead. When the authenticated app opens
+Home, Map, Trackers, or a tracker detail page it calls:
+
+```http
+POST /v1/devices/{device_id}/location/report
+Authorization: Bearer <Supabase access token>
+```
+
+The backend verifies active ownership, loads the matching `provisioning_session`,
+decrypts the P-224 private scalar with `PINQEVA_KEY_ENCRYPTION_KEY`, and sends
+only that session's advertisement-key hash to Apple's report service. The
+private scalar, hash, Apple payload, and search-party token never leave the
+backend. The response contains only the latest safe coordinate projection; a
+newer report is persisted to `device.last_latitude`, `last_longitude`,
+`last_location_at`, and `last_place`.
+
+Report retrieval is optional at startup so provisioning can still run while
+Apple credentials are being prepared. Configure `PINQEVA_FINDMY_AUTH_FILE` or
+the `PINQEVA_FINDMY_DSID` and `PINQEVA_FINDMY_SEARCH_PARTY_TOKEN` secret
+variables, and run the local anisette service at
+`PINQEVA_FINDMY_ANISETTE_URL` (default `http://127.0.0.1:6969`). If those
+values are absent, the API returns the safe message “Location reports are
+temporarily unavailable” and never falls back to fabricated coordinates.
+
 ## Provisioning API
 
 Start or resume a claim:

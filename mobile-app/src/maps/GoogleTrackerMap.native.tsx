@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Platform, StyleSheet, View } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, type LatLng, type MapType } from 'react-native-maps';
 
+import { TrackerArtwork } from '../components';
 import type { Tracker } from '../model';
 
 const FALLBACK_REGION = {
@@ -88,11 +89,63 @@ export function GoogleTrackerMap({
             coordinate={coordinate}
             title={tracker.name}
             description={tracker.address === '—' ? tracker.place : tracker.address}
-            pinColor="#0B57D0"
+            anchor={{ x: 0.5, y: 1 }}
+            centerOffset={{ x: 0, y: -4 }}
             onCalloutPress={() => onOpenTracker(tracker.id)}
-          />
+          >
+            <View style={styles.marker} accessible accessibilityLabel={tracker.name}>
+              <View style={styles.markerBubble}>
+                <TrackerArtwork
+                  kind={tracker.kind}
+                  style={styles.markerArtwork}
+                  decorative
+                  carIconSize={27}
+                />
+              </View>
+              <View style={styles.markerTip} />
+            </View>
+          </Marker>
         ))}
       </MapView>
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  marker: {
+    width: 58,
+    height: 70,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  markerBubble: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#0B57D0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#071C48',
+    shadowOpacity: 0.22,
+    shadowRadius: 5,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 5,
+  },
+  markerArtwork: {
+    width: 42,
+    height: 34,
+  },
+  markerTip: {
+    width: 0,
+    height: 0,
+    marginTop: -1,
+    borderLeftWidth: 7,
+    borderRightWidth: 7,
+    borderTopWidth: 10,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderTopColor: '#0B57D0',
+  },
+});

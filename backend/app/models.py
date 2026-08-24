@@ -154,6 +154,25 @@ class DeviceReleaseResponse(StrictModel):
     next_action: Literal["ready_for_new_owner"]
 
 
+class DeviceLocationReportResponse(StrictModel):
+    """Safe location projection returned after a server-side report request.
+
+    Finder key material, Apple report payloads, and provider credentials are
+    intentionally not part of this response.  The mobile app only needs the
+    latest accepted coordinates to render its map.
+    """
+
+    device_id: UUID
+    serial_number: str
+    report_status: Literal["updated", "unchanged", "no_report"]
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    last_location_at: datetime | None = None
+    last_place: str | None = Field(default=None, min_length=1, max_length=160)
+    confidence: int | None = Field(default=None, ge=0, le=255)
+    status_code: int | None = Field(default=None, ge=0, le=255)
+
+
 class PlanSummary(StrictModel):
     code: str
     name: str

@@ -52,6 +52,7 @@ import { TrackersScreen } from './src/screens/TrackersScreen';
 import { colors } from './src/theme';
 import { TrackerCloudStateScreen } from './src/trackers/TrackerCloudStateScreen';
 import { useOwnedTrackers } from './src/trackers/useOwnedTrackers';
+import { useLocationReports } from './src/location/useLocationReports';
 import { PROVISIONING_API_CONFIG, type DeviceClaim } from './src/provisioning/api';
 import { TagSetupModal } from './src/provisioning/TagSetupModal';
 import { useTagSetup } from './src/provisioning/useTagSetup';
@@ -233,6 +234,38 @@ function AppContent() {
     if (pairingContext.kind === 'add') return undefined;
     return displayTrackers.find((tracker) => tracker.id === pairingContext.trackerId);
   }, [displayTrackers, pairingContext]);
+
+  const locationTrackerIds = useMemo(() => {
+    if (!authenticated || demoPreviewActive || !auth.session) return [];
+    if (route.name === 'map') {
+      return displayTrackers.map((tracker) => tracker.id);
+    }
+    if (route.name === 'tracker' && selectedTracker) {
+      return [selectedTracker.id];
+    }
+    if (route.name === 'main' && activeTab === 'trackers') {
+      return displayTrackers.map((tracker) => tracker.id);
+    }
+    if (route.name === 'main' && activeTab === 'home' && mainTracker) {
+      return [mainTracker.id];
+    }
+    return [];
+  }, [activeTab, auth.session, authenticated, demoPreviewActive, displayTrackers, mainTracker, route.name, selectedTracker]);
+  const locationReports = useLocationReports({
+    ownerKey: auth.user?.id ?? '',
+    enabled: Boolean(auth.session) && !demoPreviewActive,
+    apiConfig: PROVISIONING_API_CONFIG,
+    getAccessToken: auth.getAccessToken,
+    trackerIds: locationTrackerIds,
+    trackers: displayTrackers,
+    updateTrackers: setTrackers,
+  });
+  const locationTrigger = `${route.name}:${activeTab}:${locationTrackerIds.join(',')}`;
+
+  useEffect(() => {
+    if (!locationTrackerIds.length || !auth.session || demoPreviewActive) return;
+    void locationReports.refresh();
+  }, [auth.session, demoPreviewActive, locationReports.refresh, locationTrackerIds.length, locationTrigger]);
 
   useEffect(() => {
     const trackerScopedRoute =

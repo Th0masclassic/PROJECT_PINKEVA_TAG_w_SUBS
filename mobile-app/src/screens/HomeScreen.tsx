@@ -19,7 +19,7 @@ import {
   TrackerRow,
 } from '../components';
 import { formatRelativeTime, localizeTrackerPlace, useI18n } from '../i18n';
-import { MapBackdrop } from '../MapBackdrop';
+import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
 import { colors, radii, shadow } from '../theme';
 
@@ -151,12 +151,14 @@ export function HomeScreen({
               <Text style={styles.locationAddress}>{mainTracker.address}</Text>
               <Text style={styles.locationTime}>{formatRelativeTime(t, mainTracker.lastSeen)}</Text>
             </View>
-            <View style={styles.locationMap}>
-              <MapBackdrop compact style={styles.locationMapImage} />
+            <View style={styles.locationMap} pointerEvents="none">
+              <GoogleTrackerMap
+                trackers={[mainTracker]}
+                mapType="standard"
+                recenterToken={0}
+                onOpenTracker={onOpenTracker}
+              />
               <View style={styles.mapTint} />
-              <View style={styles.homePin}>
-                <Ionicons name="location" size={32} color={colors.navy} />
-              </View>
               <View style={styles.navigateButton}>
                 <Ionicons name="navigate" size={24} color={colors.blue} />
               </View>
@@ -311,9 +313,7 @@ const styles = StyleSheet.create({
   locationAddress: { color: colors.mutedDark, fontSize: 13, lineHeight: 19 },
   locationTime: { color: colors.blue, fontSize: 14, fontWeight: '600', marginTop: 10 },
   locationMap: { flex: 1, minHeight: 175, overflow: 'hidden' },
-  locationMapImage: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
   mapTint: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(232,242,255,0.20)' },
-  homePin: { position: 'absolute', left: '42%', top: '35%' },
   navigateButton: { position: 'absolute', right: 12, bottom: 12, height: 44, width: 44, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', ...shadow },
   actionGrid: { flexDirection: 'row', gap: 14 },
   actionGridStacked: { flexDirection: 'column' },

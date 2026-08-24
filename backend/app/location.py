@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from uuid import UUID
+
+from cryptography.exceptions import InvalidTag
+from psycopg import AsyncConnection
+
+from .config import Settings
+from .crypto import EncryptedSecret, decrypt_private_key
+from .database import Database
+from .findmy import (
+    FindMyClient,
+    FindMyConfigurationError,
+    FindMyRequestError,
+    FinderReport,
+)
+from .models import DeviceLocationReportResponse
+
+
+logger = logging.getLogger("pinqeva.location")
+
+
+class LocationError(RuntimeError):
+    def __init__(self, code: str, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
+
+
+@dataclass(frozen=True)
+class _ReportBinding:
+    device_id: UUID
+    serial_number: str
+    session_id: UUID
+    advertisement_key_sha256: bytes
+    private_key: bytes
+
+
+@dataclass(frozen=True)
+class LocationService:
+    settings: Settings
+
+    def _client(self) -> FindMyClient:
+        return FindMyClient(
+            auth_file=self.settings.findmy_auth_file,
+            dsid=self.settings.findmy_dsid,
+            search_party_token=self.settings.findmy_search_party_token,
+            anisette_url=self.settings.findmy_anisette_url,
+            timeout_seconds=self.settings.findmy_request_timeout_seconds,
+            lookback_hours=self.settings.findmy_lookback_hours,
+        )
+
+    async def request_report(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+    ) -> DeviceLocationReportResponse:
+        binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
+        try:
+            report = await asyncio.to_thread(
+                self._client().fetch_latest,
+                advertisement_key_sha256=binding.advertisement_key_sha256,
+                private_key=binding.private_key,
+            )
+        except FindMyConfigurationError as exc:
+            logger.warning(
+                "findmy_configuration_unavailable device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+        except FindMyRequestError as exc:
+            logger.warning(
+                "findmy_request_failed device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+        except Exception as exc:  # pragma: no cover - defensive production guard
+            logger.error(
+                "findmy_decode_failed device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+
+        async with database.transaction() as connection:
+            if report is None:
+                return await self._current_projection(
+                    connection,
+                    user_id=user_id,
+                    device_id=device_id,
+                    report_status="no_report",
+                )
+            return await self._accept_report(
+                connection,
+                user_id=user_id,
+                binding=binding,
+                report=report,
+            )
+
+    async def _load_binding(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+    ) -> _ReportBinding:
+        async with database.transaction() as connection:
+            query = await connection.execute(
+                """
+                SELECT d.id AS device_id, d.serial_number,
+                       d.provisioning_session_id,
+                       ps.id AS session_id,
+                       ps.private_key_ciphertext,
+                       ps.private_key_nonce,
+                       ps.private_key_envelope_version,
+                       ps.advertisement_key_sha256
+                  FROM public.device d
+                  JOIN public.ownership o
+                    ON o.device_id = d.id
+                   AND o.user_id = %s
+                   AND o.ended_at IS NULL
+                  JOIN public.provisioning_session ps
+                    ON ps.id = d.provisioning_session_id
+                   AND ps.device_id = d.id
+                   AND ps.user_id = o.user_id
+                   AND ps.status = 'claimed'
+                 WHERE d.id = %s
+                """,
+                (user_id, device_id),
+            )
+            row = await query.fetchone()
+        if row is None:
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "This tag is not available for location reports",
+                404,
+            )
+
+        try:
+            encrypted = EncryptedSecret(
+                version=int(row["private_key_envelope_version"]),
+                nonce=bytes(row["private_key_nonce"]),
+                ciphertext=bytes(row["private_key_ciphertext"]),
+            )
+            private_key = decrypt_private_key(
+                encrypted,
+                self.settings.key_encryption_key,
+                f"pinqeva:v1:{row['session_id']}:{user_id}:{device_id}".encode("ascii"),
+            )
+            if len(private_key) != 28:
+                raise ValueError("invalid private key size")
+            advertisement_hash = bytes(row["advertisement_key_sha256"])
+            if len(advertisement_hash) != 32:
+                raise ValueError("invalid advertisement hash size")
+        except (InvalidTag, KeyError, TypeError, ValueError) as exc:
+            logger.error(
+                "findmy_key_unwrap_failed device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+
+        return _ReportBinding(
+            device_id=row["device_id"],
+            serial_number=row["serial_number"],
+            session_id=row["session_id"],
+            advertisement_key_sha256=advertisement_hash,
+            private_key=private_key,
+        )
+
+    async def _accept_report(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        binding: _ReportBinding,
+        report: FinderReport,
+    ) -> DeviceLocationReportResponse:
+        # Only accept reports for the same active owner/session that supplied the
+        # decrypted key. A release or transfer racing this request therefore
+        # cannot write a location into a future owner's device projection.
+        place = f"{report.latitude:.5f}, {report.longitude:.5f}"
+        query = await connection.execute(
+            """
+            UPDATE public.device d
+               SET last_latitude = %s,
+                   last_longitude = %s,
+                   last_location_at = %s,
+                   last_place = %s,
+                   updated_at = now()
+             WHERE d.id = %s
+               AND d.provisioning_session_id = %s
+               AND EXISTS (
+                   SELECT 1 FROM public.ownership o
+                    WHERE o.device_id = d.id
+                      AND o.user_id = %s
+                      AND o.ended_at IS NULL
+               )
+               AND (
+                   d.last_location_at IS NULL
+                   OR d.last_location_at < %s
+               )
+             RETURNING d.id AS device_id, d.serial_number,
+                       d.last_latitude, d.last_longitude,
+                       d.last_location_at, d.last_place
+            """,
+            (
+                report.latitude,
+                report.longitude,
+                report.timestamp,
+                place,
+                binding.device_id,
+                binding.session_id,
+                user_id,
+                report.timestamp,
+            ),
+        )
+        row = await query.fetchone()
+        if row is not None:
+            return self._projection_response(
+                row,
+                report_status="updated",
+                report=report,
+            )
+
+        # A newer report may have been accepted by another app request, or the
+        # tag may have been released during the network round trip. Re-read only
+        # through the still-active ownership binding and return the safe latest
+        # projection; never expose which race occurred.
+        return await self._current_projection(
+            connection,
+            user_id=user_id,
+            device_id=binding.device_id,
+            report_status="unchanged",
+        )
+
+    async def _current_projection(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        report_status: str,
+    ) -> DeviceLocationReportResponse:
+        query = await connection.execute(
+            """
+            SELECT d.id AS device_id, d.serial_number,
+                   d.last_latitude, d.last_longitude,
+                   d.last_location_at, d.last_place
+              FROM public.device d
+              JOIN public.ownership o
+                ON o.device_id = d.id
+               AND o.user_id = %s
+               AND o.ended_at IS NULL
+             WHERE d.id = %s
+            """,
+            (user_id, device_id),
+        )
+        row = await query.fetchone()
+        if row is None:
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "This tag is not available for location reports",
+                404,
+            )
+        return self._projection_response(row, report_status=report_status)
+
+    @staticmethod
+    def _projection_response(
+        row: dict,
+        *,
+        report_status: str,
+        report: FinderReport | None = None,
+    ) -> DeviceLocationReportResponse:
+        return DeviceLocationReportResponse(
+            device_id=row["device_id"],
+            serial_number=row["serial_number"],
+            report_status=report_status,
+            latitude=row.get("last_latitude"),
+            longitude=row.get("last_longitude"),
+            last_location_at=row.get("last_location_at"),
+            last_place=row.get("last_place"),
+            confidence=report.confidence if report else None,
+            status_code=report.status if report else None,
+        )
+

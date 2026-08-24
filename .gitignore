@@ -21,6 +21,7 @@ Test/Apple_FindMy_test/ESP32/sdkconfig.c3
 **/*.keys
 **/tmp.key
 **/reports.db
+mobile-app/build-location/
 **/*.p8
 **/*.p12
 **/*.mobileprovision

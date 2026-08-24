@@ -195,6 +195,16 @@ class Settings:
     claim_token_key: bytes
     session_ttl_seconds: int
     claim_ttl_seconds: int
+    # Find My report credentials are deliberately optional at process startup:
+    # provisioning and authentication must still work on a server before the
+    # operator has completed the one-time Apple token setup. Location requests
+    # fail closed with a short safe error until these values are configured.
+    findmy_auth_file: str = ""
+    findmy_dsid: str = ""
+    findmy_search_party_token: str = ""
+    findmy_anisette_url: str = "http://127.0.0.1:6969"
+    findmy_request_timeout_seconds: float = 15.0
+    findmy_lookback_hours: int = 24
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_map: tuple[tuple[str, str, str], ...] = ()
@@ -252,6 +262,27 @@ def get_settings() -> Settings:
         raise ConfigurationError(
             "PINQEVA_CLAIM_TTL_SECONDS must be >= the session TTL and <= 172800"
         )
+
+    try:
+        findmy_timeout = float(
+            os.getenv("PINQEVA_FINDMY_REQUEST_TIMEOUT_SECONDS", "15")
+        )
+        findmy_lookback = int(os.getenv("PINQEVA_FINDMY_LOOKBACK_HOURS", "24"))
+    except ValueError:
+        raise ConfigurationError("Find My report timing settings are invalid") from None
+    if not 3 <= findmy_timeout <= 60:
+        raise ConfigurationError(
+            "PINQEVA_FINDMY_REQUEST_TIMEOUT_SECONDS must be between 3 and 60"
+        )
+    if not 1 <= findmy_lookback <= 168:
+        raise ConfigurationError(
+            "PINQEVA_FINDMY_LOOKBACK_HOURS must be between 1 and 168"
+        )
+
+    findmy_anisette_url = validate_https_url(
+        "PINQEVA_FINDMY_ANISETTE_URL",
+        os.getenv("PINQEVA_FINDMY_ANISETTE_URL", "http://127.0.0.1:6969").strip(),
+    )
 
     project_url_value = os.getenv("SUPABASE_URL", "").strip()
     if project_url_value:
@@ -311,6 +342,14 @@ def get_settings() -> Settings:
         ),
         session_ttl_seconds=session_ttl,
         claim_ttl_seconds=claim_ttl,
+        findmy_auth_file=os.getenv("PINQEVA_FINDMY_AUTH_FILE", "").strip(),
+        findmy_dsid=os.getenv("PINQEVA_FINDMY_DSID", "").strip(),
+        findmy_search_party_token=os.getenv(
+            "PINQEVA_FINDMY_SEARCH_PARTY_TOKEN", ""
+        ).strip(),
+        findmy_anisette_url=findmy_anisette_url,
+        findmy_request_timeout_seconds=findmy_timeout,
+        findmy_lookback_hours=findmy_lookback,
         stripe_secret_key=validate_stripe_secret(
             "STRIPE_SECRET_KEY",
             _required("STRIPE_SECRET_KEY"),

@@ -14,6 +14,7 @@ from .auth import AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
 from .database import Database
+from .location import LocationError, LocationService
 from .models import (
     DeviceClaimComplete,
     DeviceClaimResponse,
@@ -23,6 +24,7 @@ from .models import (
     DeviceReleaseResponse,
     DeviceReleaseStart,
     DeviceReleaseStartResponse,
+    DeviceLocationReportResponse,
     BillingUrlResponse,
     DeviceSubscriptionResponse,
     StripeWebhookResponse,
@@ -65,6 +67,10 @@ SAFE_ADMIN_MESSAGES = {
     "ADMIN_INVALID_REQUEST": "Please check the information and try again.",
 }
 
+SAFE_LOCATION_MESSAGES = {
+    "LOCATION_UNAVAILABLE": "Location reports are temporarily unavailable. Please try again.",
+}
+
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", str(uuid4()))
@@ -100,6 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await database.open()
     app.state.database = database
     app.state.service = ProvisioningService(settings)
+    app.state.location = LocationService(settings)
     app.state.billing = BillingService(settings)
     app.state.admin = AdminService(settings)
     app.state.settings = settings
@@ -243,6 +250,18 @@ async def admin_error_handler(request: Request, exc: AdminError):
     )
 
 
+@app.exception_handler(LocationError)
+async def location_error_handler(request: Request, exc: LocationError):
+    return _error_response(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        message=SAFE_LOCATION_MESSAGES.get(
+            exc.code, "Location reports are temporarily unavailable. Please try again."
+        ),
+    )
+
+
 @app.exception_handler(Exception)
 async def unexpected_error_handler(request: Request, exc: Exception):
     request_id = _request_id(request)
@@ -283,6 +302,23 @@ async def readiness(request: Request) -> dict[str, str] | JSONResponse:
             message="The service is temporarily unavailable. Please try again.",
         )
     return {"status": "ready"}
+
+
+@app.post(
+    "/v1/devices/{device_id}/location/report",
+    response_model=DeviceLocationReportResponse,
+)
+async def request_device_location_report(
+    device_id: UUID,
+    principal: AuthenticatedPrincipal,
+) -> DeviceLocationReportResponse:
+    """Request one fresh report and return only the safe location projection."""
+
+    return await app.state.location.request_report(
+        app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+    )
 
 
 @app.get(
