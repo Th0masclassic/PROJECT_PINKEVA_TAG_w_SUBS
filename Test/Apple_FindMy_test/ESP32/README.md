@@ -31,10 +31,12 @@ why a board with its `boot_key` removed can still advertise and accept the
 mobile setup flow. The protocol advertises capability `0x20` so the app can
 reject the older pairing-dependent profile. The resulting image is deliberately
 marked `development-no-bootstrap-no-bond` in `firmware/manifest.json`.
-During setup, the firmware uses a versioned static-random BLE address derived
+During setup, the firmware uses version 3 of a static-random BLE address derived
 from the board MAC. The visible `PKV-XXXXXXXXXXXX` device ID stays unchanged,
 but iOS sees a new CoreBluetooth identity instead of attempting to reuse an old
-LTK from the previous public BLE address.
+LTK from the previous setup image. If the phone still shows the old peripheral,
+flash the new image and restart Bluetooth; no database identifier needs to be
+changed.
 
 This is not a production security profile: bootstrap proof verification is
 bypassed and the development radio link does not provide authentication or key

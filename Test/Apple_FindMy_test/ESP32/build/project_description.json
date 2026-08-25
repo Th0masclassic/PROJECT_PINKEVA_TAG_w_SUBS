@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "Firmware",
-    "project_version":    "68a4104-dirty",
+    "project_version":    "fc197ecd-dirty",
     "project_path":       "C:/Users/tomas/Documents/PINKEVA/Test/Apple_FindMy_test/ESP32",
     "idf_path":           "C:/Espressif/frameworks/esp-idf-v5.4.4",
     "build_dir":          "C:/Users/tomas/Documents/PINKEVA/Test/Apple_FindMy_test/ESP32/build",

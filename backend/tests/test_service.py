@@ -225,6 +225,10 @@ async def test_payment_request_has_no_key_allocation(
 ) -> None:
     user_id = uuid.uuid4()
     _, device = device_row(settings)
+    # FakeConnection returns rows exactly as supplied, so model the
+    # `device_id` alias that the production SELECT must provide.
+    device.pop("device_id")
+    query_device = {**device, "device_id": device["id"]}
     request_id = uuid.uuid4()
     created = {
         "id": request_id,
@@ -235,7 +239,7 @@ async def test_payment_request_has_no_key_allocation(
         "expires_at": datetime.now(UTC) + timedelta(minutes=29),
         "claim_deadline": None,
     }
-    connection = FakeConnection([device, None, None, None, None, created])
+    connection = FakeConnection([query_device, None, None, None, None, created])
 
     response = await ProvisioningService(settings).start_provisioning_request(
         connection,
@@ -249,6 +253,10 @@ async def test_payment_request_has_no_key_allocation(
 
     assert response.request_id == request_id
     assert response.status == "pending"
+    assert any(
+        "d.id AS device_id" in query
+        for query, _ in connection.executions
+    )
     assert not any(
         "provisioning_session" in query and "INSERT" in query
         for query, _ in connection.executions

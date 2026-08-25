@@ -4,10 +4,11 @@
   "profile": "development-no-bootstrap-no-bond",
   "requires_factory_bootstrap": false,
   "warning": "Development image only. It requires a backend-signed subscription entitlement before finder advertising; it bypasses factory bootstrap authentication and OS pairing/bonding; key confidentiality is not production-grade.",
+  "setup_ble_identity_version": 3,
   "service_uuid": "a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01",
   "application": {
     "file": "Pinkeva-ESP32.bin",
-    "sha256": "13292e8beb7f87322a3b4b71c8634817bcbabb64096c084949ef6614240af750"
+    "sha256": "a3e51b4850b147d6465810dde6458075fd01be3f08bd7d8411ce73431bcfcdb8"
   },
   "bootloader": {
     "file": "bootloader-esp32.bin",

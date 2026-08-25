@@ -186,9 +186,11 @@ constexpr uint16_t SETUP_WRITE_PERMISSION = ESP_GATT_PERM_WRITE_ENCRYPTED;
 char device_id[DEVICE_ID_LEN] = {};
 // A versioned, deterministic static-random address keeps setup stable across
 // reboots while separating it from an old public-address bond cached by iOS.
-// Increment the version only when development devices must intentionally
-// appear as a new CoreBluetooth peripheral.
-constexpr uint8_t SETUP_BLE_IDENTITY_VERSION = 2;
+// Increment the version when a development device must intentionally appear
+// as a new CoreBluetooth peripheral. Version 3 invalidates the setup identity
+// used by the previous checked-in image while leaving the factory serial
+// number, provisioning records, and finder identity unchanged.
+constexpr uint8_t SETUP_BLE_IDENTITY_VERSION = 3;
 esp_bd_addr_t setup_ble_address = {};
 esp_bd_addr_t finder_ble_address = {};
 uint8_t status_value[STATUS_VALUE_SIZE] = {
@@ -1357,8 +1359,9 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                 ble_mode == BLEMode::TRACKER ? finder_ble_address
                                              : setup_ble_address;
             ESP_LOGI(LOG_TAG,
-                     "%s BLE identity ready: %02X:%02X:%02X:%02X:%02X:%02X",
+                     "%s BLE identity v%u ready: %02X:%02X:%02X:%02X:%02X:%02X",
                      ble_mode == BLEMode::TRACKER ? "Finder" : "Setup",
+                     SETUP_BLE_IDENTITY_VERSION,
                      active_address[0], active_address[1], active_address[2],
                      active_address[3], active_address[4], active_address[5]);
             if (active_gatts_if == ESP_GATT_IF_NONE) {

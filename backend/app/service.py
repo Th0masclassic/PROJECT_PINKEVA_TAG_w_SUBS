@@ -66,7 +66,7 @@ class ProvisioningService:
 
         device_query = await connection.execute(
             """
-            SELECT d.id, d.serial_number, d.provisioning_session_id,
+            SELECT d.id, d.id AS device_id, d.serial_number, d.provisioning_session_id,
                    dbc.key_ciphertext AS bootstrap_key_ciphertext,
                    dbc.key_nonce AS bootstrap_key_nonce,
                    dbc.envelope_version AS bootstrap_key_envelope_version,
