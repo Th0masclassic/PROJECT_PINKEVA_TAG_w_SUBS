@@ -4,6 +4,13 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const iosKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_IOS_API_KEY?.trim();
   const androidKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY?.trim();
   const plugins = [...(config.plugins ?? [])];
+  const locationPermission =
+    'Pinkeva uses your location to center the map on the nearest tag.';
+
+  plugins.push([
+    'expo-location',
+    { locationWhenInUsePermission: locationPermission },
+  ]);
 
   if (iosKey || androidKey) {
     plugins.push([
@@ -22,8 +29,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       ...config.ios,
       infoPlist: {
         ...config.ios?.infoPlist,
-        NSLocationWhenInUseUsageDescription:
-          'Pinkeva uses your location only when you choose to center the map around your tags.',
+        NSLocationWhenInUseUsageDescription: locationPermission,
       },
     },
   } as ExpoConfig;

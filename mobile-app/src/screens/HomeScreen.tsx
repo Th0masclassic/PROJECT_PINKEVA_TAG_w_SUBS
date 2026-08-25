@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { LinearGradient } from 'expo-linear-gradient';
+import { useMemo } from 'react';
 import {
   Pressable,
   ScrollView,
@@ -13,18 +13,19 @@ import {
   AppSafeArea,
   Brand,
   IconButton,
-  StatusDot,
   Surface,
-  TrackerArtwork,
   TrackerRow,
 } from '../components';
 import { formatRelativeTime, localizeTrackerPlace, useI18n } from '../i18n';
+import { selectClosestLocatedTracker } from '../location/nearestTracker';
+import { useUserLocation } from '../location/useUserLocation';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
 import { colors, radii, shadow } from '../theme';
 
 export function HomeScreen({
   displayName,
+  trackers,
   mainTracker,
   recentTrackers,
   onOpenMap,
@@ -35,6 +36,7 @@ export function HomeScreen({
   onNotice,
 }: {
   displayName: string;
+  trackers: Tracker[];
   mainTracker?: Tracker;
   recentTrackers: Tracker[];
   onOpenMap: () => void;
@@ -47,6 +49,12 @@ export function HomeScreen({
   const { width } = useWindowDimensions();
   const { t } = useI18n();
   const twoColumn = width >= 390;
+  const userCoordinate = useUserLocation(trackers.length > 0);
+  const closestLocatedTracker = useMemo(
+    () => selectClosestLocatedTracker(trackers, userCoordinate, mainTracker?.id),
+    [mainTracker?.id, trackers, userCoordinate],
+  );
+  const focusedTracker = closestLocatedTracker ?? mainTracker ?? trackers[0];
 
   return (
     <AppSafeArea>
@@ -73,50 +81,41 @@ export function HomeScreen({
           <Text style={styles.welcomeBody}>{t('home.summary')}</Text>
         </View>
 
-        {mainTracker ? (
+        {trackers.length ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={t('a11y.openTracker', { name: mainTracker.name })}
-            onPress={() => onOpenTracker(mainTracker.id)}
-            style={({ pressed }) => [styles.heroPressable, shadow, pressed && styles.pressed]}
-            testID="home-hero-tracker"
+            accessibilityLabel={t('a11y.openMap')}
+            onPress={onOpenMap}
+            style={({ pressed }) => [styles.heroMapCard, shadow, pressed && styles.pressed]}
+            testID="home-map-card"
           >
-            <LinearGradient
-              colors={['#061A4A', '#002B72', '#06183E']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={[styles.heroCard, width < 360 && styles.heroCardCompact]}
-            >
-              <View style={styles.heroGlow} />
-              <TrackerArtwork
-                kind={mainTracker.kind}
-                style={
-                  width < 360
-                    ? [styles.heroArtwork, styles.heroArtworkCompact]
-                    : styles.heroArtwork
-                }
-                decorative
-                carIconSize={width < 360 ? 76 : 98}
+            <View style={styles.heroMap} pointerEvents="none">
+              <GoogleTrackerMap
+                trackers={trackers}
+                mapType="standard"
+                recenterToken={0}
+                focusTrackerId={focusedTracker?.id}
+                showsUserLocation={Boolean(userCoordinate)}
+                onOpenTracker={onOpenTracker}
               />
-              <View style={styles.heroCopy}>
-                <View style={styles.mainBadge}>
-                  <Ionicons name="star" size={12} color="#FFFFFF" />
-                  <Text style={styles.mainBadgeText}>{t('trackers.mainBadge')}</Text>
+              <View style={styles.mapTint} />
+            </View>
+            {focusedTracker ? (
+              <View style={styles.heroMapInfo} pointerEvents="none">
+                <View style={styles.heroMapIcon}>
+                  <Ionicons name="location" size={20} color="#FFFFFF" />
                 </View>
-                <Text numberOfLines={2} style={styles.heroTitle}>{mainTracker.name}</Text>
-                {mainTracker.status === 'nearby' ? <StatusDot label={t('tracker.nearby')} /> : null}
-                <Text style={styles.heroLabel}>{t('home.lastSeen')}</Text>
-                <Text style={styles.heroTime}>{formatRelativeTime(t, mainTracker.lastSeen)}</Text>
-                <Text style={styles.heroPlace}>
-                  {mainTracker.status === 'nearby'
-                    ? t('home.withYou')
-                    : localizeTrackerPlace(t, mainTracker.place)}
-                </Text>
+                <View style={styles.heroMapCopy}>
+                  <Text numberOfLines={1} style={styles.heroMapTitle}>{focusedTracker.name}</Text>
+                  <Text numberOfLines={1} style={styles.heroMapMeta}>
+                    {localizeTrackerPlace(t, focusedTracker.place)} · {formatRelativeTime(t, focusedTracker.lastSeen)}
+                  </Text>
+                </View>
               </View>
-              <View style={styles.heroChevron}>
-                <Ionicons name="chevron-forward" size={25} color="#FFFFFF" />
-              </View>
-            </LinearGradient>
+            ) : null}
+            <View style={styles.navigateButton} pointerEvents="none">
+              <Ionicons name="navigate" size={25} color={colors.blue} />
+            </View>
           </Pressable>
         ) : (
           <Pressable
@@ -136,35 +135,6 @@ export function HomeScreen({
             <Ionicons name="chevron-forward" size={24} color={colors.blue} />
           </Pressable>
         )}
-
-        {mainTracker ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t('a11y.openMap')}
-            onPress={onOpenMap}
-            style={({ pressed }) => [styles.locationCard, shadow, pressed && styles.pressed]}
-            testID="home-map-card"
-          >
-            <View style={styles.locationCopy}>
-              <Text style={styles.locationLabel}>{t('home.lastSeen')}</Text>
-              <Text style={styles.locationTitle}>{localizeTrackerPlace(t, mainTracker.place)}</Text>
-              <Text style={styles.locationAddress}>{mainTracker.address}</Text>
-              <Text style={styles.locationTime}>{formatRelativeTime(t, mainTracker.lastSeen)}</Text>
-            </View>
-            <View style={styles.locationMap} pointerEvents="none">
-              <GoogleTrackerMap
-                trackers={[mainTracker]}
-                mapType="standard"
-                recenterToken={0}
-                onOpenTracker={onOpenTracker}
-              />
-              <View style={styles.mapTint} />
-              <View style={styles.navigateButton}>
-                <Ionicons name="navigate" size={24} color={colors.blue} />
-              </View>
-            </View>
-          </Pressable>
-        ) : null}
 
         {mainTracker ? (
           <View style={[styles.actionGrid, !twoColumn && styles.actionGridStacked]}>
@@ -287,34 +257,20 @@ const styles = StyleSheet.create({
   welcomeSmall: { color: colors.muted, fontSize: 19 },
   welcomeName: { color: colors.text, fontSize: 39, lineHeight: 43, fontWeight: '800', letterSpacing: -1.2 },
   welcomeBody: { color: colors.mutedDark, fontSize: 16, marginTop: 8 },
-  heroPressable: { borderRadius: radii.large },
-  heroCard: { minHeight: 230, borderRadius: radii.large, overflow: 'hidden', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 18, paddingVertical: 22 },
-  heroCardCompact: { paddingHorizontal: 14 },
-  heroGlow: { position: 'absolute', width: 210, height: 210, borderRadius: 105, backgroundColor: 'rgba(14,91,255,0.18)', left: -20, bottom: -90 },
-  heroArtwork: { width: '43%', height: 160 },
-  heroArtworkCompact: { width: '38%', height: 135 },
-  heroCopy: { flex: 1, gap: 5, marginLeft: 9, paddingRight: 16 },
-  mainBadge: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5, backgroundColor: 'rgba(255,255,255,0.16)' },
-  mainBadgeText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
-  heroTitle: { color: '#FFFFFF', fontSize: 23, fontWeight: '800', marginTop: 2 },
-  heroLabel: { color: '#C6D1EA', fontSize: 13, marginTop: 5 },
-  heroTime: { color: '#FFFFFF', fontSize: 18, fontWeight: '700' },
-  heroPlace: { color: '#C6D1EA', fontSize: 15 },
-  heroChevron: { position: 'absolute', right: 12, top: 12, width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.12)' },
+  heroMapCard: { minHeight: 292, borderRadius: radii.large, overflow: 'hidden', backgroundColor: colors.mapWater },
+  heroMap: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 },
+  heroMapInfo: { position: 'absolute', left: 14, right: 74, bottom: 14, minHeight: 62, borderRadius: 18, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: 'rgba(255,255,255,0.94)', ...shadow },
+  heroMapIcon: { width: 38, height: 38, borderRadius: 14, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' },
+  heroMapCopy: { flex: 1 },
+  heroMapTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  heroMapMeta: { color: colors.mutedDark, fontSize: 12, marginTop: 3 },
   noTrackerCard: { minHeight: 148, padding: 22, flexDirection: 'row', alignItems: 'center', gap: 16, backgroundColor: '#FFFFFF', borderRadius: radii.large },
   noTrackerIcon: { width: 58, height: 58, borderRadius: 20, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' },
   noTrackerCopy: { flex: 1 },
   noTrackerTitle: { color: colors.text, fontSize: 22, fontWeight: '800' },
   noTrackerBody: { color: colors.muted, fontSize: 15, lineHeight: 21, marginTop: 6 },
-  locationCard: { minHeight: 175, backgroundColor: colors.surface, borderRadius: radii.large, overflow: 'hidden', flexDirection: 'row' },
-  locationCopy: { width: '45%', padding: 20, justifyContent: 'center', zIndex: 2 },
-  locationLabel: { color: colors.muted, fontSize: 14 },
-  locationTitle: { color: colors.text, fontSize: 26, fontWeight: '800', marginVertical: 5 },
-  locationAddress: { color: colors.mutedDark, fontSize: 13, lineHeight: 19 },
-  locationTime: { color: colors.blue, fontSize: 14, fontWeight: '600', marginTop: 10 },
-  locationMap: { flex: 1, minHeight: 175, overflow: 'hidden' },
   mapTint: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(232,242,255,0.20)' },
-  navigateButton: { position: 'absolute', right: 12, bottom: 12, height: 44, width: 44, borderRadius: 14, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', ...shadow },
+  navigateButton: { position: 'absolute', right: 14, bottom: 14, height: 52, width: 52, borderRadius: 18, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center', ...shadow },
   actionGrid: { flexDirection: 'row', gap: 14 },
   actionGridStacked: { flexDirection: 'column' },
   actionCard: { flex: 1, minHeight: 140, backgroundColor: '#FFFFFF', borderRadius: radii.medium, padding: 17, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },

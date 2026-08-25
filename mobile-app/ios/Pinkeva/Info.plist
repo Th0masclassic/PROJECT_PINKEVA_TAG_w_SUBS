@@ -55,6 +55,8 @@
 	<string>Pinkeva uses Bluetooth when you add, update, or configure a nearby tag.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Allow $(PRODUCT_NAME) to access your Face ID biometric data.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Pinkeva uses your location to center the map on the nearest tag.</string>
 	<key>RCTMetroPort</key>
 	<string>$(RCT_METRO_PORT)</string>
 	<key>RCTNewArchEnabled</key>

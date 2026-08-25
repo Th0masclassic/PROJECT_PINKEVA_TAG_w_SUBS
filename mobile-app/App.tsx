@@ -263,11 +263,11 @@ function AppContent() {
     if (route.name === 'main' && activeTab === 'trackers') {
       return displayTrackers.map((tracker) => tracker.id);
     }
-    if (route.name === 'main' && activeTab === 'home' && mainTracker) {
-      return [mainTracker.id];
+    if (route.name === 'main' && activeTab === 'home') {
+      return displayTrackers.map((tracker) => tracker.id);
     }
     return [];
-  }, [activeTab, auth.session, authenticated, demoPreviewActive, displayTrackers, mainTracker, route.name, selectedTracker]);
+  }, [activeTab, auth.session, authenticated, demoPreviewActive, displayTrackers, route.name, selectedTracker]);
   const locationReports = useLocationReports({
     ownerKey: auth.user?.id ?? '',
     enabled: Boolean(auth.session) && !demoPreviewActive,
@@ -631,6 +631,7 @@ function AppContent() {
     return (
       <HomeScreen
         displayName={firstName}
+        trackers={displayTrackers}
         mainTracker={mainTracker}
         recentTrackers={recentTrackers}
         onOpenMap={() => setRoute({ name: 'map' })}
