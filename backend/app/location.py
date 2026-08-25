@@ -9,6 +9,7 @@ from uuid import UUID
 from cryptography.exceptions import InvalidTag
 from psycopg import AsyncConnection
 
+from .apple_auth import AppleAuthManager
 from .config import Settings
 from .crypto import EncryptedSecret, decrypt_private_key
 from .database import Database
@@ -18,7 +19,11 @@ from .findmy import (
     FindMyRequestError,
     FinderReport,
 )
-from .models import DeviceLocationReportResponse
+from .models import (
+    DeviceLocationHistoryPoint,
+    DeviceLocationHistoryResponse,
+    DeviceLocationReportResponse,
+)
 
 
 logger = logging.getLogger("pinqeva.location")
@@ -44,12 +49,14 @@ class _ReportBinding:
 @dataclass(frozen=True)
 class LocationService:
     settings: Settings
+    auth_manager: AppleAuthManager | None = None
 
     def _client(self) -> FindMyClient:
         return FindMyClient(
             auth_file=self.settings.findmy_auth_file,
             dsid=self.settings.findmy_dsid,
             search_party_token=self.settings.findmy_search_party_token,
+            auth_manager=self.auth_manager,
             anisette_url=self.settings.findmy_anisette_url,
             timeout_seconds=self.settings.findmy_request_timeout_seconds,
             lookback_hours=self.settings.findmy_lookback_hours,
@@ -117,6 +124,69 @@ class LocationService:
                 binding=binding,
                 report=report,
             )
+
+    async def request_report_history_24h(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+    ) -> DeviceLocationHistoryResponse:
+        binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
+        current = datetime.now(UTC)
+        try:
+            reports = await asyncio.to_thread(
+                self._client().fetch_reports,
+                advertisement_key_sha256=binding.advertisement_key_sha256,
+                private_key=binding.private_key,
+                now=current,
+                lookback_hours=24,
+            )
+        except FindMyConfigurationError as exc:
+            logger.warning(
+                "findmy_configuration_unavailable device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+        except FindMyRequestError as exc:
+            logger.warning(
+                "findmy_request_failed device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+        except Exception as exc:  # pragma: no cover - defensive production guard
+            logger.error(
+                "findmy_decode_failed device=%s error_type=%s",
+                device_id,
+                type(exc).__name__,
+            )
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            ) from None
+
+        return DeviceLocationHistoryResponse(
+            device_id=binding.device_id,
+            locations=[
+                DeviceLocationHistoryPoint(
+                    latitude=report.latitude,
+                    longitude=report.longitude,
+                    recorded_at=report.timestamp,
+                )
+                for report in reports
+            ],
+        )
 
     async def _load_binding(
         self,

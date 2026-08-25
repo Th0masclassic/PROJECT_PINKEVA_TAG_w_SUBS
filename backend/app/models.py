@@ -254,6 +254,19 @@ class DeviceLocationReportResponse(StrictModel):
     status_code: int | None = Field(default=None, ge=0, le=255)
 
 
+class DeviceLocationHistoryPoint(StrictModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    recorded_at: datetime
+
+
+class DeviceLocationHistoryResponse(StrictModel):
+    """Decrypted location points only; Finder keys and payloads stay private."""
+
+    device_id: UUID
+    locations: list[DeviceLocationHistoryPoint] = Field(max_length=20_000)
+
+
 class PlanSummary(StrictModel):
     code: str
     name: str

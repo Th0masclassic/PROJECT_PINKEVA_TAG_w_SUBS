@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import sys
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator
 from uuid import UUID, uuid4
@@ -10,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from .admin import AdminError, AdminService, router as admin_router
+from .apple_auth import AppleAuthManager, AppleAuthenticationError
 from .auth import AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
@@ -29,6 +33,7 @@ from .models import (
     DeviceReleaseResponse,
     DeviceReleaseStart,
     DeviceReleaseStartResponse,
+    DeviceLocationHistoryResponse,
     DeviceLocationReportResponse,
     BillingUrlResponse,
     DeviceSubscriptionResponse,
@@ -43,6 +48,38 @@ from .service import ProvisioningError, ProvisioningService
 
 
 logger = logging.getLogger("pinqeva.api")
+
+
+def _selector_loop_factory(*, use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
+    """Return the event-loop class required by Psycopg on Windows."""
+
+    del use_subprocess
+    return asyncio.SelectorEventLoop
+
+
+def _configure_direct_uvicorn_loop() -> None:
+    """Make ``python -m uvicorn app.main:app`` Psycopg-compatible on Windows.
+
+    Recent Uvicorn releases explicitly choose ``ProactorEventLoop`` for their
+    default Windows loop. Psycopg's async pool requires a selector loop. The
+    normal local launcher passes this loop explicitly; this hook covers the
+    direct Uvicorn command developers commonly use as well.
+    """
+
+    if sys.platform != "win32":
+        return
+
+    try:
+        from uvicorn import config as uvicorn_config
+    except ImportError:  # pragma: no cover - Uvicorn is a runtime dependency
+        return
+
+    for loop_name in ("auto", "asyncio"):
+        if loop_name in uvicorn_config.LOOP_FACTORIES:
+            uvicorn_config.LOOP_FACTORIES[loop_name] = "app.main:_selector_loop_factory"
+
+
+_configure_direct_uvicorn_loop()
 
 SAFE_PROVISIONING_MESSAGES = {
     "DEVICE_AUTHORIZATION_REJECTED": "The tag could not be verified.",
@@ -86,6 +123,17 @@ SAFE_LOCATION_MESSAGES = {
 }
 
 
+def _configure_application_logging() -> None:
+    """Send structured application events to Uvicorn's visible error stream."""
+
+    application_logger = logging.getLogger("pinqeva")
+    uvicorn_logger = logging.getLogger("uvicorn")
+    if uvicorn_logger.handlers:
+        application_logger.handlers = list(uvicorn_logger.handlers)
+        application_logger.propagate = False
+    application_logger.setLevel(logging.INFO)
+
+
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", str(uuid4()))
 
@@ -115,13 +163,39 @@ def _error_response(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    _configure_application_logging()
     settings = get_settings()
+    findmy_auth: AppleAuthManager | None = None
+    if settings.findmy_apple_id or settings.findmy_auth_file:
+        findmy_auth = AppleAuthManager(
+            apple_id=settings.findmy_apple_id,
+            apple_password=settings.findmy_apple_password,
+            second_factor=settings.findmy_second_factor,
+            anisette_url=settings.findmy_anisette_url,
+            timeout_seconds=settings.findmy_request_timeout_seconds,
+            auth_file=settings.findmy_auth_file,
+            login_on_startup=settings.findmy_login_on_startup,
+        )
+    if findmy_auth is not None and findmy_auth.should_login_on_startup:
+        logger.info("findmy_authentication_starting")
+        try:
+            await asyncio.to_thread(findmy_auth.initialize)
+            logger.info("findmy_authenticated")
+        except AppleAuthenticationError as exc:
+            logger.error(
+                "findmy_authentication_failed error_type=%s error=%s",
+                type(exc).__name__,
+                str(exc),
+            )
+            raise RuntimeError("Find My authentication failed") from None
+
     database = Database(settings)
     await database.open()
     app.state.database = database
     app.state.service = ProvisioningService(settings)
     app.state.entitlement = EntitlementService(settings)
-    app.state.location = LocationService(settings)
+    app.state.findmy_auth = findmy_auth
+    app.state.location = LocationService(settings, auth_manager=findmy_auth)
     app.state.billing = BillingService(settings)
     app.state.admin = AdminService(settings)
     app.state.settings = settings
@@ -325,15 +399,86 @@ async def readiness(request: Request) -> dict[str, str] | JSONResponse:
 )
 async def request_device_location_report(
     device_id: UUID,
+    request: Request,
     principal: AuthenticatedPrincipal,
 ) -> DeviceLocationReportResponse:
     """Request one fresh report and return only the safe location projection."""
 
-    return await app.state.location.request_report(
-        app.state.database,
-        user_id=principal.user_id,
-        device_id=device_id,
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.info(
+        "location_report_request_received request_id=%s user_id=%s device_id=%s",
+        request_id,
+        principal.user_id,
+        device_id,
     )
+    try:
+        result = await app.state.location.request_report(
+            app.state.database,
+            user_id=principal.user_id,
+            device_id=device_id,
+        )
+    except LocationError as exc:
+        logger.warning(
+            "location_report_request_rejected request_id=%s user_id=%s device_id=%s code=%s status=%s",
+            request_id,
+            principal.user_id,
+            device_id,
+            exc.code,
+            exc.status_code,
+        )
+        raise
+    logger.info(
+        "location_report_request_completed request_id=%s user_id=%s device_id=%s report_status=%s",
+        request_id,
+        principal.user_id,
+        device_id,
+        result.report_status,
+    )
+    return result
+
+
+@app.post(
+    "/v1/devices/{device_id}/location/report_24h",
+    response_model=DeviceLocationHistoryResponse,
+)
+async def request_device_location_history_24h(
+    device_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+) -> DeviceLocationHistoryResponse:
+    """Return only the authenticated owner's decrypted reports from the last 24 hours."""
+
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.info(
+        "location_history_24h_request_received request_id=%s user_id=%s device_id=%s",
+        request_id,
+        principal.user_id,
+        device_id,
+    )
+    try:
+        result = await app.state.location.request_report_history_24h(
+            app.state.database,
+            user_id=principal.user_id,
+            device_id=device_id,
+        )
+    except LocationError as exc:
+        logger.warning(
+            "location_history_24h_request_rejected request_id=%s user_id=%s device_id=%s code=%s status=%s",
+            request_id,
+            principal.user_id,
+            device_id,
+            exc.code,
+            exc.status_code,
+        )
+        raise
+    logger.info(
+        "location_history_24h_request_completed request_id=%s user_id=%s device_id=%s location_count=%s",
+        request_id,
+        principal.user_id,
+        device_id,
+        len(result.locations),
+    )
+    return result
 
 
 @app.post(

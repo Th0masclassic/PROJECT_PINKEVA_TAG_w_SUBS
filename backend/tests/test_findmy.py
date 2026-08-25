@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import struct
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.hazmat.backends import default_backend
@@ -111,6 +111,24 @@ def test_fetch_latest_ignores_reports_for_a_different_hashed_key(
             {"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"}
         ),
     )
+
+
+def test_fetch_reports_returns_deduplicated_24h_history_newest_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private = ec.generate_private_key(ec.SECP224R1()).private_numbers().private_value.to_bytes(28, "big")
+    advertisement_hash = hashlib.sha256(b"advertisement-key").digest()
+    identifier = base64.b64encode(advertisement_hash).decode("ascii")
+    now = datetime(2026, 8, 25, 20, 0, tzinfo=UTC)
+    older = now.replace(hour=18)
+    newer = now.replace(hour=19)
+
+    monkeypatch.setattr(
+        "app.findmy.requests.get",
+        lambda *_args, **_kwargs: _Response(
+            {"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"}
+        ),
+    )
     monkeypatch.setattr(
         "app.findmy.requests.post",
         lambda *_args, **_kwargs: _Response(
@@ -133,3 +151,34 @@ def test_fetch_latest_ignores_reports_for_a_different_hashed_key(
         )
         is None
     )
+
+    def fake_post(_url: str, **kwargs: object) -> _Response:
+        search = kwargs["json"]["search"][0]
+        assert search["startDate"] == int((now - timedelta(hours=24)).timestamp() * 1000)
+        encoded_older = _encoded_report(private, int(older.timestamp()) - 978_307_200)
+        return _Response(
+            {
+                "results": [
+                    {"id": identifier, "payload": encoded_older},
+                    {
+                        "id": identifier,
+                        "payload": _encoded_report(
+                            private, int(newer.timestamp()) - 978_307_200
+                        ),
+                    },
+                    {"id": identifier, "payload": encoded_older},
+                ]
+            }
+        )
+
+    monkeypatch.setattr("app.findmy.requests.post", fake_post)
+    reports = FindMyClient(
+        dsid="123", search_party_token="search-token"
+    ).fetch_reports(
+        advertisement_key_sha256=advertisement_hash,
+        private_key=private,
+        now=now,
+        lookback_hours=24,
+    )
+
+    assert [report.timestamp for report in reports] == [newer, older]

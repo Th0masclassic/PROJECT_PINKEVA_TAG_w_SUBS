@@ -17,6 +17,7 @@ constexpr char KEY_BLOB[] = "adv_key";
 constexpr char CONTROL_KEY_BLOB[] = "control_key";
 constexpr char BOOTSTRAP_KEY_BLOB[] = "boot_key";
 constexpr char ENTITLEMENT_BLOB[] = "entitlement";
+constexpr char TRUSTED_CLOCK_KEY[] = "clock_utc";
 constexpr char FORMAT_KEY[] = "prov_ver";
 constexpr uint8_t FORMAT_VERSION = 1;
 }  // namespace
@@ -160,6 +161,28 @@ esp_err_t load_subscription_entitlement(uint8_t *destination,
     return ESP_OK;
 }
 
+esp_err_t load_trusted_clock_epoch(uint64_t *epoch_seconds) {
+    if (epoch_seconds == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    nvs_handle_t handle;
+    esp_err_t error = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    uint64_t stored_epoch = 0;
+    error = nvs_get_u64(handle, TRUSTED_CLOCK_KEY, &stored_epoch);
+    nvs_close(handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    if (stored_epoch == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    *epoch_seconds = stored_epoch;
+    return ESP_OK;
+}
+
 esp_err_t save_tag_control_key(const uint8_t *key, size_t length) {
     if (key == nullptr || length != TAG_CONTROL_KEY_SIZE) {
         return ESP_ERR_INVALID_SIZE;
@@ -292,6 +315,47 @@ esp_err_t save_subscription_entitlement(const uint8_t *entitlement,
                                SUBSCRIPTION_ENTITLEMENT_SIZE) == 0;
     std::memset(read_back, 0, sizeof(read_back));
     return matches ? ESP_OK : ESP_ERR_INVALID_CRC;
+}
+
+esp_err_t save_trusted_clock_epoch(uint64_t epoch_seconds) {
+    if (epoch_seconds == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    uint64_t existing_epoch = 0;
+    esp_err_t existing_result = load_trusted_clock_epoch(&existing_epoch);
+    if (existing_result == ESP_OK) {
+        if (epoch_seconds < existing_epoch) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        if (epoch_seconds == existing_epoch) {
+            return ESP_OK;
+        }
+    } else if (existing_result != ESP_ERR_NVS_NOT_FOUND &&
+               existing_result != ESP_ERR_NVS_INVALID_HANDLE &&
+               existing_result != ESP_ERR_INVALID_STATE) {
+        return existing_result;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t error = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = nvs_set_u64(handle, TRUSTED_CLOCK_KEY, epoch_seconds);
+    if (error == ESP_OK) {
+        error = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+
+    uint64_t read_back = 0;
+    error = load_trusted_clock_epoch(&read_back);
+    return error == ESP_OK && read_back == epoch_seconds
+               ? ESP_OK
+               : ESP_ERR_INVALID_CRC;
 }
 
 esp_err_t erase_provisioning_data() {

@@ -29,6 +29,9 @@ esp_err_t load_device_bootstrap_key(uint8_t *destination, size_t destination_siz
 esp_err_t load_subscription_entitlement(uint8_t *destination,
                                         size_t destination_size);
 
+/** Load the last trusted Unix UTC clock checkpoint. */
+esp_err_t load_trusted_clock_epoch(uint64_t *epoch_seconds);
+
 /** Save once; an identical retry is accepted, replacement is rejected. */
 esp_err_t save_tag_control_key(const uint8_t *key, size_t length);
 
@@ -38,6 +41,9 @@ esp_err_t save_advertisement_key(const uint8_t *key, size_t length);
 /** Atomically replace the signed entitlement packet after firmware validation. */
 esp_err_t save_subscription_entitlement(const uint8_t *entitlement,
                                          size_t length);
+
+/** Persist a monotonic Unix UTC checkpoint; rollback attempts are rejected. */
+esp_err_t save_trusted_clock_epoch(uint64_t epoch_seconds);
 
 /** Erase owner provisioning data while preserving the factory bootstrap key. */
 esp_err_t erase_provisioning_data();

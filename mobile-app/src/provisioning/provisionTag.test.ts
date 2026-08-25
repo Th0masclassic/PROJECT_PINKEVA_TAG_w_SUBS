@@ -16,6 +16,8 @@ import {
   TAG_AUTHORIZATION_PROOF_UUID,
   TAG_CHALLENGE_UUID,
   TAG_CONTROL_KEY_UUID,
+  UTC_TIME_UUID,
+  encodeUtcUnixSeconds,
   encodeBase64Url,
   toBleBase64,
 } from './protocol.ts';
@@ -42,6 +44,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
   );
   const completionToken = Uint8Array.from({ length: 32 }, (_, index) => 0x80 + index);
   const events: string[] = [];
+  const phoneTime = new Date('2026-08-25T20:00:00Z');
   let storedFingerprint = new Uint8Array(32);
 
   const claim: DeviceClaimStart = {
@@ -110,7 +113,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     readCharacteristicForService: async (_service: string, characteristic: string) => {
       if (characteristic === PROTOCOL_INFO_UUID) {
         events.push('ble:read:protocol');
-        return { value: toBleBase64(Uint8Array.of(1, 3, 0, 1, 0x30, 0)) };
+        return { value: toBleBase64(Uint8Array.of(1, 4, 0, 1, 0x70, 0)) };
       }
       if (characteristic === DEVICE_IDENTIFIER_UUID) {
         events.push('ble:read:identity');
@@ -150,6 +153,9 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
       } else if (characteristic === SUBSCRIPTION_ENTITLEMENT_UUID) {
         events.push('ble:write:entitlement');
         assert.equal(value, toBleBase64(entitlementPacket));
+      } else if (characteristic === UTC_TIME_UUID) {
+        events.push('ble:write:utc');
+        assert.equal(value, toBleBase64(encodeUtcUnixSeconds(phoneTime)));
       } else {
         throw new Error(`Unexpected write ${characteristic}`);
       }
@@ -173,9 +179,10 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     },
   } as unknown as BleManager;
 
-  const result = await new TagProvisioner(ble, backend).provision({
+  const result = await new TagProvisioner(ble, backend, () => phoneTime).provision({
     peripheralId: 'peripheral-1',
     idempotencyKey: 'provision:test-bridge',
+    provisioningRequestId: '33333333-3333-4333-8333-333333333333',
   });
 
   assert.deepEqual(result, completed);
@@ -188,6 +195,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     'ble:read:challenge',
     'api:start',
     'ble:write:authorization',
+    'ble:write:utc',
     'ble:write:control',
     'ble:write:advertisement',
     'ble:read:status',
@@ -195,6 +203,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     'api:complete',
     'api:entitlement',
     'ble:write:authorization',
+    'ble:write:utc',
     'ble:write:entitlement',
     'ble:read:status',
     'ble:disconnect',

@@ -38,6 +38,7 @@ constexpr uint8_t PROTOCOL_VALUE_SIZE = 6;
 constexpr uint8_t KEY_FINGERPRINT_SIZE = 32;
 constexpr uint8_t TAG_CHALLENGE_SIZE = 32;
 constexpr uint8_t TAG_AUTHORIZATION_PROOF_SIZE = 32;
+constexpr uint8_t UTC_TIME_SIZE = 8;
 constexpr uint8_t RESET_COMMAND_SIZE = 64;
 constexpr size_t ENTITLEMENT_BODY_SIZE = 62;
 constexpr size_t ENTITLEMENT_SIGNATURE_OFFSET = 63;
@@ -45,11 +46,19 @@ constexpr size_t ENTITLEMENT_SIGNATURE_MAX_SIZE = 72;
 constexpr size_t ENTITLEMENT_SIGNATURE_MIN_SIZE = 70;
 constexpr uint8_t ENTITLEMENT_FINDER_CAPABILITY = 0x01;
 constexpr uint64_t AUTHORIZATION_TIMEOUT_MICROSECONDS = 30ULL * 1000ULL * 1000ULL;
+// Development fallback clock: 2026-08-25 18:00:00 in Portugal (WEST),
+// represented as 2026-08-25 17:00:00 UTC because entitlement timestamps are
+// encoded as Unix UTC seconds by the backend.
+constexpr uint64_t DEFAULT_TRUSTED_CLOCK_EPOCH = 1787677200ULL;
+constexpr uint64_t CLOCK_CHECKPOINT_INTERVAL_MICROSECONDS =
+    60ULL * 60ULL * 1000ULL * 1000ULL;
+constexpr uint64_t CLOCK_SYNC_SKEW_TOLERANCE_SECONDS = 5ULL * 60ULL;
 constexpr size_t MAX_STAGED_VALUE_SIZE = SUBSCRIPTION_ENTITLEMENT_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
 constexpr uint16_t TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 constexpr uint16_t NON_BONDING_SETUP_CAPABILITY = 0x0020;
+constexpr uint16_t UTC_TIME_SYNC_CAPABILITY = 0x0040;
 constexpr size_t FINDER_ADV_DATA_SIZE = 31;
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
@@ -102,6 +111,10 @@ constexpr uint8_t SUBSCRIPTION_ENTITLEMENT_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x0A, 0xF0, 0xF0, 0xA6,
 };
+constexpr uint8_t UTC_TIME_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x0B, 0xF0, 0xF0, 0xA6,
+};
 
 // P-256 public verification key for the backend entitlement signer. The
 // matching PKCS#8 private key lives only in the backend environment.
@@ -140,6 +153,8 @@ enum AttributeIndex : uint8_t {
     TAG_AUTHORIZATION_PROOF_VALUE,
     SUBSCRIPTION_ENTITLEMENT_DECLARATION,
     SUBSCRIPTION_ENTITLEMENT_VALUE,
+    UTC_TIME_DECLARATION,
+    UTC_TIME_VALUE,
     ATTRIBUTE_COUNT,
 };
 
@@ -151,18 +166,19 @@ constexpr uint8_t WRITE_PROPERTY = ESP_GATT_CHAR_PROP_BIT_WRITE;
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-// Protocol 1.3, firmware 0.1. Capability bit 0x10 requires a backend-issued,
+// Protocol 1.4, firmware 0.1. Capability bit 0x10 requires a backend-issued,
 // nonce-bound authorization proof before any provisioning/reset write. The
 // checked-in development profile also advertises bit 0x20: setup deliberately
 // avoids OS pairing/bonding and therefore must never be shipped as the final
 // production transport until application-layer key confidentiality is added.
+// Bit 0x40 asks an authorized phone to provide Unix UTC on each connection.
 uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
     1,
-    3,
+    4,
     0,
     1,
     static_cast<uint8_t>(
-        0x000F | TAG_AUTHORIZATION_CAPABILITY |
+        0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
         NON_BONDING_SETUP_CAPABILITY
 #else
@@ -205,6 +221,7 @@ uint8_t reset_command_attribute[RESET_COMMAND_SIZE] = {};
 uint8_t tag_challenge_attribute[TAG_CHALLENGE_SIZE] = {};
 uint8_t tag_authorization_proof_attribute[TAG_AUTHORIZATION_PROOF_SIZE] = {};
 uint8_t subscription_entitlement_attribute[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
+uint8_t utc_time_attribute[UTC_TIME_SIZE] = {};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
@@ -217,8 +234,10 @@ bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
 esp_timer_handle_t entitlement_expiry_timer = nullptr;
+esp_timer_handle_t clock_checkpoint_timer = nullptr;
 uint64_t entitlement_issued_epoch = 0;
 uint64_t entitlement_expires_epoch = 0;
+uint64_t trusted_clock_epoch = 0;
 int64_t entitlement_time_started_microseconds = 0;
 uint64_t current_entitlement_counter = 0;
 bool entitlement_time_trusted = false;
@@ -471,6 +490,23 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           SUBSCRIPTION_ENTITLEMENT_SIZE,
           0,
           subscription_entitlement_attribute}},
+
+    [UTC_TIME_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [UTC_TIME_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(UTC_TIME_UUID),
+          SETUP_WRITE_PERMISSION,
+          sizeof(utc_time_attribute),
+          0,
+          utc_time_attribute}},
 };
 
 void clear_staged_value() {
@@ -778,15 +814,116 @@ bool validate_entitlement(const uint8_t *entitlement,
 uint64_t trusted_entitlement_now() {
     if (!entitlement_time_trusted) return 0;
     const int64_t elapsed = esp_timer_get_time() - entitlement_time_started_microseconds;
-    if (elapsed < 0) return entitlement_issued_epoch;
-    return entitlement_issued_epoch + static_cast<uint64_t>(elapsed / 1000000LL);
+    if (elapsed < 0) return trusted_clock_epoch;
+    return trusted_clock_epoch + static_cast<uint64_t>(elapsed / 1000000LL);
+}
+
+void clock_checkpoint_callback(void *) {
+    const uint64_t current_epoch = trusted_entitlement_now();
+    if (current_epoch == 0) return;
+    const esp_err_t error = save_trusted_clock_epoch(current_epoch);
+    if (error != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "UTC clock checkpoint failed: %s",
+                 esp_err_to_name(error));
+    } else {
+        ESP_LOGI(LOG_TAG, "UTC clock checkpoint saved");
+    }
+}
+
+bool activate_stored_entitlement(uint64_t current_epoch) {
+    uint8_t stored_entitlement[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
+    uint64_t stored_issued_epoch = 0;
+    uint64_t stored_expires_epoch = 0;
+    uint64_t stored_counter = 0;
+    const bool valid =
+        load_subscription_entitlement(stored_entitlement,
+                                      sizeof(stored_entitlement)) == ESP_OK &&
+        validate_entitlement(stored_entitlement, sizeof(stored_entitlement),
+                             &stored_issued_epoch, &stored_expires_epoch,
+                             &stored_counter);
+    if (valid) {
+        current_entitlement_counter = stored_counter;
+        std::memcpy(subscription_entitlement_attribute, stored_entitlement,
+                    sizeof(subscription_entitlement_attribute));
+    }
+    std::memset(stored_entitlement, 0, sizeof(stored_entitlement));
+    if (!valid || current_epoch < stored_issued_epoch ||
+        current_epoch >= stored_expires_epoch) {
+        return false;
+    }
+
+    uint8_t advertisement_key[PUBLIC_KEY_SIZE] = {};
+    const esp_err_t key_result =
+        load_advertisement_key(advertisement_key, sizeof(advertisement_key));
+    const esp_err_t advertising_result =
+        key_result == ESP_OK
+            ? configure_finder_advertisement(advertisement_key,
+                                             sizeof(advertisement_key))
+            : key_result;
+    std::memset(advertisement_key, 0, sizeof(advertisement_key));
+    if (advertising_result != ESP_OK) {
+        return false;
+    }
+
+    entitlement_issued_epoch = stored_issued_epoch;
+    entitlement_expires_epoch = stored_expires_epoch;
+    ble_mode = BLEMode::TRACKER;
+    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
+    return true;
+}
+
+esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
+    if (value == nullptr || length != UTC_TIME_SIZE) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INVALID_LENGTH);
+        return ESP_GATT_INVALID_ATTR_LEN;
+    }
+    const uint64_t requested_epoch = read_uint64_be(value);
+    const uint64_t current_epoch = trusted_entitlement_now();
+    if (requested_epoch == 0 ||
+        (current_epoch > requested_epoch &&
+         current_epoch - requested_epoch > CLOCK_SYNC_SKEW_TOLERANCE_SECONDS)) {
+        ESP_LOGW(LOG_TAG, "Rejected UTC clock rollback");
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INVALID_VALUE);
+        return ESP_GATT_INVALID_PDU;
+    }
+
+    const uint64_t accepted_epoch = std::max(requested_epoch, current_epoch);
+    const esp_err_t error = save_trusted_clock_epoch(accepted_epoch);
+    if (error != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "UTC clock persistence failed: %s",
+                 esp_err_to_name(error));
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::STORAGE_FAILURE);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+    std::memcpy(utc_time_attribute, value, sizeof(utc_time_attribute));
+    if (attribute_handles[UTC_TIME_VALUE] != 0) {
+        esp_ble_gatts_set_attr_value(attribute_handles[UTC_TIME_VALUE],
+                                    sizeof(utc_time_attribute),
+                                    utc_time_attribute);
+    }
+    trusted_clock_epoch = accepted_epoch;
+    entitlement_time_started_microseconds = esp_timer_get_time();
+    entitlement_time_trusted = true;
+
+    if (ble_mode != BLEMode::SETUP) {
+        if (!activate_stored_entitlement(accepted_epoch)) {
+            ble_mode = BLEMode::SUSPENDED;
+            update_status(ProvisioningState::SUSPENDED,
+                          ProvisioningResult::ENTITLEMENT_REJECTED);
+        }
+        configure_advertising_for_mode();
+    }
+    ESP_LOGI(LOG_TAG, "UTC clock synchronized and persisted");
+    return ESP_GATT_OK;
 }
 
 void entitlement_expiry_callback(void *) {
     if (ble_mode != BLEMode::TRACKER || !entitlement_time_trusted) return;
     if (trusted_entitlement_now() < entitlement_expires_epoch) return;
 
-    entitlement_time_trusted = false;
     ble_mode = BLEMode::SUSPENDED;
     esp_ble_gap_stop_advertising();
     update_status(ProvisioningState::SUSPENDED,
@@ -856,9 +993,11 @@ esp_gatt_status_t persist_entitlement(const uint8_t *entitlement, size_t length)
     uint64_t issued_epoch = 0;
     uint64_t expires_epoch = 0;
     uint64_t counter = 0;
+    const uint64_t current_epoch = trusted_entitlement_now();
     if (!validate_entitlement(entitlement, length, &issued_epoch,
                               &expires_epoch, &counter) ||
-        counter <= current_entitlement_counter) {
+        counter <= current_entitlement_counter || current_epoch < issued_epoch ||
+        current_epoch >= expires_epoch) {
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::ENTITLEMENT_REJECTED);
         return ESP_GATT_INSUF_AUTHORIZATION;
@@ -896,8 +1035,6 @@ esp_gatt_status_t persist_entitlement(const uint8_t *entitlement, size_t length)
     current_entitlement_counter = counter;
     entitlement_issued_epoch = issued_epoch;
     entitlement_expires_epoch = expires_epoch;
-    entitlement_time_started_microseconds = esp_timer_get_time();
-    entitlement_time_trusted = true;
     ble_mode = BLEMode::TRACKER;
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
     configure_advertising_for_mode();
@@ -979,7 +1116,8 @@ esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
     std::memset(subscription_entitlement_attribute, 0,
                 sizeof(subscription_entitlement_attribute));
     current_entitlement_counter = 0;
-    entitlement_time_trusted = false;
+    entitlement_issued_epoch = 0;
+    entitlement_expires_epoch = 0;
     ble_mode = BLEMode::SETUP;
     bond_cleanup_pending = true;
     update_status(ProvisioningState::UNPROVISIONED,
@@ -1075,6 +1213,9 @@ size_t secure_value_length(uint16_t handle) {
     if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
         return SUBSCRIPTION_ENTITLEMENT_SIZE;
     }
+    if (handle == attribute_handles[UTC_TIME_VALUE]) {
+        return UTC_TIME_SIZE;
+    }
     return 0;
 }
 
@@ -1084,6 +1225,9 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
     }
     if (!connection_authorized) {
         return false;
+    }
+    if (handle == attribute_handles[UTC_TIME_VALUE]) {
+        return true;
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
         return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
@@ -1118,6 +1262,9 @@ esp_gatt_status_t process_secure_write(uint16_t handle,
     }
     if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
         return persist_entitlement(value, length);
+    }
+    if (handle == attribute_handles[UTC_TIME_VALUE]) {
+        return persist_trusted_utc(value, length);
     }
     return ESP_GATT_WRITE_NOT_PERMIT;
 }
@@ -1515,10 +1662,44 @@ std::optional<ERROR_TAG> ble_init() {
     if (error != ESP_OK) {
         return ERROR_TAG("Entitlement timer initialization failed", LOG_TAG);
     }
+    const esp_timer_create_args_t clock_checkpoint_timer_arguments = {
+        .callback = &clock_checkpoint_callback,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "clock_checkpoint",
+        .skip_unhandled_events = false,
+    };
+    error = esp_timer_create(&clock_checkpoint_timer_arguments,
+                             &clock_checkpoint_timer);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Clock checkpoint timer initialization failed", LOG_TAG);
+    }
     error = esp_timer_start_periodic(entitlement_expiry_timer, 5ULL * 1000ULL * 1000ULL);
     if (error != ESP_OK) {
         return ERROR_TAG("Entitlement timer start failed", LOG_TAG);
     }
+
+    uint64_t stored_clock_epoch = 0;
+    error = load_trusted_clock_epoch(&stored_clock_epoch);
+    if (error != ESP_OK) {
+        stored_clock_epoch = DEFAULT_TRUSTED_CLOCK_EPOCH;
+        error = save_trusted_clock_epoch(stored_clock_epoch);
+        if (error != ESP_OK) {
+            return ERROR_TAG("Default UTC clock persistence failed", "NVS");
+        }
+        ESP_LOGW(LOG_TAG, "No UTC checkpoint found; using firmware default");
+    } else {
+        ESP_LOGI(LOG_TAG, "Restored UTC clock from NVS checkpoint");
+    }
+    trusted_clock_epoch = stored_clock_epoch;
+    entitlement_time_started_microseconds = esp_timer_get_time();
+    entitlement_time_trusted = true;
+    error = esp_timer_start_periodic(clock_checkpoint_timer,
+                                     CLOCK_CHECKPOINT_INTERVAL_MICROSECONDS);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Clock checkpoint timer start failed", LOG_TAG);
+    }
+
     error = initialize_device_id();
     if (error != ESP_OK) {
         return ERROR_TAG("Device ID initialization failed", "DEVICE_ID");
@@ -1527,31 +1708,21 @@ std::optional<ERROR_TAG> ble_init() {
     uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
     if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
         ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
-        // A reboot cannot prove that the wall clock is still trustworthy, so
-        // even a valid stored packet starts in renewal mode. The owner can
-        // reconnect and install a fresh entitlement with a fresh backend time.
-        uint8_t stored_entitlement[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
-        uint64_t stored_issued_epoch = 0;
-        uint64_t stored_expires_epoch = 0;
-        uint64_t stored_counter = 0;
-        if (load_subscription_entitlement(stored_entitlement,
-                                           sizeof(stored_entitlement)) == ESP_OK &&
-            validate_entitlement(stored_entitlement, sizeof(stored_entitlement),
-                                 &stored_issued_epoch, &stored_expires_epoch,
-                                 &stored_counter)) {
-            current_entitlement_counter = stored_counter;
-            std::memcpy(subscription_entitlement_attribute, stored_entitlement,
-                        sizeof(subscription_entitlement_attribute));
+        if (activate_stored_entitlement(trusted_entitlement_now())) {
             ESP_LOGI(LOG_TAG,
-                     "Stored entitlement verified; waiting for renewal time proof");
+                     "Stored entitlement active at restored UTC clock; "
+                     "finder advertising will resume");
         } else {
-            ESP_LOGW(LOG_TAG, "No valid signed entitlement found; finder advertising disabled");
+            ESP_LOGW(LOG_TAG,
+                     "No active signed entitlement at restored UTC clock; "
+                     "finder advertising disabled");
         }
-        std::memset(stored_entitlement, 0, sizeof(stored_entitlement));
-        ble_mode = BLEMode::SUSPENDED;
-        status_value[0] = static_cast<uint8_t>(ProvisioningState::SUSPENDED);
-        status_value[1] =
-            static_cast<uint8_t>(ProvisioningResult::ENTITLEMENT_REJECTED);
+        if (ble_mode != BLEMode::TRACKER) {
+            ble_mode = BLEMode::SUSPENDED;
+            status_value[0] = static_cast<uint8_t>(ProvisioningState::SUSPENDED);
+            status_value[1] =
+                static_cast<uint8_t>(ProvisioningResult::ENTITLEMENT_REJECTED);
+        }
         if (update_key_fingerprint(existing_key) != ESP_OK) {
             std::memset(existing_key, 0, sizeof(existing_key));
             return ERROR_TAG("Key fingerprint initialization failed", "NVS");

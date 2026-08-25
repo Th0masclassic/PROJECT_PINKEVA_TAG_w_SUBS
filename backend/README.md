@@ -17,7 +17,20 @@ Apply the Supabase migrations, copy `.env.example` to `.env` in a local secret m
 
 ```bash
 python -m pip install -e '.[test]'
-uvicorn app.main:app --host 127.0.0.1 --port 8080
+python -m app.server
+```
+
+The launcher uses Uvicorn's normal event loop on Unix and a Selector event loop
+on Windows so Psycopg's async pool works on Python 3.14.
+
+On Windows, `./run_local.ps1` starts the pinned local Supabase CLI stack when
+`.env` points to port 54322, starts or reuses the
+`dadoum/anisette-v3-server` Docker container, verifies its v1 headers, and then
+starts Uvicorn with `.env`:
+
+```powershell
+cd C:\Users\tomas\Documents\PINKEVA\backend
+.\run_local.ps1
 ```
 
 On the configured development Mac, `./run_local_secure.sh` loads application
@@ -44,10 +57,14 @@ correlation ID and exception type for unexpected failures.
 
 ## Location reports
 
-The checked-in `Test/Apple_FindMy_test/request_reports.py` is a manual legacy
-utility that reads local `.keys` files. The mobile API uses the server-side
-adapter in `backend/app/findmy.py` instead. When the authenticated app opens
-Home, Map, Trackers, or a tracker detail page it calls:
+The checked-in `Test/Apple_FindMy_test/request_reports.py` is the vendored
+[`biemster/FindMy`](https://github.com/biemster/FindMy) utility and reads local
+`.keys` files. The mobile API adapts that protocol in `backend/app/findmy.py`:
+the same hashed advertisement-key ID, millisecond search window, Anisette
+headers, HTTP Basic session credentials, P-224 ECDH derivation, SHA-256 split,
+and AES-GCM payload decoding are used without local key files or SQLite. When
+the authenticated app opens Home, Map, Trackers, or a tracker detail page it
+calls:
 
 ```http
 POST /v1/devices/{device_id}/location/report
@@ -62,13 +79,65 @@ backend. The response contains only the latest safe coordinate projection; a
 newer report is persisted to `device.last_latitude`, `last_longitude`,
 `last_location_at`, and `last_place`.
 
-Report retrieval is optional at startup so provisioning can still run while
-Apple credentials are being prepared. Configure `PINQEVA_FINDMY_AUTH_FILE` or
-the `PINQEVA_FINDMY_DSID` and `PINQEVA_FINDMY_SEARCH_PARTY_TOKEN` secret
-variables, and run the local anisette service at
-`PINQEVA_FINDMY_ANISETTE_URL` (default `http://127.0.0.1:6969`). If those
-values are absent, the API returns the safe message “Location reports are
-temporarily unavailable” and never falls back to fabricated coordinates.
+The server logs `location_report_request_received`,
+`findmy_request_reports_received`, and `location_report_request_completed`
+with correlation/user/device IDs and report counts/status. Coordinates,
+private keys, Apple payloads, passwords, 2FA codes, and session tokens are not
+logged.
+
+For example, an authenticated request for one owned tag is:
+
+```bash
+curl -X POST \
+  -H "Authorization: Bearer <Supabase access token>" \
+  "https://YOUR_API_HOST/v1/devices/<device UUID>/location/report"
+```
+
+When Apple returns a valid report, the JSON projection is shaped like this:
+
+```json
+{
+  "device_id": "<device UUID>",
+  "serial_number": "PKV-AABBCCDDEEFF",
+  "report_status": "updated",
+  "latitude": 3.87223,
+  "longitude": -0.91393,
+  "last_location_at": "2026-08-25T12:00:00Z",
+  "last_place": "3.87223, -0.91393",
+  "confidence": 3,
+  "status_code": 1
+}
+```
+
+`report_status` is `updated` for a newly accepted Apple report,
+`unchanged` when the stored report is newer, and `no_report` when Apple has
+no usable report; the latter returns the last stored coordinates, or `null`
+coordinates if the tag has never reported. A caller that does not actively own
+the UUID receives a safe 404 response and no coordinates.
+
+At startup, configure `PINQEVA_FINDMY_APPLE_ID` and either provide
+`PINQEVA_FINDMY_APPLE_PASSWORD` through the secret manager or leave it blank
+for a hidden terminal prompt. The backend performs the Apple GSA/SRP login,
+prompts for the configured SMS or trusted-device 2FA code, and keeps the
+resulting `dsid` and `searchPartyToken` only in memory. If the report endpoint
+returns an authentication failure, the backend performs one fresh login and
+retries that report request. A future automated SMS provider can replace the
+2FA code callback without changing the location API.
+
+`PINQEVA_FINDMY_AUTH_FILE` remains a fallback for a previously obtained
+`{"dsid":"...","searchPartyToken":"..."}` session when Apple ID login is
+not enabled. Direct `PINQEVA_FINDMY_DSID` and
+`PINQEVA_FINDMY_SEARCH_PARTY_TOKEN` values are also supported for controlled
+non-interactive testing, but they cannot be refreshed automatically. The local
+Anisette service must be running at `PINQEVA_FINDMY_ANISETTE_URL` (default
+`http://127.0.0.1:6969`) before login or report retrieval. If no Find My
+credentials are configured, provisioning still starts and location requests
+fail safely without fabricated coordinates.
+
+The upstream utility disables certificate verification for Apple's legacy GSA
+endpoint. The backend keeps verification enabled and trusts Apple's published
+legacy `Apple Root CA` for that endpoint; normal platform roots are still used
+for `setup.icloud.com` and `gateway.icloud.com`.
 
 ## Provisioning API
 

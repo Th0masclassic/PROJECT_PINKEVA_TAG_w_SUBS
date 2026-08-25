@@ -307,7 +307,7 @@ When the entitlement expires, firmware enters **Subscription Suspended** mode an
 
 The tag has no permanent Internet connection and therefore cannot query the backend at the instant a subscription changes. Local enforcement uses the signed expiry time. An entitlement can remain valid until the paid `current_period_end`; cancellation at period end does not stop an already-paid period. Immediate revocation requires a later BLE synchronization unless future hardware provides an independent secure network and time source.
 
-Secure expiry enforcement also requires trustworthy time. While continuously powered, firmware can combine the last authenticated UTC value with a monotonic timer. After power loss or clock rollback, the secure behavior is fail-closed: the tag remains suspended until the authenticated application installs a fresh entitlement and trusted time value.
+Secure expiry enforcement also requires trustworthy time. Firmware combines the last authenticated phone UTC value with a monotonic timer, saves a monotonic checkpoint to NVS immediately after synchronization and once per hour, and resumes counting from that checkpoint after reboot. The phone refreshes UTC after every backend-authorized BLE connection. Firmware never moves the checkpoint backwards; a small stale-phone tolerance keeps the later device value rather than applying a rollback.
 
 Payment webhooks must be signature-verified and idempotent before changing subscription state or issuing an entitlement. Reset, renewal, safety behavior, anti-stalking behavior, and critical firmware recovery remain available in suspended mode even though finder advertising is disabled.
 
@@ -337,7 +337,7 @@ The most important trust boundaries are:
 - Between the payment provider and webhook receiver.
 - Between location data and any requester.
 
-Protocol v1.3 removes the customer QR step and adds capability `0x20` for the current non-bonding development transport. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
+Protocol v1.4 retains capability `0x20` for the current non-bonding development transport and adds capability `0x40` for authenticated UTC synchronization. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes, including clock updates, before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
 
 ## 4. Communication Protocol
 
@@ -360,7 +360,7 @@ The client scans for the service UUID, displays candidate device identifiers, an
 
 ### 4.3 Pinqeva Provisioning GATT service
 
-The following UUIDs define implemented provisioning protocol version 1.3.
+The following UUIDs define implemented provisioning protocol version 1.4.
 
 | Attribute | UUID | Properties | Value |
 |---|---|---|---|
@@ -375,8 +375,9 @@ The following UUIDs define implemented provisioning protocol version 1.3.
 | Tag Challenge | `a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | Fresh random 32-byte value generated for each BLE connection. |
 | Tag Authorization Proof | `a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response | `HMAC-SHA256(device_bootstrap_key, domain || serial || challenge)`. Unlocks sensitive writes for this connection only. |
 | Subscription Entitlement | `a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; application-channel protection required in production | Exactly 135 raw binary bytes containing a signed device-bound lease. |
+| UTC Time | `a6f0f00b-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; backend-authorized connection required | Eight-byte unsigned Unix UTC seconds, big-endian. Persisted immediately and checkpointed hourly. |
 
-GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for the 32-byte authorization proof, 28-byte advertisement key, 32-byte control key, and 64-byte reset command. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
+GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for every sensitive value, including the authorization proof, UTC value, keys, reset command, and entitlement. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
 
 ### 4.4 Protocol Information value
 
@@ -485,7 +486,7 @@ sequenceDiagram
     API-->>App: Registered device (suspended)
     App->>API: Request signed entitlement (same fresh challenge)
     API-->>App: Entitlement + authorization proof
-    App->>Tag: Write proof, then signed entitlement
+    App->>Tag: Write proof, UTC time, then signed entitlement
     Tag-->>App: READY; finder advertising enabled
 ```
 
@@ -521,8 +522,8 @@ Tracker advertising is non-connectable in the prototype. Future nearby commands 
 | Rename device | `PATCH /v1/devices/{deviceId}` | Active owner |
 | Read vehicle profile | `GET /v1/devices/{deviceId}/vehicle` | Active owner |
 | Create/update vehicle profile | `PUT /v1/devices/{deviceId}/vehicle` | Active owner |
-| Latest location | `GET /v1/devices/{deviceId}/locations/latest` | Active owner with applicable entitlement |
-| Location history | `GET /v1/devices/{deviceId}/locations` | Active owner with applicable entitlement |
+| Latest location report | `POST /v1/devices/{deviceId}/location/report` | Active owner; safe latest projection only |
+| 24-hour location reports | `POST /v1/devices/{deviceId}/location/report_24h` | Active owner; decrypted coordinates/timestamps only |
 | List plans | `GET /v1/plans` | Public or authenticated according to policy |
 | Manage subscription | `POST /v1/subscriptions` | Authenticated owner |
 | Issue/refresh entitlement | `POST /v1/devices/{deviceId}/entitlements` | Active owner with paid subscription |
@@ -541,7 +542,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - A missing, invalid, or expired entitlement prevents finder-network advertising even when a valid public key is stored.
 - Suspended mode retains the public key and exposes only the renewal channel.
 - A renewed signed entitlement atomically reactivates tracker advertising after verification.
-- A reboot without trustworthy time fails closed into suspended mode until the app provides a fresh signed entitlement and trusted time.
+- A reboot resumes from the last monotonic UTC checkpoint in NVS; the next authorized phone connection refreshes it without permitting rollback.
 - Success is reported only after persistent read-back verification.
 - Backend claim completion is idempotent so retries cannot create duplicate ownership records.
 - Factory reset clears the public key and ownership binding through an explicit, auditable process.
@@ -555,7 +556,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Device identifier derived from the factory MAC address.
 - Setup and subscription-suspended firmware modes for the provisioning slice.
 - Connectable advertisement containing the provisioning service UUID, with the `PKV-` name in scan response data.
-- Protocol-v1.3 GATT service with a per-connection challenge/proof gate, explicit no-bond development capability, 30-second unauthorized-client timeout, key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
+- Protocol-v1.4 GATT service with a per-connection challenge/proof gate, explicit no-bond development capability, authenticated phone UTC synchronization, hourly NVS clock checkpoints, 30-second unauthorized-client timeout, key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
 - Validated factory-bootstrap plus one-time NVS key/control persistence, commit/read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
 - React Native claim/release service that automatically obtains and writes backend authorization proofs, verifies fingerprints, avoids rewrites, installs key material in safe order, and confirms reset before backend release.
 - Backend entitlement issuance, mobile BLE entitlement installation, firmware signature verification, anti-rollback, trusted-time activation, and expiry suspension for active/trialing per-tag subscriptions.

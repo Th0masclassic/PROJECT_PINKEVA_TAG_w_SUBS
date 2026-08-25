@@ -198,6 +198,15 @@ def parse_boolean(name: str, value: str) -> bool:
     raise ConfigurationError(f"{name} must be true or false")
 
 
+def parse_findmy_second_factor(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"sms", "trusted_device"}:
+        return normalized
+    raise ConfigurationError(
+        "PINQEVA_FINDMY_SECOND_FACTOR must be sms or trusted_device"
+    )
+
+
 def parse_uuid_set(name: str, value: str) -> frozenset[UUID]:
     result: set[UUID] = set()
     for item in value.split(","):
@@ -246,6 +255,10 @@ class Settings:
     # operator has completed the one-time Apple token setup. Location requests
     # fail closed with a short safe error until these values are configured.
     findmy_auth_file: str = ""
+    findmy_apple_id: str = ""
+    findmy_apple_password: str = ""
+    findmy_second_factor: str = "sms"
+    findmy_login_on_startup: bool = True
     findmy_dsid: str = ""
     findmy_search_party_token: str = ""
     findmy_anisette_url: str = "http://127.0.0.1:6969"
@@ -373,6 +386,13 @@ def get_settings() -> Settings:
             "STRIPE_PORTAL_CONFIGURATION_ID has an invalid format"
         )
 
+    findmy_apple_id = os.getenv("PINQEVA_FINDMY_APPLE_ID", "").strip()
+    findmy_apple_password = os.getenv("PINQEVA_FINDMY_APPLE_PASSWORD", "").strip()
+    if findmy_apple_password and not findmy_apple_id:
+        raise ConfigurationError(
+            "PINQEVA_FINDMY_APPLE_ID is required when an Apple password is configured"
+        )
+
     return Settings(
         database_url=validate_database_url(_required("DATABASE_URL")),
         supabase_jwks_url=jwks_url,
@@ -398,6 +418,15 @@ def get_settings() -> Settings:
             os.getenv("PINQEVA_ENTITLEMENT_PRIVATE_KEY"),
         ),
         findmy_auth_file=os.getenv("PINQEVA_FINDMY_AUTH_FILE", "").strip(),
+        findmy_apple_id=findmy_apple_id,
+        findmy_apple_password=findmy_apple_password,
+        findmy_second_factor=parse_findmy_second_factor(
+            os.getenv("PINQEVA_FINDMY_SECOND_FACTOR", "sms")
+        ),
+        findmy_login_on_startup=parse_boolean(
+            "PINQEVA_FINDMY_LOGIN_ON_STARTUP",
+            os.getenv("PINQEVA_FINDMY_LOGIN_ON_STARTUP", "true"),
+        ),
         findmy_dsid=os.getenv("PINQEVA_FINDMY_DSID", "").strip(),
         findmy_search_party_token=os.getenv(
             "PINQEVA_FINDMY_SEARCH_PARTY_TOKEN", ""

@@ -29,12 +29,15 @@ import {
   TAG_CONTROL_KEY_UUID,
   SUBSCRIPTION_ENTITLEMENT_LENGTH,
   SUBSCRIPTION_ENTITLEMENT_UUID,
+  UTC_TIME_SYNC_CAPABILITY,
+  UTC_TIME_UUID,
   bytesEqual,
   decodeBase64Url,
   decodeBleBase64,
   decodeDeviceIdentifier,
   decodeTagKeyFingerprint,
   encodeBase64Url,
+  encodeUtcUnixSeconds,
   parseProtocolInformation,
   provisioningStatusIsReady,
   toBleBase64,
@@ -67,13 +70,24 @@ const NON_BONDING_CONNECTION_OPTIONS = Object.freeze({
 export class TagProvisioner {
   private readonly ble: BleManager;
   private readonly backend: PinqevaProvisioningClient;
+  private readonly now: () => Date;
 
   constructor(
     ble: BleManager,
     backend: PinqevaProvisioningClient,
+    now: () => Date = () => new Date(),
   ) {
     this.ble = ble;
     this.backend = backend;
+    this.now = now;
+  }
+
+  private async syncUtcTime(device: Device): Promise<void> {
+    await device.writeCharacteristicWithResponseForService(
+      PINKEVA_SERVICE_UUID,
+      UTC_TIME_UUID,
+      toBleBase64(encodeUtcUnixSeconds(this.now())),
+    );
   }
 
   async inspectTag(input: {
@@ -111,7 +125,8 @@ export class TagProvisioner {
       if (
         protocol.protocolMajor !== 1 ||
         (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
-        (protocol.capabilities & NON_BONDING_SETUP_CAPABILITY) === 0
+        (protocol.capabilities & NON_BONDING_SETUP_CAPABILITY) === 0 ||
+        (protocol.capabilities & UTC_TIME_SYNC_CAPABILITY) === 0
       ) {
         throw new ProvisioningClientError(
           'UNSUPPORTED_PROTOCOL',
@@ -192,7 +207,8 @@ export class TagProvisioner {
       if (
         protocol.protocolMajor !== 1 ||
         (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
-        (protocol.capabilities & NON_BONDING_SETUP_CAPABILITY) === 0
+        (protocol.capabilities & NON_BONDING_SETUP_CAPABILITY) === 0 ||
+        (protocol.capabilities & UTC_TIME_SYNC_CAPABILITY) === 0
       ) {
         throw new ProvisioningClientError(
           'UNSUPPORTED_PROTOCOL',
@@ -253,6 +269,7 @@ export class TagProvisioner {
       } finally {
         authorizationProof.fill(0);
       }
+      await this.syncUtcTime(device);
 
       if (claim.tag_action === 'write_key') {
         if (initialFingerprint !== null) {
@@ -431,6 +448,7 @@ export class TagProvisioner {
     } finally {
       authorizationProof.fill(0);
     }
+    await this.syncUtcTime(input.device);
 
     input.onProgress?.('installing');
     let statusSubscription: Subscription | undefined;
@@ -505,7 +523,8 @@ export class TagProvisioner {
       const protocol = parseProtocolInformation(decodeBleBase64(protocolValue.value));
       if (
         protocol.protocolMajor !== 1 ||
-        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
+        (protocol.capabilities & UTC_TIME_SYNC_CAPABILITY) === 0
       ) {
         throw new ProvisioningClientError(
           'UNSUPPORTED_PROTOCOL',

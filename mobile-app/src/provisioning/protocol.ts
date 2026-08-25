@@ -10,6 +10,7 @@ export const TAG_CONTROL_KEY_UUID = 'a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const TAG_CHALLENGE_UUID = 'a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const TAG_AUTHORIZATION_PROOF_UUID = 'a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const SUBSCRIPTION_ENTITLEMENT_UUID = 'a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const UTC_TIME_UUID = 'a6f0f00b-3e4d-4b1a-9c2e-72d24c8f0a01';
 
 export const ADVERTISEMENT_KEY_LENGTH = 28;
 export const KEY_FINGERPRINT_LENGTH = 32;
@@ -17,8 +18,10 @@ export const TAG_CONTROL_KEY_LENGTH = 32;
 export const TAG_CHALLENGE_LENGTH = 32;
 export const TAG_AUTHORIZATION_PROOF_LENGTH = 32;
 export const SUBSCRIPTION_ENTITLEMENT_LENGTH = 135;
+export const UTC_TIME_LENGTH = 8;
 export const TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 export const NON_BONDING_SETUP_CAPABILITY = 0x0020;
+export const UTC_TIME_SYNC_CAPABILITY = 0x0040;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
 export const PINKEVA_SERIAL_PATTERN = /^PKV-[0-9A-F]{12}$/;
 
@@ -55,6 +58,20 @@ export function encodeBase64Url(value: Uint8Array): string {
 
 export function toBleBase64(value: Uint8Array): string {
   return fromByteArray(value);
+}
+
+/** Encode a JavaScript instant as an unsigned, big-endian Unix UTC value. */
+export function encodeUtcUnixSeconds(value: Date = new Date()): Uint8Array {
+  let seconds = Math.floor(value.getTime() / 1000);
+  if (!Number.isSafeInteger(seconds) || seconds <= 0) {
+    throw new ProvisioningClientError('INVALID_DEVICE_TIME', 'Phone UTC time is invalid');
+  }
+  const encoded = new Uint8Array(UTC_TIME_LENGTH);
+  for (let index = encoded.length - 1; index >= 0; index -= 1) {
+    encoded[index] = seconds % 256;
+    seconds = Math.floor(seconds / 256);
+  }
+  return encoded;
 }
 
 export function decodeBleBase64(value: string | null): Uint8Array {

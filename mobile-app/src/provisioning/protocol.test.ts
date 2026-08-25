@@ -3,10 +3,12 @@ import test from 'node:test';
 
 import {
   NON_BONDING_SETUP_CAPABILITY,
+  UTC_TIME_SYNC_CAPABILITY,
   ProvisioningClientError,
   bytesEqual,
   decodeDeviceIdentifier,
   decodeTagKeyFingerprint,
+  encodeUtcUnixSeconds,
   normalizeAdvertisedSerial,
   parseProtocolInformation,
   provisioningStatusIsReady,
@@ -20,14 +22,15 @@ test('accepts only canonical advertised PKV serials', () => {
 });
 
 test('parses protocol v1 capability bytes and the GATT serial', () => {
-  assert.deepEqual(parseProtocolInformation(Uint8Array.of(1, 3, 1, 4, 0x30, 0)), {
+  assert.deepEqual(parseProtocolInformation(Uint8Array.of(1, 4, 1, 4, 0x70, 0)), {
     protocolMajor: 1,
-    protocolMinor: 3,
+    protocolMinor: 4,
     firmwareMajor: 1,
     firmwareMinor: 4,
-    capabilities: 0x30,
+    capabilities: 0x70,
   });
-  assert.equal(0x30 & NON_BONDING_SETUP_CAPABILITY, NON_BONDING_SETUP_CAPABILITY);
+  assert.equal(0x70 & NON_BONDING_SETUP_CAPABILITY, NON_BONDING_SETUP_CAPABILITY);
+  assert.equal(0x70 & UTC_TIME_SYNC_CAPABILITY, UTC_TIME_SYNC_CAPABILITY);
   assert.equal(
     decodeDeviceIdentifier(Uint8Array.from(Buffer.from('PKV-AABBCCDDEEFF', 'ascii'))),
     'PKV-AABBCCDDEEFF',
@@ -36,6 +39,14 @@ test('parses protocol v1 capability bytes and the GATT serial', () => {
     () => decodeDeviceIdentifier(Uint8Array.from(Buffer.from('PKV-123', 'ascii'))),
     ProvisioningClientError,
   );
+});
+
+test('encodes the phone clock as unsigned big-endian Unix UTC seconds', () => {
+  assert.deepEqual(
+    encodeUtcUnixSeconds(new Date('2026-08-25T20:00:00Z')),
+    Uint8Array.of(0, 0, 0, 0, 0x6a, 0x8d, 0xf4, 0x40),
+  );
+  assert.throws(() => encodeUtcUnixSeconds(new Date('invalid')), ProvisioningClientError);
 });
 
 test('treats an all-zero fingerprint as unprovisioned', () => {

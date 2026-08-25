@@ -3,6 +3,7 @@ import pytest
 from app.config import (
     ConfigurationError,
     parse_stripe_price_map,
+    parse_findmy_second_factor,
     validate_database_url,
     validate_https_url,
     validate_stripe_secret,
@@ -77,3 +78,13 @@ def test_explicit_stripe_placeholders_boot_without_enabling_billing() -> None:
         validate_stripe_secret("STRIPE_SECRET_KEY", "HERE_STRIPE_SECRET_KEY", "sk_test_")
         == "HERE_STRIPE_SECRET_KEY"
     )
+
+
+@pytest.mark.parametrize("value", ["sms", "trusted_device", " TRUSTED_DEVICE "])
+def test_findmy_second_factor_accepts_supported_modes(value: str) -> None:
+    assert parse_findmy_second_factor(value) in {"sms", "trusted_device"}
+
+
+def test_findmy_second_factor_rejects_unknown_modes() -> None:
+    with pytest.raises(ConfigurationError):
+        parse_findmy_second_factor("email")
