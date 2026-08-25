@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, StyleSheet, View } from 'react-native';
-import MapView, { Marker, PROVIDER_GOOGLE, type LatLng, type MapType } from 'react-native-maps';
+import { Platform, Pressable, StyleSheet, View } from 'react-native';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE, type LatLng, type MapType } from 'react-native-maps';
 
 import { TrackerArtwork } from '../components';
 import type { Tracker } from '../model';
@@ -11,6 +11,7 @@ const FALLBACK_REGION = {
   latitudeDelta: 0.18,
   longitudeDelta: 0.18,
 };
+const EMPTY_PATH: LatLng[] = [];
 
 export function GoogleTrackerMap({
   trackers,
@@ -18,6 +19,8 @@ export function GoogleTrackerMap({
   recenterToken,
   focusTrackerId,
   showsUserLocation = false,
+  pathCoordinates = EMPTY_PATH,
+  onLongPressTracker,
   onOpenTracker,
 }: {
   trackers: Tracker[];
@@ -25,6 +28,8 @@ export function GoogleTrackerMap({
   recenterToken: number;
   focusTrackerId?: string;
   showsUserLocation?: boolean;
+  pathCoordinates?: LatLng[];
+  onLongPressTracker?: (trackerId: string) => void;
   onOpenTracker: (trackerId: string) => void;
 }) {
   const ref = useRef<MapView>(null);
@@ -48,6 +53,20 @@ export function GoogleTrackerMap({
 
   const fitMarkers = useCallback(() => {
     if (!ref.current) return;
+    if (pathCoordinates.length > 1) {
+      ref.current.fitToCoordinates(pathCoordinates, {
+        edgePadding: { top: 160, right: 60, bottom: 180, left: 60 },
+        animated: true,
+      });
+      return;
+    }
+    if (pathCoordinates.length === 1) {
+      ref.current.animateToRegion(
+        { ...pathCoordinates[0], latitudeDelta: 0.025, longitudeDelta: 0.025 },
+        450,
+      );
+      return;
+    }
     if (coordinates.length === 0) {
       ref.current.animateToRegion(FALLBACK_REGION, 450);
       return;
@@ -70,7 +89,7 @@ export function GoogleTrackerMap({
       coordinates.map((entry) => entry.coordinate),
       { edgePadding: { top: 150, right: 60, bottom: 390, left: 60 }, animated: true },
     );
-  }, [coordinates, focusedCoordinate]);
+  }, [coordinates, focusedCoordinate, pathCoordinates]);
 
   useEffect(() => {
     if (mapReady) fitMarkers();
@@ -107,6 +126,15 @@ export function GoogleTrackerMap({
           fitMarkers();
         }}
       >
+        {pathCoordinates.length > 1 ? (
+          <Polyline
+            coordinates={pathCoordinates}
+            strokeColor="#0B57D0"
+            strokeWidth={5}
+            lineCap="round"
+            lineJoin="round"
+          />
+        ) : null}
         {coordinates.map(({ tracker, coordinate }) => (
           <Marker
             key={tracker.id}
@@ -115,10 +143,56 @@ export function GoogleTrackerMap({
             description={tracker.address === '—' ? tracker.place : tracker.address}
             anchor={{ x: 0.5, y: 1 }}
             centerOffset={{ x: 0, y: -4 }}
-            onPress={() => onOpenTracker(tracker.id)}
             onCalloutPress={() => onOpenTracker(tracker.id)}
           >
-            <View style={styles.marker} accessible accessibilityLabel={tracker.name}>
+            <TrackerMapMarker
+              tracker={tracker}
+              onOpenTracker={onOpenTracker}
+              onLongPressTracker={onLongPressTracker}
+            />
+          </Marker>
+        ))}
+        {pathCoordinates.length ? (
+          <Marker
+            coordinate={pathCoordinates[pathCoordinates.length - 1]}
+            pinColor="#0B57D0"
+            title="Latest location"
+          />
+        ) : null}
+      </MapView>
+    </View>
+  );
+}
+
+function TrackerMapMarker({
+  tracker,
+  onOpenTracker,
+  onLongPressTracker,
+}: {
+  tracker: Tracker;
+  onOpenTracker: (trackerId: string) => void;
+  onLongPressTracker?: (trackerId: string) => void;
+}) {
+  const handledLongPress = useRef(false);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={tracker.name}
+      delayLongPress={3000}
+      onLongPress={() => {
+        handledLongPress.current = true;
+        onLongPressTracker?.(tracker.id);
+      }}
+      onPress={() => {
+        if (handledLongPress.current) {
+          handledLongPress.current = false;
+          return;
+        }
+        onOpenTracker(tracker.id);
+      }}
+    >
+      <View style={styles.marker}>
               <View style={styles.markerBubble}>
                 <TrackerArtwork
                   kind={tracker.kind}
@@ -128,11 +202,8 @@ export function GoogleTrackerMap({
                 />
               </View>
               <View style={styles.markerTip} />
-            </View>
-          </Marker>
-        ))}
-      </MapView>
-    </View>
+      </View>
+    </Pressable>
   );
 }
 

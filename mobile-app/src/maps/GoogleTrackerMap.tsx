@@ -4,12 +4,16 @@ import { MapBackdrop } from '../MapBackdrop';
 import { TrackerArtwork } from '../components';
 import type { Tracker } from '../model';
 
+const EMPTY_PATH: { latitude: number; longitude: number }[] = [];
+
 export function GoogleTrackerMap({
   trackers,
   mapType: _mapType,
   recenterToken: _recenterToken,
   focusTrackerId,
   showsUserLocation: _showsUserLocation = false,
+  pathCoordinates: _pathCoordinates = EMPTY_PATH,
+  onLongPressTracker,
   onOpenTracker,
 }: {
   trackers: Tracker[];
@@ -17,6 +21,8 @@ export function GoogleTrackerMap({
   recenterToken: number;
   focusTrackerId?: string;
   showsUserLocation?: boolean;
+  pathCoordinates?: { latitude: number; longitude: number }[];
+  onLongPressTracker?: (trackerId: string) => void;
   onOpenTracker: (trackerId: string) => void;
 }) {
   const markers = projectMarkers(trackers, focusTrackerId);
@@ -30,6 +36,8 @@ export function GoogleTrackerMap({
             key={tracker.id}
             accessibilityRole="button"
             accessibilityLabel={`${tracker.name} map marker`}
+            delayLongPress={3000}
+            onLongPress={() => onLongPressTracker?.(tracker.id)}
             onPress={() => onOpenTracker(tracker.id)}
             style={[styles.marker, { left: `${left}%`, top: `${top}%` }]}
             testID={`map-marker-${tracker.id}`}

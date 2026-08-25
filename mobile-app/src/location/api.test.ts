@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ProvisioningApiError, type ProvisioningApiConfig } from '../provisioning/api.ts';
-import { requestLocationReport } from './api.ts';
+import { requestLocationHistory24h, requestLocationReport } from './api.ts';
 
 const CONFIG: ProvisioningApiConfig = { baseUrl: 'https://api.example.test' };
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -64,6 +64,68 @@ test('does not expose an upstream error body to the app', async () => {
         error.code === 'LOCATION_UNAVAILABLE' &&
         !error.message.includes('private key'),
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('requests and orders the last 24 hours of location points', async () => {
+  const originalFetch = globalThis.fetch;
+  let request: { url: string; init?: RequestInit } | undefined;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    request = { url: String(input), init };
+    return new Response(
+      JSON.stringify({
+        device_id: DEVICE_ID,
+        locations: [
+          { latitude: 38.73, longitude: -9.13, recorded_at: '2026-08-25T12:00:00Z' },
+          { latitude: 38.72, longitude: -9.14, recorded_at: '2026-08-25T11:00:00Z' },
+          { latitude: 38.73, longitude: -9.13, recorded_at: '2026-08-25T12:05:00Z' },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const history = await requestLocationHistory24h(
+      CONFIG,
+      async () => 'access-token',
+      DEVICE_ID,
+    );
+    assert.equal(
+      request?.url,
+      `${CONFIG.baseUrl}/v1/devices/${DEVICE_ID}/location/report_24h`,
+    );
+    assert.equal(request?.init?.method, 'POST');
+    assert.deepEqual(
+      history.points.map(({ latitude, longitude }) => [latitude, longitude]),
+      [
+        [38.72, -9.14],
+        [38.73, -9.13],
+      ],
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('accepts a direct 24-hour point array while rejecting malformed coordinates', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify([{ lat: 38.72, lng: -9.14, timestamp: '2026-08-25T11:00:00Z' }]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })) as typeof fetch;
+
+  try {
+    const history = await requestLocationHistory24h(
+      CONFIG,
+      async () => 'access-token',
+      DEVICE_ID,
+    );
+    assert.equal(history.points.length, 1);
+    assert.equal(history.points[0].latitude, 38.72);
   } finally {
     globalThis.fetch = originalFetch;
   }

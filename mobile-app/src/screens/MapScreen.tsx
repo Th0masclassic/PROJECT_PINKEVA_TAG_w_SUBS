@@ -1,9 +1,21 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Animated,
+  PanResponder,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 
 import { AppSafeArea, TrackerArtwork } from '../components';
 import { formatRelativeTime, useI18n } from '../i18n';
+import type { DeviceLocationHistory } from '../location/api';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
 import { colors, radii, shadow } from '../theme';
@@ -11,18 +23,119 @@ import { colors, radii, shadow } from '../theme';
 export function MapScreen({
   trackers,
   onOpenTracker,
+  onRequestTrackerHistory,
   onShowTrackers,
   onNotice,
 }: {
   trackers: Tracker[];
   onOpenTracker: (trackerId: string) => void;
+  onRequestTrackerHistory: (trackerId: string) => Promise<DeviceLocationHistory>;
   onShowTrackers: () => void;
   onNotice: (message: string) => void;
 }) {
   const { t } = useI18n();
   const mapTrackers = trackers;
+  const { height: windowHeight } = useWindowDimensions();
   const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
   const [recenterToken, setRecenterToken] = useState(0);
+  const [historyTrackerId, setHistoryTrackerId] = useState<string | null>(null);
+  const [historyPoints, setHistoryPoints] = useState<DeviceLocationHistory['points']>([]);
+  const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
+  const historyRequestSequence = useRef(0);
+  const rowLongPressId = useRef<string | null>(null);
+  const rowLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sheetHeight = Math.max(300, windowHeight * 0.41);
+  const collapsedSheetOffset = Math.max(0, sheetHeight - 94);
+  const sheetTranslateY = useRef(new Animated.Value(0)).current;
+  const sheetGestureStart = useRef(0);
+  const sheetRestingOffset = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      historyRequestSequence.current += 1;
+      if (rowLongPressTimer.current) clearTimeout(rowLongPressTimer.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (sheetRestingOffset.current === 0) return;
+    sheetRestingOffset.current = collapsedSheetOffset;
+    sheetTranslateY.setValue(collapsedSheetOffset);
+  }, [collapsedSheetOffset, sheetTranslateY]);
+
+  const settleSheet = useCallback((offset: number) => {
+    sheetRestingOffset.current = offset;
+    Animated.spring(sheetTranslateY, {
+      toValue: offset,
+      damping: 22,
+      stiffness: 220,
+      mass: 0.8,
+      useNativeDriver: true,
+    }).start();
+  }, [sheetTranslateY]);
+
+  const sheetPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dy) > 4,
+        onPanResponderGrant: () => {
+          sheetTranslateY.stopAnimation((value) => {
+            sheetGestureStart.current = value;
+          });
+        },
+        onPanResponderMove: (_, gesture) => {
+          sheetTranslateY.setValue(
+            Math.max(0, Math.min(collapsedSheetOffset, sheetGestureStart.current + gesture.dy)),
+          );
+        },
+        onPanResponderRelease: (_, gesture) => {
+          const projected = sheetGestureStart.current + gesture.dy + gesture.vy * 80;
+          settleSheet(projected > collapsedSheetOffset / 2 ? collapsedSheetOffset : 0);
+        },
+        onPanResponderTerminate: () => settleSheet(sheetRestingOffset.current),
+      }),
+    [collapsedSheetOffset, settleSheet, sheetTranslateY],
+  );
+
+  const showTrackerHistory = useCallback(async (trackerId: string) => {
+    const sequence = ++historyRequestSequence.current;
+    setHistoryLoadingId(trackerId);
+    try {
+      const history = await onRequestTrackerHistory(trackerId);
+      if (historyRequestSequence.current !== sequence) return;
+      setHistoryTrackerId(trackerId);
+      setHistoryPoints(history.points);
+      setRecenterToken((current) => current + 1);
+      onNotice(
+        history.points.length
+          ? t('map.historyReady', { count: history.points.length })
+          : t('map.historyEmpty'),
+      );
+      settleSheet(collapsedSheetOffset);
+    } catch {
+      if (historyRequestSequence.current !== sequence) return;
+      onNotice(t('map.historyError'));
+    } finally {
+      if (historyRequestSequence.current === sequence) setHistoryLoadingId(null);
+    }
+  }, [collapsedSheetOffset, onNotice, onRequestTrackerHistory, settleSheet, t]);
+
+  const handleRowLongPress = useCallback((trackerId: string) => {
+    rowLongPressId.current = trackerId;
+    if (rowLongPressTimer.current) clearTimeout(rowLongPressTimer.current);
+    rowLongPressTimer.current = setTimeout(() => {
+      if (rowLongPressId.current === trackerId) rowLongPressId.current = null;
+    }, 1000);
+    void showTrackerHistory(trackerId);
+  }, [showTrackerHistory]);
+
+  const handleOpenTracker = useCallback((trackerId: string) => {
+    if (rowLongPressId.current === trackerId) {
+      rowLongPressId.current = null;
+      return;
+    }
+    onOpenTracker(trackerId);
+  }, [onOpenTracker]);
 
   return (
     <AppSafeArea style={styles.safeArea}>
@@ -31,7 +144,10 @@ export function MapScreen({
           trackers={mapTrackers}
           mapType={mapType}
           recenterToken={recenterToken}
-          onOpenTracker={onOpenTracker}
+          focusTrackerId={historyTrackerId ?? undefined}
+          pathCoordinates={historyPoints}
+          onLongPressTracker={(trackerId) => void showTrackerHistory(trackerId)}
+          onOpenTracker={handleOpenTracker}
         />
         <View style={styles.mapWash} pointerEvents="none" />
 
@@ -73,8 +189,34 @@ export function MapScreen({
           <Ionicons name="navigate" size={28} color={colors.blue} />
         </Pressable>
 
-        <View style={styles.bottomSheet}>
-          <View style={styles.sheetHandle} />
+        {historyLoadingId ? (
+          <View style={[styles.historyLoading, shadow]}>
+            <ActivityIndicator color={colors.blue} />
+            <Text style={styles.historyLoadingText}>
+              {t('map.historyLoading', {
+                name: mapTrackers.find((tracker) => tracker.id === historyLoadingId)?.name ?? t('common.tracker'),
+              })}
+            </Text>
+          </View>
+        ) : null}
+
+        <Animated.View
+          style={[
+            styles.bottomSheet,
+            { height: sheetHeight, transform: [{ translateY: sheetTranslateY }] },
+          ]}
+        >
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('map.myTags')}
+            onPress={() =>
+              settleSheet(sheetRestingOffset.current === 0 ? collapsedSheetOffset : 0)
+            }
+            style={styles.sheetDragHandle}
+            {...sheetPanResponder.panHandlers}
+          >
+            <View style={styles.sheetHandle} />
+          </Pressable>
           <View style={styles.sheetHeader}>
             <Text style={styles.sheetTitle}>{t('map.myTags')}</Text>
             <Pressable accessibilityRole="button" onPress={onShowTrackers} style={styles.viewAllButton}>
@@ -94,7 +236,9 @@ export function MapScreen({
                       : t('a11y.locationSample', { name: tracker.name })
                   }
                   disabled={!linkedTrackerId}
-                  onPress={() => linkedTrackerId && onOpenTracker(linkedTrackerId)}
+                  delayLongPress={3000}
+                  onLongPress={() => linkedTrackerId && handleRowLongPress(linkedTrackerId)}
+                  onPress={() => linkedTrackerId && handleOpenTracker(linkedTrackerId)}
                   style={({ pressed }) => [styles.mapListRow, pressed && styles.pressed]}
                 >
                   <View style={styles.mapThumb}>
@@ -110,7 +254,7 @@ export function MapScreen({
               );
             }) : <Text style={styles.emptyText}>{t('trackers.emptyBody')}</Text>}
           </ScrollView>
-        </View>
+        </Animated.View>
       </View>
     </AppSafeArea>
   );
@@ -131,8 +275,11 @@ const styles = StyleSheet.create({
   roundControl: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
   layersButton: { position: 'absolute', right: 22, top: 94 },
   recenterButton: { position: 'absolute', right: 22, bottom: '43%' },
-  bottomSheet: { position: 'absolute', left: 0, right: 0, bottom: 0, height: '41%', minHeight: 300, backgroundColor: '#FFFFFF', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingTop: 20, ...shadow },
-  sheetHandle: { width: 48, height: 5, borderRadius: 3, backgroundColor: '#D0D4DF', alignSelf: 'center', marginBottom: 10 },
+  historyLoading: { position: 'absolute', top: 164, left: 28, right: 28, minHeight: 52, borderRadius: 18, backgroundColor: '#FFFFFF', paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  historyLoadingText: { flex: 1, color: colors.text, fontSize: 14, fontWeight: '600' },
+  bottomSheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingTop: 4, ...shadow },
+  sheetDragHandle: { height: 34, alignItems: 'center', justifyContent: 'center' },
+  sheetHandle: { width: 48, height: 5, borderRadius: 3, backgroundColor: '#D0D4DF' },
   sheetHeader: { minHeight: 48, paddingHorizontal: 22, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   sheetTitle: { color: colors.text, fontSize: 23, fontWeight: '800' },
   viewAllButton: { minHeight: 44, paddingLeft: 16, justifyContent: 'center' },

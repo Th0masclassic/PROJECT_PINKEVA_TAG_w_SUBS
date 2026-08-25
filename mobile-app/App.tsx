@@ -53,6 +53,7 @@ import { colors } from './src/theme';
 import { TrackerCloudStateScreen } from './src/trackers/TrackerCloudStateScreen';
 import { useOwnedTrackers } from './src/trackers/useOwnedTrackers';
 import { useLocationReports } from './src/location/useLocationReports';
+import { requestLocationHistory24h } from './src/location/api';
 import { PROVISIONING_API_CONFIG, type DeviceClaim } from './src/provisioning/api';
 import { TagSetupModal } from './src/provisioning/TagSetupModal';
 import { useTagSetup } from './src/provisioning/useTagSetup';
@@ -278,6 +279,17 @@ function AppContent() {
     updateTrackers: setTrackers,
   });
   const locationTrigger = `${route.name}:${activeTab}:${locationTrackerIds.join(',')}`;
+  const requestTrackerHistory = useCallback(
+    async (trackerId: string) => {
+      if (!PROVISIONING_API_CONFIG) throw new Error('API configuration unavailable');
+      return requestLocationHistory24h(
+        PROVISIONING_API_CONFIG,
+        auth.getAccessToken,
+        trackerId,
+      );
+    },
+    [auth.getAccessToken],
+  );
 
   useEffect(() => {
     if (!locationTrackerIds.length || !auth.session || demoPreviewActive) return;
@@ -451,6 +463,7 @@ function AppContent() {
         <MapScreen
           trackers={displayTrackers}
           onOpenTracker={openTracker}
+          onRequestTrackerHistory={requestTrackerHistory}
           onShowTrackers={() => changeTab('trackers')}
           onNotice={showNotice}
         />

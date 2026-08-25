@@ -17,6 +17,17 @@ export type DeviceLocationReport = {
   status_code: number | null;
 };
 
+export type DeviceLocationHistoryPoint = {
+  latitude: number;
+  longitude: number;
+  recorded_at: string | null;
+};
+
+export type DeviceLocationHistory = {
+  device_id: string;
+  points: DeviceLocationHistoryPoint[];
+};
+
 type ErrorEnvelope = {
   error?: { code?: string; request_id?: string };
 };
@@ -98,16 +109,84 @@ function parseLocationReport(value: unknown, expectedDeviceId: string): DeviceLo
   };
 }
 
-export async function requestLocationReport(
-  config: ProvisioningApiConfig,
-  getAccessToken: () => Promise<string | null>,
-  deviceId: string,
-): Promise<DeviceLocationReport> {
-  const normalizedDeviceId = deviceId.toLowerCase();
-  if (!UUID_PATTERN.test(normalizedDeviceId)) {
-    throw new ProvisioningApiError('INVALID_DEVICE_ID', 400);
+function parseHistoryPoint(value: unknown): DeviceLocationHistoryPoint | null {
+  if (!isRecord(value)) return null;
+  const latitude = value.latitude ?? value.lat;
+  const longitude = value.longitude ?? value.lng ?? value.lon;
+  const recordedAt =
+    value.recorded_at ??
+    value.location_at ??
+    value.last_location_at ??
+    value.timestamp ??
+    value.created_at ??
+    value.received_at ??
+    null;
+  if (
+    typeof latitude !== 'number' ||
+    !Number.isFinite(latitude) ||
+    latitude < -90 ||
+    latitude > 90 ||
+    typeof longitude !== 'number' ||
+    !Number.isFinite(longitude) ||
+    longitude < -180 ||
+    longitude > 180 ||
+    (recordedAt !== null &&
+      (typeof recordedAt !== 'string' || !Number.isFinite(Date.parse(recordedAt))))
+  ) {
+    return null;
+  }
+  return { latitude, longitude, recorded_at: recordedAt };
+}
+
+function parseLocationHistory(value: unknown, expectedDeviceId: string): DeviceLocationHistory {
+  const envelope = isRecord(value) ? value : null;
+  const responseDeviceId = envelope?.device_id;
+  if (
+    responseDeviceId !== undefined &&
+    (typeof responseDeviceId !== 'string' ||
+      !UUID_PATTERN.test(responseDeviceId) ||
+      responseDeviceId.toLowerCase() !== expectedDeviceId)
+  ) {
+    throw new ProvisioningApiError('INVALID_RESPONSE', 502);
   }
 
+  const candidates = Array.isArray(value)
+    ? value
+    : envelope?.points ??
+      envelope?.locations ??
+      envelope?.locations_24h ??
+      envelope?.reports ??
+      envelope?.history;
+  if (!Array.isArray(candidates) || candidates.length > 20_000) {
+    throw new ProvisioningApiError('INVALID_RESPONSE', 502);
+  }
+
+  const points = candidates.map(parseHistoryPoint);
+  if (points.some((point) => point === null)) {
+    throw new ProvisioningApiError('INVALID_RESPONSE', 502);
+  }
+  const validated = points as DeviceLocationHistoryPoint[];
+  const chronological = validated.every((point) => point.recorded_at !== null)
+    ? [...validated].sort(
+        (left, right) =>
+          Date.parse(left.recorded_at!) - Date.parse(right.recorded_at!),
+      )
+    : validated;
+  const deduplicated = chronological.filter(
+    (point, index) =>
+      index === 0 ||
+      point.latitude !== chronological[index - 1].latitude ||
+      point.longitude !== chronological[index - 1].longitude,
+  );
+  return { device_id: expectedDeviceId, points: deduplicated };
+}
+
+async function requestAuthenticatedLocationJson(
+  config: ProvisioningApiConfig,
+  getAccessToken: () => Promise<string | null>,
+  normalizedDeviceId: string,
+  endpoint: string,
+): Promise<unknown> {
   let token: string | null;
   try {
     token = await getAccessToken();
@@ -120,15 +199,18 @@ export async function requestLocationReport(
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let response: Response;
   try {
-    response = await fetch(`${config.baseUrl}/v1/devices/${normalizedDeviceId}/location/report`, {
-      method: 'POST',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+    response = await fetch(
+      `${config.baseUrl}/v1/devices/${normalizedDeviceId}/location/${endpoint}`,
+      {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
       },
-      signal: controller.signal,
-    });
+    );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new ProvisioningApiError('REQUEST_TIMEOUT');
@@ -148,5 +230,45 @@ export async function requestLocationReport(
     );
   }
 
-  return parseLocationReport(await response.json().catch(() => null), normalizedDeviceId);
+  return response.json().catch(() => null);
+}
+
+export async function requestLocationReport(
+  config: ProvisioningApiConfig,
+  getAccessToken: () => Promise<string | null>,
+  deviceId: string,
+): Promise<DeviceLocationReport> {
+  const normalizedDeviceId = deviceId.toLowerCase();
+  if (!UUID_PATTERN.test(normalizedDeviceId)) {
+    throw new ProvisioningApiError('INVALID_DEVICE_ID', 400);
+  }
+  return parseLocationReport(
+    await requestAuthenticatedLocationJson(
+      config,
+      getAccessToken,
+      normalizedDeviceId,
+      'report',
+    ),
+    normalizedDeviceId,
+  );
+}
+
+export async function requestLocationHistory24h(
+  config: ProvisioningApiConfig,
+  getAccessToken: () => Promise<string | null>,
+  deviceId: string,
+): Promise<DeviceLocationHistory> {
+  const normalizedDeviceId = deviceId.toLowerCase();
+  if (!UUID_PATTERN.test(normalizedDeviceId)) {
+    throw new ProvisioningApiError('INVALID_DEVICE_ID', 400);
+  }
+  return parseLocationHistory(
+    await requestAuthenticatedLocationJson(
+      config,
+      getAccessToken,
+      normalizedDeviceId,
+      'report_24h',
+    ),
+    normalizedDeviceId,
+  );
 }
