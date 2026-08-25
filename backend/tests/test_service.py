@@ -220,6 +220,31 @@ async def test_claim_refuses_before_payment_without_generating_key_material(
 
 
 @pytest.mark.asyncio
+async def test_payment_request_rejects_device_without_bootstrap_credential(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    _, device = device_row(settings)
+    device["bootstrap_key_ciphertext"] = None
+    device["bootstrap_key_nonce"] = None
+    device["bootstrap_key_envelope_version"] = None
+    connection = FakeConnection([device])
+
+    with pytest.raises(ProvisioningError) as error:
+        await ProvisioningService(settings).start_provisioning_request(
+            connection,
+            user_id=user_id,
+            idempotency_key="request:missing-bootstrap-0001",
+            request=DeviceProvisioningRequestStart(
+                serial_number=device["serial_number"],
+                tag_challenge_base64url=b64url_encode(os.urandom(32)),
+            ),
+        )
+
+    assert error.value.code == "DEVICE_AUTHORIZATION_REJECTED"
+
+
+@pytest.mark.asyncio
 async def test_payment_request_has_no_key_allocation(
     settings: Settings,
 ) -> None:

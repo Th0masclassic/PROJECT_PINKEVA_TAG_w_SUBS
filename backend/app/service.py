@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import uuid
 from dataclasses import dataclass
@@ -47,6 +48,9 @@ class ProvisioningError(RuntimeError):
         self.status_code = status_code
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class ProvisioningService:
     settings: Settings
@@ -84,12 +88,23 @@ class ProvisioningService:
             (request.serial_number,),
         )
         device = await device_query.fetchone()
+        if device is None:
+            logger.warning(
+                "Provisioning authorization rejected: device serial is not registered"
+            )
+            raise ProvisioningError(
+                "DEVICE_AUTHORIZATION_REJECTED",
+                "The tag identity or factory authorization could not be verified",
+                403,
+            )
         if (
-            device is None
-            or device["bootstrap_key_ciphertext"] is None
+            device["bootstrap_key_ciphertext"] is None
             or device["bootstrap_key_nonce"] is None
             or device["bootstrap_key_envelope_version"] is None
         ):
+            logger.warning(
+                "Provisioning authorization rejected: device bootstrap credential is missing"
+            )
             raise ProvisioningError(
                 "DEVICE_AUTHORIZATION_REJECTED",
                 "The tag identity or factory authorization could not be verified",
@@ -1231,7 +1246,11 @@ class ProvisioningService:
             return tag_authorization_proof(
                 bootstrap_key, row["serial_number"], challenge
             )
-        except (InvalidTag, KeyError, TypeError, ValueError):
+        except (InvalidTag, KeyError, TypeError, ValueError) as error:
+            logger.warning(
+                "Provisioning authorization rejected: bootstrap proof failed (%s)",
+                type(error).__name__,
+            )
             raise ProvisioningError(
                 "DEVICE_AUTHORIZATION_REJECTED",
                 "The tag identity or factory authorization could not be verified",

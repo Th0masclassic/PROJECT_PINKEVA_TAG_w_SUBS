@@ -2,7 +2,7 @@
 
 This service implements the payment-gated key-lifecycle portion of protocol v1.3:
 
-1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge.
+1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
 2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 30 minutes.
 3. The app shows the server-provided plan prices, opens Stripe Checkout, and polls the request status. A signed, idempotent Stripe webhook is the only event that changes the request to `paid`.
 4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate one P-224 key pair with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
@@ -68,6 +68,20 @@ values are absent, the API returns the safe message “Location reports are
 temporarily unavailable” and never falls back to fabricated coordinates.
 
 ## Provisioning API
+
+Before testing a physical tag, register its exact `PKV-XXXXXXXXXXXX` serial once
+through the admin console or the controlled manufacturing helper:
+
+```bash
+python backend/tools/register_device.py PKV-AABBCCDDEEFF --name "Development tag"
+```
+
+Do not run that command for a serial that is already registered. If an older
+prototype row exists without a bootstrap credential, repair/register it through
+the administrator workflow instead of inserting a second device row. A missing
+row, missing credential, or envelope encrypted with a different persistent
+`PINQEVA_BOOTSTRAP_KEY_ENCRYPTION_KEY` all intentionally return the same safe
+client error: `DEVICE_AUTHORIZATION_REJECTED`.
 
 Create the payment gate before allocating a key:
 
