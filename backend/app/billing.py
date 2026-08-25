@@ -29,6 +29,7 @@ from .models import (
 logger = logging.getLogger("pinqeva.billing")
 
 CHECKOUT_TTL = timedelta(minutes=45)
+PROVISIONING_REQUEST_MAX_TTL = timedelta(minutes=90)
 MAX_WEBHOOK_BYTES = 1_048_576
 SUPPORTED_SUBSCRIPTION_EVENTS = {
     "customer.subscription.created",
@@ -110,10 +111,12 @@ class PortalPreparation:
 def _as_mapping(value: Any) -> Mapping[str, Any]:
     if isinstance(value, Mapping):
         return value
-    if hasattr(value, "to_dict_recursive"):
-        converted = value.to_dict_recursive()
-        if isinstance(converted, Mapping):
-            return converted
+    for method_name in ("to_dict_recursive", "to_dict"):
+        method = getattr(value, method_name, None)
+        if callable(method):
+            converted = method()
+            if isinstance(converted, Mapping):
+                return converted
     raise BillingError("BILLING_UNAVAILABLE", 503)
 
 
@@ -874,6 +877,7 @@ class BillingService:
             """
             SELECT r.id, r.user_id, r.device_id, r.serial_number, r.plan_code,
                    r.status, r.expires_at, r.claim_deadline,
+                   r.created_at,
                    r.provider_session_id, r.provider_customer_id,
                    p.stripe_customer_id
               FROM public.provisioning_request r
@@ -946,14 +950,31 @@ class BillingService:
             raise BillingError("PLAN_UNAVAILABLE", 400)
 
         provider_session_id = request["provider_session_id"]
+        request_expires_at = request["expires_at"]
         if provider_session_id is None:
+            # Stripe requires Checkout Session `expires_at` to be at least
+            # 30 minutes in the future. A user can resume a still-live
+            # provisioning request after most of its original TTL has passed,
+            # so renew the unpaid request before creating the session.
+            minimum_checkout_expiry = datetime.now(UTC) + CHECKOUT_TTL
+            if request_expires_at < minimum_checkout_expiry:
+                maximum_request_expiry = (
+                    request["created_at"] + PROVISIONING_REQUEST_MAX_TTL
+                )
+                if maximum_request_expiry < minimum_checkout_expiry:
+                    await self._expire_provisioning_request(connection, request_id)
+                    raise BillingError("PROVISIONING_REQUEST_EXPIRED", 409)
+                request_expires_at = min(
+                    minimum_checkout_expiry, maximum_request_expiry
+                )
             await connection.execute(
                 """
                 UPDATE public.provisioning_request
-                   SET plan_code = %s, status = 'creating', updated_at = now()
+                   SET plan_code = %s, status = 'creating', expires_at = %s,
+                       updated_at = now()
                  WHERE id = %s AND status IN ('pending', 'creating', 'open')
                 """,
-                (plan_code, request_id),
+                (plan_code, request_expires_at, request_id),
             )
         return ProvisioningCheckoutPreparation(
             request_id=request["id"],
@@ -968,7 +989,7 @@ class BillingService:
             duration_months=int(plan["duration_months"]),
             customer_id=request["provider_customer_id"]
             or request["stripe_customer_id"],
-            expires_at=request["expires_at"],
+            expires_at=request_expires_at,
             provider_session_id=provider_session_id,
             existing=provider_session_id is not None,
         )

@@ -262,6 +262,7 @@ class Settings:
     admin_owner_user_ids: frozenset[UUID] = frozenset()
     admin_allowed_origins: tuple[str, ...] = ()
     admin_require_aal2: bool = True
+    dev_bypass_bootstrap_auth: bool = False
 
     def __post_init__(self) -> None:
         if len(
@@ -453,5 +454,9 @@ def get_settings() -> Settings:
         admin_require_aal2=parse_boolean(
             "PINQEVA_ADMIN_REQUIRE_AAL2",
             os.getenv("PINQEVA_ADMIN_REQUIRE_AAL2", "true"),
+        ),
+        dev_bypass_bootstrap_auth=parse_boolean(
+            "PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH",
+            os.getenv("PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH", "false"),
         ),
     )

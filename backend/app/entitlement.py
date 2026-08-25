@@ -108,7 +108,7 @@ class EntitlementService:
             raise BillingError("DEVICE_AUTHORIZATION_REJECTED", 403)
         if device["status"] not in {"claimed", "suspended"}:
             raise BillingError("TAG_NOT_READY", 409)
-        if (
+        if not self.settings.dev_bypass_bootstrap_auth and (
             device["bootstrap_key_ciphertext"] is None
             or device["bootstrap_key_nonce"] is None
             or device["bootstrap_key_envelope_version"] is None

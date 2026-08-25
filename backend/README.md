@@ -3,7 +3,7 @@
 This service implements the payment-gated key-lifecycle portion of protocol v1.3:
 
 1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
-2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 30 minutes.
+2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 45 minutes.
 3. The app shows the server-provided plan prices, opens Stripe Checkout, and polls the request status. A signed, idempotent Stripe webhook is the only event that changes the request to `paid`.
 4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate one P-224 key pair with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
 5. The app writes the authorization proof before the one-time tag-control key and advertisement key. Firmware disconnects invalid clients and times out connections that never authorize.
@@ -24,7 +24,10 @@ On the configured development Mac, `./run_local_secure.sh` loads application
 settings from the ignored `backend/.env`, keeps the hosted database password in
 macOS Keychain, and starts the same server against Supabase cloud. It is a
 development convenience only; production must use the deployment platform's
-secret manager.
+secret manager. The checked-in development firmware bypasses bootstrap proof
+verification; to test that firmware, set
+`PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH=true` in the ignored local `.env`. This
+keeps the setting opt-in and must remain false for shared or production servers.
 
 For a hosted project, follow
 [`docs/supabase-cloud-deployment.md`](../docs/supabase-cloud-deployment.md).

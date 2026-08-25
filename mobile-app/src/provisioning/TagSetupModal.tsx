@@ -208,7 +208,9 @@ export function TagSetupModal({
                 {state.phase === 'waiting_payment' ? (
                   <View style={styles.scanState}>
                     <ActivityIndicator color={colors.blue} />
-                    <Text style={styles.scanStateText}>{billingCopy.opened}</Text>
+                    <Text style={styles.scanStateText}>
+                      {billingCopy.opening ?? billingCopy.loading}
+                    </Text>
                   </View>
                 ) : paymentRequest?.available_plans.length ? (
                   <View style={styles.planStack}>

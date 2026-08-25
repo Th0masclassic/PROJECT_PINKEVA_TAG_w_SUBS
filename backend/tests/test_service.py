@@ -1,5 +1,6 @@
 import os
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -242,6 +243,67 @@ async def test_payment_request_rejects_device_without_bootstrap_credential(
         )
 
     assert error.value.code == "DEVICE_AUTHORIZATION_REJECTED"
+
+
+@pytest.mark.asyncio
+async def test_payment_request_allows_missing_bootstrap_credential_in_dev_mode(
+    settings: Settings,
+) -> None:
+    settings = replace(settings, dev_bypass_bootstrap_auth=True)
+    user_id = uuid.uuid4()
+    _, device = device_row(settings)
+    device["bootstrap_key_ciphertext"] = None
+    device["bootstrap_key_nonce"] = None
+    device["bootstrap_key_envelope_version"] = None
+    request_id = uuid.uuid4()
+    created = {
+        "id": request_id,
+        "device_id": device["id"],
+        "serial_number": device["serial_number"],
+        "status": "pending",
+        "plan_code": None,
+        "expires_at": datetime.now(UTC) + timedelta(minutes=29),
+        "claim_deadline": None,
+    }
+    connection = FakeConnection([device, None, None, None, None, created])
+
+    response = await ProvisioningService(settings).start_provisioning_request(
+        connection,
+        user_id=user_id,
+        idempotency_key="request:dev-bypass-0001",
+        request=DeviceProvisioningRequestStart(
+            serial_number=device["serial_number"],
+            tag_challenge_base64url=b64url_encode(os.urandom(32)),
+        ),
+    )
+
+    assert response.request_id == request_id
+
+
+@pytest.mark.asyncio
+async def test_claim_passes_bootstrap_check_in_dev_mode(
+    settings: Settings,
+) -> None:
+    settings = replace(settings, dev_bypass_bootstrap_auth=True)
+    _, device = device_row(settings)
+    device["bootstrap_key_ciphertext"] = None
+    device["bootstrap_key_nonce"] = None
+    device["bootstrap_key_envelope_version"] = None
+    connection = FakeConnection([device, None])
+
+    with pytest.raises(ProvisioningError) as error:
+        await ProvisioningService(settings).start_claim(
+            connection,
+            user_id=uuid.uuid4(),
+            idempotency_key="provision:dev-bypass-0001",
+            request=DeviceClaimStart(
+                provisioning_request_id=uuid.uuid4(),
+                serial_number=device["serial_number"],
+                tag_challenge_base64url=b64url_encode(os.urandom(32)),
+            ),
+        )
+
+    assert error.value.code == "SUBSCRIPTION_REQUIRED"
 
 
 @pytest.mark.asyncio

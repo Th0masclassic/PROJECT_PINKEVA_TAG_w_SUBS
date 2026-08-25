@@ -19,6 +19,7 @@ from app.billing import (
     CheckoutPreparation,
     PortalPreparation,
     StripeGateway,
+    _as_mapping,
     _safe_stripe_url,
 )
 from app.config import Settings
@@ -194,6 +195,17 @@ class FakeGateway:
         self.construct_calls.append((payload, signature))
         assert self.event is not None
         return self.event
+
+
+def test_as_mapping_accepts_current_stripe_sdk_serialization() -> None:
+    class StripeLikeObject:
+        def to_dict(self) -> dict[str, Any]:
+            return {"id": "price_test", "active": True}
+
+    assert _as_mapping(StripeLikeObject()) == {
+        "id": "price_test",
+        "active": True,
+    }
 
 
 @pytest.fixture
@@ -432,6 +444,62 @@ async def test_paid_provisioning_subscription_can_bind_before_ownership(
 
     assert connection.steps == []
     assert any("status = %s" in query for query, _ in connection.executions)
+
+
+@pytest.mark.asyncio
+async def test_provisioning_checkout_renews_expiry_for_stripe_minimum(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    request_id = uuid.uuid4()
+    current = datetime.now(UTC)
+    request = {
+        "id": request_id,
+        "user_id": user_id,
+        "device_id": device_id,
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "plan_code": None,
+        "status": "pending",
+        "expires_at": current + timedelta(minutes=5),
+        "created_at": current - timedelta(minutes=10),
+        "claim_deadline": None,
+        "provider_session_id": None,
+        "provider_customer_id": "cus_12345678",
+        "stripe_customer_id": "cus_12345678",
+    }
+    plan = {
+        "code": "monthly_basic",
+        "duration_months": 1,
+        "price_cents": 299,
+        "currency": "EUR",
+        "active": True,
+        "provider_price_id": "price_MONTH1234567",
+        "provider_product_id": "prod_MONTH1234567",
+    }
+    connection = ScriptedConnection(
+        [
+            ("SELECT r.id, r.user_id", request),
+            ("SELECT 1 FROM public.ownership", None),
+            ("SELECT 1 FROM public.subscription", None),
+            ("SELECT code, duration_months", plan),
+            ("UPDATE public.provisioning_request", None),
+        ]
+    )
+
+    preparation = await BillingService(
+        settings, FakeGateway()
+    )._prepare_provisioning_checkout(
+        connection,
+        user_id=user_id,
+        request_id=request_id,
+        plan_code="monthly_basic",
+    )
+
+    assert preparation.expires_at >= current + timedelta(minutes=44)
+    update = connection.executions[-1]
+    assert update[1][0] == "monthly_basic"
+    assert update[1][1] == preparation.expires_at
 
 
 @pytest.mark.asyncio

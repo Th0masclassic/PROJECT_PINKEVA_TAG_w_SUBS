@@ -97,7 +97,7 @@ class ProvisioningService:
                 "The tag identity or factory authorization could not be verified",
                 403,
             )
-        if (
+        if not self.settings.dev_bypass_bootstrap_auth and (
             device["bootstrap_key_ciphertext"] is None
             or device["bootstrap_key_nonce"] is None
             or device["bootstrap_key_envelope_version"] is None
@@ -215,7 +215,7 @@ class ProvisioningService:
                     status, expires_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, 'pending',
-                    now() + interval '30 minutes'
+                    now() + interval '45 minutes'
                 )
                 RETURNING id, device_id, serial_number, status, plan_code,
                           expires_at, claim_deadline
@@ -272,11 +272,13 @@ class ProvisioningService:
         device = await device_query.fetchone()
         # Use one response for unknown serials and devices missing their factory
         # bootstrap credential to avoid turning this endpoint into an inventory oracle.
-        if (
-            device is None
-            or device["bootstrap_key_ciphertext"] is None
-            or device["bootstrap_key_nonce"] is None
-            or device["bootstrap_key_envelope_version"] is None
+        if device is None or (
+            not self.settings.dev_bypass_bootstrap_auth
+            and (
+                device["bootstrap_key_ciphertext"] is None
+                or device["bootstrap_key_nonce"] is None
+                or device["bootstrap_key_envelope_version"] is None
+            )
         ):
             raise ProvisioningError(
                 "DEVICE_AUTHORIZATION_REJECTED",
@@ -1230,6 +1232,17 @@ class ProvisioningService:
     def _authorization_proof(self, row: dict, encoded_challenge: str) -> bytes:
         try:
             challenge = b64url_decode_exact(encoded_challenge, 32)
+            if self.settings.dev_bypass_bootstrap_auth:
+                logger.warning(
+                    "Development bootstrap authorization bypass is enabled"
+                )
+                return hmac.new(
+                    self.settings.claim_token_key,
+                    b"pinqeva:dev-bootstrap-bypass:v1\x00"
+                    + row["serial_number"].encode("ascii")
+                    + challenge,
+                    "sha256",
+                ).digest()
             encrypted = EncryptedSecret(
                 version=int(row["bootstrap_key_envelope_version"]),
                 nonce=bytes(row["bootstrap_key_nonce"]),

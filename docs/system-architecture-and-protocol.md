@@ -489,7 +489,7 @@ sequenceDiagram
     Tag-->>App: READY; finder advertising enabled
 ```
 
-The unpaid request expires after 30 minutes. A paid request receives the
+The unpaid request expires after a bounded short-lived window. A paid request receives the
 configured claim deadline and is marked completed only after the tag reports
 the expected fingerprint. If BLE succeeds but completion fails, the client
 resumes the same allocation. A passed deadline or mismatch enters recovery and
