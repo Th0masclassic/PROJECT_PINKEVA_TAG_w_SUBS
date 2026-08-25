@@ -12,6 +12,7 @@ import {
   PINKEVA_SERVICE_UUID,
   PROTOCOL_INFO_UUID,
   PROVISIONING_STATUS_UUID,
+  SUBSCRIPTION_ENTITLEMENT_UUID,
   TAG_AUTHORIZATION_PROOF_UUID,
   TAG_CHALLENGE_UUID,
   TAG_CONTROL_KEY_UUID,
@@ -31,6 +32,14 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
   const advertisementHash = sha256(advertisementKey);
   const controlKey = Uint8Array.from({ length: 32 }, (_, index) => 0x40 + index);
   const authorizationProof = Uint8Array.from({ length: 32 }, (_, index) => 0x60 + index);
+  const entitlementAuthorizationProof = Uint8Array.from(
+    { length: 32 },
+    (_, index) => 0x70 + index,
+  );
+  const entitlementPacket = Uint8Array.from(
+    { length: 135 },
+    (_, index) => (0xa0 + index) & 0xff,
+  );
   const completionToken = Uint8Array.from({ length: 32 }, (_, index) => 0x80 + index);
   const events: string[] = [];
   let storedFingerprint = new Uint8Array(32);
@@ -55,6 +64,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     claimed_at: '2099-01-01T00:00:00.000Z',
     next_action: 'install_signed_entitlement' as const,
   };
+  const authorizationProofs = [authorizationProof, entitlementAuthorizationProof];
 
   const backend = {
     startDeviceClaim: async (input: Parameters<PinqevaProvisioningClient['startDeviceClaim']>[0]) => {
@@ -69,6 +79,24 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
       assert.equal(input.claim.session_id, claim.session_id);
       assert.equal(input.tagAdvertisementKeySha256Base64url, encodeBase64Url(advertisementHash));
       return completed;
+    },
+    startDeviceEntitlement: async (
+      input: Parameters<PinqevaProvisioningClient['startDeviceEntitlement']>[0],
+    ) => {
+      events.push('api:entitlement');
+      assert.equal(input.deviceId, completed.device_id);
+      assert.equal(input.serialNumber, serialNumber);
+      assert.equal(input.tagChallengeBase64url, encodeBase64Url(challenge));
+      return {
+        device_id: completed.device_id,
+        serial_number: serialNumber,
+        entitlement_base64url: encodeBase64Url(entitlementPacket),
+        tag_authorization_proof_base64url: encodeBase64Url(
+          entitlementAuthorizationProof,
+        ),
+        expires_at: '2099-02-01T00:00:00.000Z',
+        counter: 1,
+      };
     },
   } as unknown as PinqevaProvisioningClient;
 
@@ -109,7 +137,9 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     ) => {
       if (characteristic === TAG_AUTHORIZATION_PROOF_UUID) {
         events.push('ble:write:authorization');
-        assert.equal(value, toBleBase64(authorizationProof));
+        const expectedProof = authorizationProofs.shift();
+        assert.ok(expectedProof);
+        assert.equal(value, toBleBase64(expectedProof));
       } else if (characteristic === TAG_CONTROL_KEY_UUID) {
         events.push('ble:write:control');
         assert.equal(value, toBleBase64(controlKey));
@@ -117,6 +147,9 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
         events.push('ble:write:advertisement');
         assert.equal(value, toBleBase64(advertisementKey));
         storedFingerprint = advertisementHash;
+      } else if (characteristic === SUBSCRIPTION_ENTITLEMENT_UUID) {
+        events.push('ble:write:entitlement');
+        assert.equal(value, toBleBase64(entitlementPacket));
       } else {
         throw new Error(`Unexpected write ${characteristic}`);
       }
@@ -160,6 +193,11 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     'ble:read:status',
     'ble:read:fingerprint',
     'api:complete',
+    'api:entitlement',
+    'ble:write:authorization',
+    'ble:write:entitlement',
+    'ble:read:status',
     'ble:disconnect',
   ]);
+  assert.deepEqual(authorizationProofs, []);
 });

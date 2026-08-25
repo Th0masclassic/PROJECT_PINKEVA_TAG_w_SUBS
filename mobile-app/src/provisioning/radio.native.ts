@@ -6,7 +6,7 @@ import {
 import { PermissionsAndroid, Platform } from 'react-native';
 
 import type { PinqevaProvisioningClient } from './api';
-import { PINKEVA_SERVICE_UUID, normalizeAdvertisedSerial } from './protocol';
+import { normalizeAdvertisedSerial } from './protocol';
 import { TagProvisioner, type ProvisioningProgress } from './provisionTag';
 import type { DiscoveredTag, StopTagScan, TagRadio } from './radio.types';
 import { TagRadioError } from './radio.types';
@@ -53,7 +53,7 @@ class NativeTagRadio implements TagRadio {
     this.scanning = true;
     try {
       await this.manager.startDeviceScan(
-        [PINKEVA_SERVICE_UUID],
+        null,
         { allowDuplicates: true },
         (error, device) => {
           if (error) {
@@ -83,11 +83,36 @@ class NativeTagRadio implements TagRadio {
     input: {
       peripheralId: string;
       idempotencyKey: string;
+      provisioningRequestId: string;
       onProgress: (progress: ProvisioningProgress) => void;
     },
   ) {
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
     return new TagProvisioner(this.manager, backend).provision(input);
+  }
+
+  inspectTag(
+    backend: PinqevaProvisioningClient,
+    input: {
+      peripheralId: string;
+      onProgress: (progress: ProvisioningProgress) => void;
+    },
+  ) {
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    return new TagProvisioner(this.manager, backend).inspectTag(input);
+  }
+
+  installEntitlement(
+    backend: PinqevaProvisioningClient,
+    input: {
+      peripheralId: string;
+      deviceId: string;
+      serialNumber: string;
+      onProgress: (progress: ProvisioningProgress) => void;
+    },
+  ) {
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    return new TagProvisioner(this.manager, backend).installEntitlement(input);
   }
 
   async destroy(): Promise<void> {

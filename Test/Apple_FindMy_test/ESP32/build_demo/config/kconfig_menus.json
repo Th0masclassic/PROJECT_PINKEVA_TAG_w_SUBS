@@ -34084,16 +34084,6 @@
                                 "range": null,
                                 "title": "Log advertisement-key bytes (development only)",
                                 "type": "bool"
-                            },
-                            {
-                                "children": [],
-                                "depends_on": "PINQEVA_DEV_BYPASS_BOOTSTRAP",
-                                "help": "Development-only bypass for the signed-subscription entitlement. When\nenabled, a tag with a stored advertisement key immediately emits the\nApple-style offline-finding manufacturer payload. This firmware does\nnot verify an entitlement in this mode and must never be used on a\nproduction tag.",
-                                "id": "PINQEVA_DEV_BYPASS_ENTITLEMENT",
-                                "name": "PINQEVA_DEV_BYPASS_ENTITLEMENT",
-                                "range": null,
-                                "title": "Advertise finder payload when an advertisement key exists (development only)",
-                                "type": "bool"
                             }
                         ],
                         "depends_on": null,

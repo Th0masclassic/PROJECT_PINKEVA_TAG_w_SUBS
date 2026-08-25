@@ -11,12 +11,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { useBillingCopy } from '../billing/copy';
+import { billingIntervalLabel, formatBillingMoney } from '../billing/format';
 import { OutlineButton, PrimaryButton } from '../components';
 import { useI18n, type TranslationKey } from '../i18n';
 import { colors, radii, shadow } from '../theme';
 import type { DiscoveredTag } from './radio';
 import { tagSetupErrorTranslationKey } from './setup';
 import type { TagSetupPhase, TagSetupState } from './useTagSetup';
+import type { ProvisioningPlan } from './api';
 
 const progressSteps: ReadonlyArray<{
   phase: TagSetupPhase;
@@ -105,18 +108,22 @@ function ProgressContent({ state }: { state: TagSetupState }) {
 export function TagSetupModal({
   state,
   onSelect,
+  onChoosePlan,
   onRetry,
   onClose,
 }: {
   state: TagSetupState;
   onSelect: (tag: DiscoveredTag) => void;
+  onChoosePlan: (plan: ProvisioningPlan) => void;
   onRetry: () => void;
   onClose: () => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
+  const billingCopy = useBillingCopy();
   const visible = state.phase !== 'idle';
   const scanning = state.phase === 'starting' || state.phase === 'scanning';
   const progressing = progressSteps.some((step) => step.phase === state.phase);
+  const paymentRequest = state.provisioningRequest;
 
   return (
     <Modal
@@ -182,6 +189,63 @@ export function TagSetupModal({
                   style={styles.fullButton}
                 />
               </ScrollView>
+            ) : state.phase === 'payment' || state.phase === 'waiting_payment' ? (
+              <ScrollView contentContainerStyle={styles.sheetContent}>
+                <View style={[styles.heroIcon, styles.paymentIcon]}>
+                  <Ionicons name="card-outline" size={38} color="#FFFFFF" />
+                </View>
+                <Text style={styles.title}>{billingCopy.plans}</Text>
+                <Text style={styles.body}>
+                  {state.phase === 'waiting_payment'
+                    ? billingCopy.loading
+                    : billingCopy.choosePlan}
+                </Text>
+                {paymentRequest ? (
+                  <Text style={styles.requestId}>
+                    Request {paymentRequest.request_id}
+                  </Text>
+                ) : null}
+                {state.phase === 'waiting_payment' ? (
+                  <View style={styles.scanState}>
+                    <ActivityIndicator color={colors.blue} />
+                    <Text style={styles.scanStateText}>{billingCopy.opened}</Text>
+                  </View>
+                ) : paymentRequest?.available_plans.length ? (
+                  <View style={styles.planStack}>
+                    {paymentRequest.available_plans.map((plan) => (
+                      <Pressable
+                        key={plan.code}
+                        accessibilityRole="button"
+                        onPress={() => onChoosePlan(plan)}
+                        style={({ pressed }) => [styles.planOption, pressed && styles.pressed]}
+                      >
+                        <View style={styles.planCopy}>
+                          <Text style={styles.planName}>{plan.name}</Text>
+                          <Text style={styles.planTerms}>
+                            {formatBillingMoney(plan.amount_minor, plan.currency, language)}{' '}
+                            /{' '}
+                            {billingIntervalLabel(
+                              plan.billing_interval,
+                              billingCopy.month,
+                              billingCopy.year,
+                              plan.billing_interval_count,
+                            )}
+                          </Text>
+                        </View>
+                        <Ionicons name="chevron-forward" size={23} color={colors.blue} />
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : (
+                  <Text style={styles.body}>{billingCopy.noPlans}</Text>
+                )}
+                <Text style={styles.secureText}>{billingCopy.secureNotice}</Text>
+                <OutlineButton
+                  label={t('common.cancel')}
+                  onPress={onClose}
+                  style={styles.fullButton}
+                />
+              </ScrollView>
             ) : state.phase === 'success' ? (
               <ScrollView contentContainerStyle={styles.sheetContent}>
                 <View style={[styles.heroIcon, styles.successIcon]}>
@@ -193,10 +257,6 @@ export function TagSetupModal({
                     name: state.claim?.serial_number ?? state.selected?.serialNumber ?? '',
                   })}
                 </Text>
-                <View style={styles.suspendedNotice}>
-                  <Ionicons name="shield-checkmark-outline" size={25} color={colors.blue} />
-                  <Text style={styles.suspendedText}>{t('pairing.subscriptionPendingBody')}</Text>
-                </View>
                 <PrimaryButton
                   label={t('common.done')}
                   onPress={onClose}
@@ -290,9 +350,11 @@ const styles = StyleSheet.create({
     ...shadow,
   },
   successIcon: { backgroundColor: colors.blue },
+  paymentIcon: { backgroundColor: colors.blue },
   errorIcon: { backgroundColor: '#FFF0F1', shadowOpacity: 0 },
   title: { color: colors.text, fontSize: 29, fontWeight: '800', textAlign: 'center', marginTop: 20 },
   body: { color: colors.mutedDark, fontSize: 17, lineHeight: 25, textAlign: 'center', marginTop: 10 },
+  requestId: { color: colors.muted, fontSize: 12, marginTop: 12 },
   scanState: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 24 },
   scanStateText: { color: colors.blue, fontSize: 15, fontWeight: '700' },
   candidateList: { width: '100%', gap: 12, marginTop: 24 },
@@ -325,8 +387,23 @@ const styles = StyleSheet.create({
   progressText: { color: colors.mutedDark, fontSize: 15, fontWeight: '600' },
   progressTextActive: { color: colors.text, fontWeight: '800' },
   keepNear: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 18 },
-  suspendedNotice: { width: '100%', marginTop: 26, borderRadius: radii.medium, backgroundColor: colors.bluePale, padding: 17, flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
-  suspendedText: { flex: 1, color: colors.mutedDark, fontSize: 14, lineHeight: 21 },
+  planStack: { width: '100%', gap: 10, marginTop: 22 },
+  planOption: {
+    minHeight: 76,
+    borderRadius: radii.medium,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+  },
+  planCopy: { flex: 1, gap: 5 },
+  planName: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  planTerms: { color: colors.mutedDark, fontSize: 14 },
+  secureText: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 18 },
   selectedSerial: { marginTop: 20, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F6F8FC', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9 },
   selectedSerialText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   fullButton: { width: '100%', marginTop: 18 },

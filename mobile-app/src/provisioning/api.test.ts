@@ -60,6 +60,7 @@ test('sends the authenticated two-phase claim contract', async () => {
       async () => 'access-token',
     );
     const started = await client.startDeviceClaim({
+      provisioningRequestId: '33333333-3333-4333-8333-333333333333',
       serialNumber: 'PKV-AABBCCDDEEFF',
       idempotencyKey: 'provision:test-id',
       tagChallengeBase64url: 'challenge',
@@ -106,6 +107,7 @@ test('returns only a safe API error code from failed responses', async () => {
     );
     await assert.rejects(
       client.startDeviceClaim({
+        provisioningRequestId: '33333333-3333-4333-8333-333333333333',
         serialNumber: 'PKV-AABBCCDDEEFF',
         idempotencyKey: 'provision:test-id',
         tagChallengeBase64url: 'challenge',

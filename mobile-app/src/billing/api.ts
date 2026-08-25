@@ -268,6 +268,25 @@ export async function createDeviceCheckout(
   return parseDestinationResponse(payload, 'checkout.stripe.com');
 }
 
+export async function createProvisioningCheckout(
+  config: BillingApiConfig,
+  accessToken: string,
+  requestId: string,
+  planCode: string,
+): Promise<string> {
+  if (!DEVICE_ID_PATTERN.test(requestId) && !/^[0-9a-f-]{36}$/i.test(requestId)) {
+    throw new BillingApiError('invalid_response');
+  }
+  if (!PLAN_CODE_PATTERN.test(planCode)) throw new BillingApiError('invalid_response');
+  const payload = await requestJson(
+    config,
+    accessToken,
+    `/v1/provisioning/requests/${encodeURIComponent(requestId)}/checkout`,
+    { method: 'POST', body: JSON.stringify({ plan_code: planCode }) },
+  );
+  return parseDestinationResponse(payload, 'checkout.stripe.com');
+}
+
 export async function createDevicePortal(
   config: BillingApiConfig,
   accessToken: string,

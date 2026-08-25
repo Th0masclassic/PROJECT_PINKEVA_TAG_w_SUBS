@@ -19,6 +19,7 @@ class StrictModel(BaseModel):
 
 
 class DeviceClaimStart(StrictModel):
+    provisioning_request_id: UUID
     serial_number: str = Field(min_length=16, max_length=16)
     tag_challenge_base64url: str = Field(min_length=43, max_length=43)
     tag_advertisement_key_sha256_base64url: str | None = Field(
@@ -88,6 +89,86 @@ class DeviceClaimResponse(StrictModel):
     status: Literal["suspended"]
     claimed_at: datetime
     next_action: Literal["install_signed_entitlement"]
+
+
+class DeviceEntitlementRequest(StrictModel):
+    serial_number: str = Field(min_length=16, max_length=16)
+    tag_challenge_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator("tag_challenge_base64url")
+    @classmethod
+    def valid_challenge(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class DeviceEntitlementResponse(StrictModel):
+    device_id: UUID
+    serial_number: str
+    entitlement_base64url: str = Field(min_length=180, max_length=180)
+    tag_authorization_proof_base64url: str = Field(min_length=43, max_length=43)
+    expires_at: datetime
+    counter: int = Field(ge=1)
+
+
+class DeviceProvisioningRequestStart(StrictModel):
+    serial_number: str = Field(min_length=16, max_length=16)
+    tag_challenge_base64url: str = Field(min_length=43, max_length=43)
+    tag_advertisement_key_sha256_base64url: str | None = Field(
+        default=None, min_length=43, max_length=43
+    )
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator(
+        "tag_challenge_base64url",
+        "tag_advertisement_key_sha256_base64url",
+    )
+    @classmethod
+    def valid_tag_key_hash(cls, value: str | None) -> str | None:
+        if value is not None:
+            b64url_decode_exact(value, 32)
+        return value
+
+
+ProvisioningRequestStatus = Literal[
+    "pending",
+    "creating",
+    "open",
+    "paid",
+    "claiming",
+    "completed",
+    "expired",
+    "failed",
+]
+
+
+class ProvisioningRequestCheckout(StrictModel):
+    plan_code: str = Field(
+        min_length=1,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+    )
+
+
+class ProvisioningRequestCheckoutResponse(StrictModel):
+    request_id: UUID
+    url: str
+    expires_at: datetime
 
 
 class DeviceReleaseStart(StrictModel):
@@ -181,6 +262,17 @@ class PlanSummary(StrictModel):
     billing_interval: Literal["month", "year"]
     billing_interval_count: int = Field(ge=1, le=12)
     duration_months: Literal[1, 3, 6, 12]
+
+
+class DeviceProvisioningRequestResponse(StrictModel):
+    request_id: UUID
+    device_id: UUID
+    serial_number: str
+    status: ProvisioningRequestStatus
+    plan_code: str | None = None
+    expires_at: datetime
+    claim_deadline: datetime | None = None
+    available_plans: list[PlanSummary] = Field(default_factory=list)
 
 
 class DeviceSubscriptionResponse(StrictModel):

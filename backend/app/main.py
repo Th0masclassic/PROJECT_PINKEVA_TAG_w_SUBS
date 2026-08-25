@@ -14,12 +14,17 @@ from .auth import AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
 from .database import Database
+from .entitlement import EntitlementService
 from .location import LocationError, LocationService
 from .models import (
     DeviceClaimComplete,
     DeviceClaimResponse,
     DeviceClaimStart,
     DeviceClaimStartResponse,
+    DeviceEntitlementRequest,
+    DeviceEntitlementResponse,
+    DeviceProvisioningRequestResponse,
+    DeviceProvisioningRequestStart,
     DeviceReleaseComplete,
     DeviceReleaseResponse,
     DeviceReleaseStart,
@@ -30,6 +35,8 @@ from .models import (
     StripeWebhookResponse,
     SubscriptionCheckoutRequest,
     SubscriptionPortalRequest,
+    ProvisioningRequestCheckout,
+    ProvisioningRequestCheckoutResponse,
     validate_idempotency_key,
 )
 from .service import ProvisioningError, ProvisioningService
@@ -43,10 +50,17 @@ SAFE_PROVISIONING_MESSAGES = {
     "PROVISIONING_IN_PROGRESS": "This tag is already being set up.",
     "SESSION_NOT_FOUND": "This setup session is no longer available.",
     "RECOVERY_REQUIRED": "This tag needs support before setup can continue.",
+    "SUBSCRIPTION_REQUIRED": "An active subscription is required before setup can continue.",
 }
 
 SAFE_BILLING_MESSAGES = {
+    "DEVICE_AUTHORIZATION_REJECTED": "The tag could not be verified.",
     "TAG_UNAVAILABLE": "This tag is unavailable.",
+    "TAG_NOT_READY": "This tag is not ready for activation yet.",
+    "SUBSCRIPTION_REQUIRED": "An active subscription is required for this tag.",
+    "PROVISIONING_REQUEST_NOT_FOUND": "This setup request is no longer available.",
+    "PROVISIONING_REQUEST_EXPIRED": "This setup request expired. Start again to continue.",
+    "ENTITLEMENT_UNAVAILABLE": "Tag activation is temporarily unavailable. Please try again.",
     "PLAN_UNAVAILABLE": "This subscription plan is unavailable.",
     "SUBSCRIPTION_EXISTS": "This tag already has a current subscription.",
     "CHECKOUT_IN_PROGRESS": "A checkout is already in progress for this tag.",
@@ -106,6 +120,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await database.open()
     app.state.database = database
     app.state.service = ProvisioningService(settings)
+    app.state.entitlement = EntitlementService(settings)
     app.state.location = LocationService(settings)
     app.state.billing = BillingService(settings)
     app.state.admin = AdminService(settings)
@@ -321,6 +336,67 @@ async def request_device_location_report(
     )
 
 
+@app.post(
+    "/v1/provisioning/requests",
+    response_model=DeviceProvisioningRequestResponse,
+    status_code=201,
+)
+async def start_provisioning_request(
+    request: DeviceProvisioningRequestStart,
+    principal: AuthenticatedPrincipal,
+    idempotency_key: Annotated[str, Depends(idempotency_header)],
+) -> DeviceProvisioningRequestResponse:
+    async with app.state.database.transaction() as connection:
+        created = await app.state.service.start_provisioning_request(
+            connection,
+            user_id=principal.user_id,
+            idempotency_key=idempotency_key,
+            request=request,
+        )
+    # The request creation transaction deliberately does not contact Stripe.
+    # Fetch the current, server-validated plan catalog only after the request
+    # has been committed so the request ID can be safely shown to the user.
+    return await app.state.billing.get_provisioning_request(
+        app.state.database,
+        user_id=principal.user_id,
+        request_id=created.request_id,
+    )
+
+
+@app.get(
+    "/v1/provisioning/requests/{request_id}",
+    response_model=DeviceProvisioningRequestResponse,
+)
+async def provisioning_request_status(
+    request_id: UUID,
+    principal: AuthenticatedPrincipal,
+) -> DeviceProvisioningRequestResponse:
+    return await app.state.billing.get_provisioning_request(
+        app.state.database,
+        user_id=principal.user_id,
+        request_id=request_id,
+        include_plans=False,
+    )
+
+
+@app.post(
+    "/v1/provisioning/requests/{request_id}/checkout",
+    response_model=ProvisioningRequestCheckoutResponse,
+    status_code=201,
+)
+async def provisioning_request_checkout(
+    request_id: UUID,
+    request: ProvisioningRequestCheckout,
+    principal: AuthenticatedPrincipal,
+) -> ProvisioningRequestCheckoutResponse:
+    return await app.state.billing.create_provisioning_checkout(
+        app.state.database,
+        user_id=principal.user_id,
+        request_id=request_id,
+        plan_code=request.plan_code,
+    )
+
+
 @app.get(
     "/v1/devices/{device_id}/subscription",
     response_model=DeviceSubscriptionResponse,
@@ -370,6 +446,25 @@ async def subscription_portal(
         device_id=device_id,
         action=request.action if request else "update",
     )
+
+
+@app.post(
+    "/v1/devices/{device_id}/entitlements",
+    response_model=DeviceEntitlementResponse,
+    status_code=201,
+)
+async def issue_device_entitlement(
+    device_id: UUID,
+    request: DeviceEntitlementRequest,
+    principal: AuthenticatedPrincipal,
+) -> DeviceEntitlementResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.entitlement.issue(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+            request=request,
+        )
 
 
 @app.post(

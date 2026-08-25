@@ -1,13 +1,15 @@
 # Pinqeva provisioning backend
 
-This service implements the key-lifecycle portion of protocol v1.2:
+This service implements the payment-gated key-lifecycle portion of protocol v1.3:
 
-1. The authenticated app connects to a selected tag and reads its serial plus a fresh 32-byte challenge.
-2. `POST /v1/devices/claim` uses the encrypted per-device factory credential to return a challenge-bound authorization proof. The reusable bootstrap key remains only on the tag and backend.
-3. The endpoint locks the device row and either resumes its existing allocation or, only when both backend and tag report empty, generates one P-224 key pair with the operating-system CSPRNG.
-4. The app writes the authorization proof before the one-time tag-control key and advertisement key. Firmware disconnects invalid clients and times out connections that never authorize.
-5. The app reads the tag's 32-byte key fingerprint. `POST /v1/devices/claim/complete` checks it plus a user/session/device-bound capability before creating the one active ownership row.
-6. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
+1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge.
+2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 30 minutes.
+3. The app shows the server-provided plan prices, opens Stripe Checkout, and polls the request status. A signed, idempotent Stripe webhook is the only event that changes the request to `paid`.
+4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate one P-224 key pair with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
+5. The app writes the authorization proof before the one-time tag-control key and advertisement key. Firmware disconnects invalid clients and times out connections that never authorize.
+6. The app reads the tag's 32-byte key fingerprint. `POST /v1/devices/claim/complete` checks it plus a user/session/device-bound capability before creating the one active ownership row.
+7. For a new paid claim, the app immediately requests and installs the signed entitlement over the same BLE connection; existing owners use the same endpoint for renewals.
+8. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
 
 ## Run locally
 
@@ -67,7 +69,40 @@ temporarily unavailable” and never falls back to fabricated coordinates.
 
 ## Provisioning API
 
-Start or resume a claim:
+Create the payment gate before allocating a key:
+
+```http
+POST /v1/provisioning/requests
+Authorization: Bearer <Supabase access token>
+Idempotency-Key: request:<client-generated-uuid>
+Content-Type: application/json
+
+{
+  "serial_number": "PKV-AABBCCDDEEFF",
+  "tag_challenge_base64url": "<32-byte challenge read from the tag>",
+  "tag_advertisement_key_sha256_base64url": null
+}
+```
+
+The response contains the short-lived `request_id`, `expires_at`, and the
+server-validated `available_plans` including amount, currency, and billing
+interval. Open the selected plan with:
+
+```http
+POST /v1/provisioning/requests/<request_id>/checkout
+Authorization: Bearer <Supabase access token>
+Content-Type: application/json
+
+{"plan_code":"monthly_basic"}
+```
+
+After Stripe Checkout returns, poll
+`GET /v1/provisioning/requests/<request_id>` until `paid` or `claiming`.
+The status endpoint is intentionally cheap and does not contact Stripe on
+every poll. The signed Stripe webhook remains authoritative; a late payment
+for an expired request is ended locally and queued for provider cancellation.
+
+Only then start or resume the claim:
 
 ```http
 POST /v1/devices/claim
@@ -76,6 +111,7 @@ Idempotency-Key: provision:<client-generated-uuid>
 Content-Type: application/json
 
 {
+  "provisioning_request_id": "<paid request uuid>",
   "serial_number": "PKV-AABBCCDDEEFF",
   "tag_challenge_base64url": "<32-byte challenge read from the tag>",
   "tag_advertisement_key_sha256_base64url": null
@@ -115,12 +151,40 @@ Subscriptions are also device-scoped: one account may pay for multiple tags, but
 
 The outbox is not the payment-provider API. A production worker must process it and the signed provider webhook must confirm that external billing stopped.
 
+## Signed tag activation
+
+After a tag is claimed, the owner can request a signed entitlement only while
+that device has an active or trialing subscription:
+
+```http
+POST /v1/devices/{device_id}/entitlements
+Authorization: Bearer <Supabase access token>
+Content-Type: application/json
+
+{"serial_number":"PKV-AABBCCDDEEFF","tag_challenge_base64url":"<fresh tag challenge>"}
+```
+
+The response contains a 135-byte device-bound P-256 entitlement, the
+challenge-bound authorization proof, its expiry, and an anti-rollback counter.
+The mobile client writes the proof and entitlement to the suspended tag. The
+firmware rejects missing, invalid, mismatched, expired, or replayed leases and
+only then enables finder-network advertising. The backend signer is configured
+with `PINQEVA_ENTITLEMENT_PRIVATE_KEY`; the matching public key is embedded in
+the firmware.
+
 ## Per-tag Stripe subscriptions
 
 Billing is attached to a physical tag, not to an account-wide entitlement. A
 single account has one Stripe Customer and may own several subscriptions, but
 the database and Checkout reservation table allow only one current
 subscription or payable Checkout flow per tag.
+
+New-tag setup uses the separate `provisioning_request` gate described above.
+The mobile client never receives a public key, control key, completion token,
+or private key before the request is paid. Existing owned tags continue to use
+the per-tag subscription endpoints below; after a successful webhook, a new
+claim installs the signed entitlement during the same BLE session, while an
+existing owner reconnects to renew it.
 
 The authenticated mobile contract is:
 

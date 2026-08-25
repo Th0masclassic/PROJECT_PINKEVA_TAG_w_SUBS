@@ -5,6 +5,7 @@ import { AppState } from 'react-native';
 import {
   createDeviceCheckout,
   createDevicePortal,
+  createProvisioningCheckout,
   getDeviceSubscription,
   safeBillingErrorCode,
 } from './api';
@@ -27,6 +28,10 @@ type BillingState = {
   purchasesEnabled: boolean;
   refreshDevice: (deviceId: string) => Promise<void>;
   startCheckout: (deviceId: string, planCode: string) => Promise<BillingActionResult>;
+  startProvisioningCheckout: (
+    requestId: string,
+    planCode: string,
+  ) => Promise<BillingActionResult>;
   openPortal: (deviceId: string, action?: BillingPortalAction) => Promise<BillingActionResult>;
 };
 
@@ -252,6 +257,29 @@ export function useTrackerBilling(
     [accessToken, mode, refreshAfterBillingReturn],
   );
 
+  const startProvisioningCheckout = useCallback(
+    async (requestId: string, planCode: string): Promise<BillingActionResult> => {
+      if (mode === 'demo') return { kind: 'demo' };
+      if (mode === 'unavailable') return { kind: 'error', code: 'configuration' };
+      if (!BILLING_API_CONFIG || !accessToken) {
+        return { kind: 'error', code: 'configuration' };
+      }
+      try {
+        const url = await createProvisioningCheckout(
+          BILLING_API_CONFIG,
+          accessToken,
+          requestId,
+          planCode,
+        );
+        await WebBrowser.openBrowserAsync(url);
+        return { kind: 'opened' };
+      } catch (error) {
+        return { kind: 'error', code: safeBillingErrorCode(error) };
+      }
+    },
+    [accessToken, mode],
+  );
+
   return {
     subscriptions,
     loadingIds,
@@ -260,6 +288,7 @@ export function useTrackerBilling(
     purchasesEnabled: mode === 'demo' || mode === 'live',
     refreshDevice,
     startCheckout,
+    startProvisioningCheckout,
     openPortal,
   };
 }

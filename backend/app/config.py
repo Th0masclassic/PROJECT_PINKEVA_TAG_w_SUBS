@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import ipaddress
 import json
 import os
@@ -9,6 +10,9 @@ from dataclasses import dataclass
 from functools import lru_cache
 from urllib.parse import parse_qsl, urlparse
 from uuid import UUID
+
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import load_der_private_key
 
 
 class ConfigurationError(RuntimeError):
@@ -30,6 +34,10 @@ def _required(name: str) -> str:
     return value.strip()
 
 
+def _is_here_placeholder(value: str) -> bool:
+    return value.strip().startswith("HERE_")
+
+
 def decode_32_byte_secret(name: str, value: str) -> bytes:
     try:
         decoded = base64.b64decode(value, validate=True)
@@ -38,6 +46,36 @@ def decode_32_byte_secret(name: str, value: str) -> bytes:
     if len(decoded) != 32:
         raise ConfigurationError(f"{name} must decode to exactly 32 bytes")
     return decoded
+
+
+def decode_optional_entitlement_private_key(
+    name: str, value: str | None
+) -> ec.EllipticCurvePrivateKey | None:
+    """Decode the backend signing key without making startup depend on it.
+
+    The local .env intentionally uses a HERE_* placeholder until the operator
+    installs the matching key. Billing and provisioning can still start, while
+    the entitlement endpoint fails closed until a real P-256 key is present.
+    """
+
+    normalized = (value or "").strip()
+    if not normalized or normalized.startswith("HERE_"):
+        return None
+    try:
+        der = base64.b64decode(normalized, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ConfigurationError(
+            f"{name} must be standard Base64-encoded PKCS#8 DER"
+        ) from exc
+    try:
+        private_key = load_der_private_key(der, password=None)
+    except (TypeError, ValueError) as exc:
+        raise ConfigurationError(f"{name} must contain a valid private key") from exc
+    if not isinstance(private_key, ec.EllipticCurvePrivateKey):
+        raise ConfigurationError(f"{name} must contain an EC private key")
+    if private_key.curve.name != "secp256r1":
+        raise ConfigurationError(f"{name} must use the P-256 curve")
+    return private_key
 
 
 def validate_database_url(value: str) -> str:
@@ -89,6 +127,11 @@ def validate_https_url(name: str, value: str) -> str:
 
 
 def parse_stripe_price_map(value: str) -> tuple[tuple[str, str, str], ...]:
+    if _is_here_placeholder(value):
+        # Keep the local backend bootable with the explicit placeholders in the
+        # ignored .env. Billing stays unavailable until real catalog bindings
+        # are installed, so no checkout can be created with this map.
+        return ()
     try:
         parsed = json.loads(value)
     except json.JSONDecodeError as exc:
@@ -138,6 +181,8 @@ def parse_stripe_price_map(value: str) -> tuple[tuple[str, str, str], ...]:
 def validate_stripe_secret(
     name: str, value: str, prefixes: str | tuple[str, ...]
 ) -> str:
+    if _is_here_placeholder(value):
+        return value
     allowed_prefixes = (prefixes,) if isinstance(prefixes, str) else prefixes
     if not value.startswith(allowed_prefixes) or len(value) < 24:
         raise ConfigurationError(f"{name} does not have the expected format")
@@ -195,6 +240,7 @@ class Settings:
     claim_token_key: bytes
     session_ttl_seconds: int
     claim_ttl_seconds: int
+    entitlement_private_key: ec.EllipticCurvePrivateKey | None = None
     # Find My report credentials are deliberately optional at process startup:
     # provisioning and authentication must still work on a server before the
     # operator has completed the one-time Apple token setup. Location requests
@@ -315,8 +361,12 @@ def get_settings() -> Settings:
     portal_configuration = os.getenv(
         "STRIPE_PORTAL_CONFIGURATION_ID", ""
     ).strip()
-    if portal_configuration and not re.fullmatch(
-        r"^bpc_[A-Za-z0-9]{8,}$", portal_configuration
+    if (
+        portal_configuration
+        and not _is_here_placeholder(portal_configuration)
+        and not re.fullmatch(
+            r"^bpc_[A-Za-z0-9]{8,}$", portal_configuration
+        )
     ):
         raise ConfigurationError(
             "STRIPE_PORTAL_CONFIGURATION_ID has an invalid format"
@@ -342,6 +392,10 @@ def get_settings() -> Settings:
         ),
         session_ttl_seconds=session_ttl,
         claim_ttl_seconds=claim_ttl,
+        entitlement_private_key=decode_optional_entitlement_private_key(
+            "PINQEVA_ENTITLEMENT_PRIVATE_KEY",
+            os.getenv("PINQEVA_ENTITLEMENT_PRIVATE_KEY"),
+        ),
         findmy_auth_file=os.getenv("PINQEVA_FINDMY_AUTH_FILE", "").strip(),
         findmy_dsid=os.getenv("PINQEVA_FINDMY_DSID", "").strip(),
         findmy_search_party_token=os.getenv(
@@ -359,16 +413,35 @@ def get_settings() -> Settings:
             "STRIPE_WEBHOOK_SECRET", _required("STRIPE_WEBHOOK_SECRET"), "whsec_"
         ),
         stripe_price_map=parse_stripe_price_map(_required("STRIPE_PRICE_MAP_JSON")),
-        stripe_checkout_success_url=validate_https_url(
-            "STRIPE_CHECKOUT_SUCCESS_URL", _required("STRIPE_CHECKOUT_SUCCESS_URL")
+        stripe_checkout_success_url=(
+            "https://example.invalid/pinqeva/checkout-success"
+            if _is_here_placeholder(_required("STRIPE_CHECKOUT_SUCCESS_URL"))
+            else validate_https_url(
+                "STRIPE_CHECKOUT_SUCCESS_URL",
+                _required("STRIPE_CHECKOUT_SUCCESS_URL"),
+            )
         ),
-        stripe_checkout_cancel_url=validate_https_url(
-            "STRIPE_CHECKOUT_CANCEL_URL", _required("STRIPE_CHECKOUT_CANCEL_URL")
+        stripe_checkout_cancel_url=(
+            "https://example.invalid/pinqeva/checkout-cancel"
+            if _is_here_placeholder(_required("STRIPE_CHECKOUT_CANCEL_URL"))
+            else validate_https_url(
+                "STRIPE_CHECKOUT_CANCEL_URL",
+                _required("STRIPE_CHECKOUT_CANCEL_URL"),
+            )
         ),
-        stripe_portal_return_url=validate_https_url(
-            "STRIPE_PORTAL_RETURN_URL", _required("STRIPE_PORTAL_RETURN_URL")
+        stripe_portal_return_url=(
+            "https://example.invalid/pinqeva/portal-return"
+            if _is_here_placeholder(_required("STRIPE_PORTAL_RETURN_URL"))
+            else validate_https_url(
+                "STRIPE_PORTAL_RETURN_URL",
+                _required("STRIPE_PORTAL_RETURN_URL"),
+            )
         ),
-        stripe_portal_configuration_id=portal_configuration or None,
+        stripe_portal_configuration_id=(
+            None
+            if _is_here_placeholder(portal_configuration)
+            else portal_configuration or None
+        ),
         stripe_api_version=stripe_api_version,
         admin_owner_user_ids=parse_uuid_set(
             "PINQEVA_ADMIN_OWNER_USER_IDS",

@@ -3,15 +3,15 @@
   "idf_version": "5.4.2",
   "profile": "development-no-bootstrap-no-bond",
   "requires_factory_bootstrap": false,
-  "warning": "Development image only. It bypasses factory bootstrap authentication and OS pairing/bonding; key confidentiality is not production-grade.",
+  "warning": "Development image only. It requires a backend-signed subscription entitlement before finder advertising; it bypasses factory bootstrap authentication and OS pairing/bonding; key confidentiality is not production-grade.",
   "service_uuid": "a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01",
   "application": {
     "file": "Pinkeva-ESP32.bin",
-    "sha256": "a8a618ddf51220c4a06bf66c4d1283dcbe4e01049a8b0bacc52e5c265a28e2e2"
+    "sha256": "13292e8beb7f87322a3b4b71c8634817bcbabb64096c084949ef6614240af750"
   },
   "bootloader": {
     "file": "bootloader-esp32.bin",
-    "sha256": "81b5e4d104554b3e888938521ee333856e1dc479b23796336a22bae1b85f0eaf"
+    "sha256": "45cc765cc5d796d7b21161954ae5d1be50aa087f892d803dd67a092f5d0898c0"
   },
   "partition_table": {
     "file": "partition-table.bin",

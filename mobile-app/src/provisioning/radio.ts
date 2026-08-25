@@ -6,7 +6,15 @@ class UnsupportedTagRadio implements TagRadio {
     throw new TagRadioError('BLUETOOTH_UNSUPPORTED');
   }
 
+  async inspectTag(): Promise<never> {
+    throw new TagRadioError('BLUETOOTH_UNSUPPORTED');
+  }
+
   async provision(): Promise<never> {
+    throw new TagRadioError('BLUETOOTH_UNSUPPORTED');
+  }
+
+  async installEntitlement(): Promise<never> {
     throw new TagRadioError('BLUETOOTH_UNSUPPORTED');
   }
 

@@ -102,6 +102,10 @@ function parseOwnedTrackerRow(value: unknown, expectedUserId: string): Tracker {
   if (projectedDeviceId !== deviceId) throw new OwnedTrackerError('invalid-response');
 
   const name = parseNullableText(value.device.name, 120) ?? 'Pinkeva Card';
+  const serialNumber = parseNullableText(value.device.serial_number, 16);
+  if (serialNumber !== null && !/^PKV-[0-9A-F]{12}$/.test(serialNumber.toUpperCase())) {
+    throw new OwnedTrackerError('invalid-response');
+  }
   const firmwareVersion = parseNullableText(value.device.firmware_version, 64) ?? '—';
   const latitude = parseNullableCoordinate(value.device.last_latitude, -90, 90);
   const longitude = parseNullableCoordinate(value.device.last_longitude, -180, 180);
@@ -113,6 +117,7 @@ function parseOwnedTrackerRow(value: unknown, expectedUserId: string): Tracker {
 
   return {
     id: deviceId,
+    ...(serialNumber ? { serialNumber: serialNumber.toUpperCase() } : {}),
     source: 'hosted',
     name,
     kind: 'card',
@@ -151,7 +156,7 @@ export async function fetchOwnedTrackers(
   const { data, error, status } = await client
     .from('ownership')
     .select(
-      'user_id,device_id,started_at,ended_at,device:device!inner(id,name,status,firmware_version,last_latitude,last_longitude,last_location_at,last_place)',
+      'user_id,device_id,started_at,ended_at,device:device!inner(id,serial_number,name,status,firmware_version,last_latitude,last_longitude,last_location_at,last_place)',
     )
     .eq('user_id', normalizedUserId)
     .is('ended_at', null)

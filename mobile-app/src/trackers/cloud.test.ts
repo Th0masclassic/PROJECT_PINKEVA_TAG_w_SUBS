@@ -80,7 +80,7 @@ test('queries only the authenticated user active ownerships with a safe device p
     ['from', 'ownership'],
     [
       'select',
-      'user_id,device_id,started_at,ended_at,device:device!inner(id,name,status,firmware_version,last_latitude,last_longitude,last_location_at,last_place)',
+      'user_id,device_id,started_at,ended_at,device:device!inner(id,serial_number,name,status,firmware_version,last_latitude,last_longitude,last_location_at,last_place)',
     ],
     ['eq', 'user_id', USER_ID],
     ['is', 'ended_at', null],

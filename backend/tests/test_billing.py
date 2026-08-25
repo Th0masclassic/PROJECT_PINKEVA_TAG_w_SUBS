@@ -369,6 +369,72 @@ async def test_subscription_status_is_per_tag_and_lists_only_configured_plans(
 
 
 @pytest.mark.asyncio
+async def test_paid_provisioning_subscription_can_bind_before_ownership(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    request_id = uuid.uuid4()
+    subscription = subscription_object(
+        user_id=user_id,
+        device_id=device_id,
+        checkout_id=request_id,
+    )
+    subscription["metadata"] = {
+        "provisioning_request_id": str(request_id),
+        "user_id": str(user_id),
+        "device_id": str(device_id),
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "plan_code": "monthly_basic",
+    }
+    request_row = {
+        "id": request_id,
+        "user_id": user_id,
+        "device_id": device_id,
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "plan_code": "monthly_basic",
+        "provider_session_id": "cs_test_12345678",
+        "provider_customer_id": "cus_12345678",
+        "provider_subscription_id": None,
+        "subscription_id": None,
+        "status": "open",
+        "expires_at": datetime.now(UTC) + timedelta(minutes=20),
+        "claim_deadline": None,
+    }
+    connection = ScriptedConnection(
+        [
+            ("SELECT id, user_id, device_id, serial_number, plan_code", request_row),
+            ("SELECT user_id FROM public.ownership", None),
+            (
+                "SELECT code, duration_months, price_cents",
+                {
+                    "code": "monthly_basic",
+                    "duration_months": 1,
+                    "price_cents": 299,
+                    "currency": "EUR",
+                    "active": True,
+                    "provider_price_id": "price_MONTH1234567",
+                    "provider_product_id": "prod_MONTH1234567",
+                },
+            ),
+            ("INSERT INTO public.subscription", {"id": uuid.uuid4()}),
+            ("UPDATE public.provisioning_request", None),
+        ]
+    )
+
+    await BillingService(settings, FakeGateway())._apply_subscription(
+        connection,
+        event_id="evt_12345678",
+        event_type="customer.subscription.created",
+        event_created=1_800_000_000,
+        subscription=subscription,
+    )
+
+    assert connection.steps == []
+    assert any("status = %s" in query for query, _ in connection.executions)
+
+
+@pytest.mark.asyncio
 async def test_existing_subscription_uses_its_historical_stripe_price(
     settings: Settings,
 ) -> None:

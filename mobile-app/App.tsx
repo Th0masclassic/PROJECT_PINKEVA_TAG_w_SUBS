@@ -94,6 +94,15 @@ function AppContent() {
   const [pairingContext, setPairingContext] = useState<PairingContext>({ kind: 'add' });
   const [removeTrackerId, setRemoveTrackerId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const refreshBillingDevice = useRef<(deviceId: string) => Promise<void>>(
+    async () => undefined,
+  );
+  const provisioningCheckout = useRef<
+    (
+      requestId: string,
+      planCode: string,
+    ) => Promise<{ kind: 'opened' | 'demo' | 'disabled' | 'error'; code?: string }>
+  >(async () => ({ kind: 'error', code: 'configuration' }));
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previousUserId = useRef<string | null | undefined>(undefined);
   const trackerCatalog = useOwnedTrackers(
@@ -127,6 +136,12 @@ function AppContent() {
     getAccessToken: auth.getAccessToken,
     apiConfig: PROVISIONING_API_CONFIG,
     onClaimed: handleTagClaimed,
+    onEntitlementInstalled: async (deviceId) => {
+      await refreshBillingDevice.current(deviceId);
+      showNotice(t('pairing.setupCompleteTitle'));
+    },
+    onProvisioningCheckout: (requestId, planCode) =>
+      provisioningCheckout.current(requestId, planCode),
   });
 
   useEffect(() => {
@@ -211,6 +226,8 @@ function AppContent() {
     auth.session?.access_token ?? null,
     demoPreviewActive && __DEV__,
   );
+  refreshBillingDevice.current = billing.refreshDevice;
+  provisioningCheckout.current = billing.startProvisioningCheckout;
   const mainTracker = useMemo(
     () => displayTrackers.find((tracker) => tracker.id === trackerPreferences.mainTrackerId),
     [displayTrackers, trackerPreferences.mainTrackerId],
@@ -503,6 +520,13 @@ function AppContent() {
           onRetry={() => billing.refreshDevice(selectedTracker.id)}
           onCheckout={(planCode) => billing.startCheckout(selectedTracker.id, planCode)}
           onPortal={(action) => billing.openPortal(selectedTracker.id, action)}
+          onInstallEntitlement={() => {
+            if (!selectedTracker.serialNumber) {
+              showNotice(t('pairing.errorUnavailable'));
+              return;
+            }
+            tagSetup.openForEntitlement(selectedTracker.id, selectedTracker.serialNumber);
+          }}
           onNotice={showNotice}
         />
       );
@@ -749,6 +773,7 @@ function AppContent() {
       <TagSetupModal
         state={tagSetup.state}
         onSelect={tagSetup.select}
+        onChoosePlan={tagSetup.chooseProvisioningPlan}
         onRetry={tagSetup.retry}
         onClose={tagSetup.close}
       />

@@ -12,6 +12,7 @@ export type TrackerIconOverride = Exclude<TrackerKind, 'card'>;
 
 export type Tracker = {
   id: string;
+  serialNumber?: string;
   source: TrackerSource;
   name: string;
   kind: TrackerKind;

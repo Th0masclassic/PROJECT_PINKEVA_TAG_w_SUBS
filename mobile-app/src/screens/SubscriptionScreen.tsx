@@ -25,6 +25,7 @@ import {
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
 import {
   canStartCheckout,
+  canInstallEntitlement,
   isCurrentSubscription,
   type BillingActionResult,
   type BillingErrorCode,
@@ -58,6 +59,7 @@ export function SubscriptionScreen({
   onRetry,
   onCheckout,
   onPortal,
+  onInstallEntitlement,
   onNotice,
 }: {
   tracker: Tracker;
@@ -70,12 +72,13 @@ export function SubscriptionScreen({
   onRetry: () => Promise<void>;
   onCheckout: (planCode: string) => Promise<BillingActionResult>;
   onPortal: (action: BillingPortalAction) => Promise<BillingActionResult>;
+  onInstallEntitlement: () => void | Promise<void>;
   onNotice: (message: string) => void;
 }) {
   const { language } = useI18n();
   const copy = useBillingCopy();
   const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
-  const [actionBusy, setActionBusy] = useState<'primary' | 'cancel' | null>(null);
+  const [actionBusy, setActionBusy] = useState<'primary' | 'cancel' | 'entitlement' | null>(null);
   const [cancelVisible, setCancelVisible] = useState(false);
   const plans = subscription?.availablePlans ?? EMPTY_PLANS;
 
@@ -89,6 +92,8 @@ export function SubscriptionScreen({
 
   const current = subscription ? isCurrentSubscription(subscription) : false;
   const canCheckout = subscription ? canStartCheckout(subscription) : false;
+  const entitlementAvailable =
+    mode === 'live' && subscription ? canInstallEntitlement(subscription) : false;
   const primaryLabel = subscription?.cancelAtPeriodEnd
     ? purchasesEnabled
       ? copy.renew
@@ -128,6 +133,15 @@ export function SubscriptionScreen({
     setActionBusy('cancel');
     try {
       presentResult(await onPortal('cancel'));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const installEntitlement = async () => {
+    setActionBusy('entitlement');
+    try {
+      await onInstallEntitlement();
     } finally {
       setActionBusy(null);
     }
@@ -294,6 +308,17 @@ export function SubscriptionScreen({
               }
               testID="subscription-primary-action"
             />
+            {entitlementAvailable ? (
+              <OutlineButton
+                label={
+                  actionBusy === 'entitlement' ? copy.loading : copy.activate ?? 'Activate tag'
+                }
+                onPress={() => void installEntitlement()}
+                disabled={actionBusy !== null || loading}
+                style={styles.entitlementButton}
+                testID="subscription-activate-action"
+              />
+            ) : null}
             {current && !subscription.cancelAtPeriodEnd ? (
               <Pressable
                 accessibilityRole="button"
@@ -468,6 +493,7 @@ const styles = StyleSheet.create({
   policyText: { color: colors.mutedDark, flex: 1, fontSize: 13, lineHeight: 19 },
   secureNotice: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 6, marginTop: 2 },
   secureText: { color: colors.muted, flex: 1, fontSize: 12, lineHeight: 18 },
+  entitlementButton: { marginTop: -4 },
   cancelAction: { minHeight: 54, borderWidth: 1.5, borderColor: '#FFC8CA', borderRadius: 15, backgroundColor: '#FFF8F8', paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   cancelActionDisabled: { opacity: 0.5 },
   cancelActionText: { color: colors.danger, fontSize: 16, fontWeight: '800' },

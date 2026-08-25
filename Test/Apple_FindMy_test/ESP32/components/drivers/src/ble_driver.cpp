@@ -14,6 +14,8 @@
 #include "esp_mac.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "mbedtls/ecdsa.h"
+#include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs_driver.hpp"
@@ -27,10 +29,6 @@
 #define CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY 1
 #endif
 
-#ifndef CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
-#define CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT 1
-#endif
-
 namespace {
 constexpr char LOG_TAG[] = "BLE_DRIVER";
 constexpr uint16_t APP_ID = 0;
@@ -41,8 +39,13 @@ constexpr uint8_t KEY_FINGERPRINT_SIZE = 32;
 constexpr uint8_t TAG_CHALLENGE_SIZE = 32;
 constexpr uint8_t TAG_AUTHORIZATION_PROOF_SIZE = 32;
 constexpr uint8_t RESET_COMMAND_SIZE = 64;
+constexpr size_t ENTITLEMENT_BODY_SIZE = 62;
+constexpr size_t ENTITLEMENT_SIGNATURE_OFFSET = 63;
+constexpr size_t ENTITLEMENT_SIGNATURE_MAX_SIZE = 72;
+constexpr size_t ENTITLEMENT_SIGNATURE_MIN_SIZE = 70;
+constexpr uint8_t ENTITLEMENT_FINDER_CAPABILITY = 0x01;
 constexpr uint64_t AUTHORIZATION_TIMEOUT_MICROSECONDS = 30ULL * 1000ULL * 1000ULL;
-constexpr size_t MAX_STAGED_VALUE_SIZE = RESET_COMMAND_SIZE;
+constexpr size_t MAX_STAGED_VALUE_SIZE = SUBSCRIPTION_ENTITLEMENT_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
 constexpr uint16_t TAG_AUTHORIZATION_CAPABILITY = 0x0010;
@@ -95,6 +98,24 @@ constexpr uint8_t TAG_AUTHORIZATION_PROOF_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x09, 0xF0, 0xF0, 0xA6,
 };
+constexpr uint8_t SUBSCRIPTION_ENTITLEMENT_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x0A, 0xF0, 0xF0, 0xA6,
+};
+
+// P-256 public verification key for the backend entitlement signer. The
+// matching PKCS#8 private key lives only in the backend environment.
+constexpr uint8_t ENTITLEMENT_PUBLIC_KEY[65] = {
+    0x04, 0x05, 0x6C, 0xB2, 0x6D, 0x81, 0x34, 0xFB,
+    0x88, 0x61, 0xF6, 0x78, 0xB0, 0x87, 0xA2, 0x26,
+    0xD6, 0x7A, 0x85, 0x57, 0x2F, 0x4C, 0x0F, 0x8F,
+    0x89, 0x5B, 0xEE, 0x23, 0xDE, 0x28, 0xD0, 0xCB,
+    0xFF, 0x14, 0x25, 0x11, 0x9C, 0x61, 0x29, 0xDC,
+    0x8B, 0xBB, 0xF5, 0x28, 0xE7, 0x4C, 0xEA, 0xD6,
+    0x90, 0x34, 0x24, 0x34, 0xE4, 0x69, 0x53, 0xFA,
+    0xF3, 0x05, 0xCB, 0x0D, 0xF0, 0xD0, 0x5A, 0x23,
+    0xD3
+};
 
 enum AttributeIndex : uint8_t {
     SERVICE,
@@ -117,6 +138,8 @@ enum AttributeIndex : uint8_t {
     TAG_CHALLENGE_VALUE,
     TAG_AUTHORIZATION_PROOF_DECLARATION,
     TAG_AUTHORIZATION_PROOF_VALUE,
+    SUBSCRIPTION_ENTITLEMENT_DECLARATION,
+    SUBSCRIPTION_ENTITLEMENT_VALUE,
     ATTRIBUTE_COUNT,
 };
 
@@ -179,6 +202,7 @@ uint8_t control_key_attribute[TAG_CONTROL_KEY_SIZE] = {};
 uint8_t reset_command_attribute[RESET_COMMAND_SIZE] = {};
 uint8_t tag_challenge_attribute[TAG_CHALLENGE_SIZE] = {};
 uint8_t tag_authorization_proof_attribute[TAG_AUTHORIZATION_PROOF_SIZE] = {};
+uint8_t subscription_entitlement_attribute[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
@@ -190,7 +214,14 @@ bool service_started = false;
 bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
+esp_timer_handle_t entitlement_expiry_timer = nullptr;
+uint64_t entitlement_issued_epoch = 0;
+uint64_t entitlement_expires_epoch = 0;
+int64_t entitlement_time_started_microseconds = 0;
+uint64_t current_entitlement_counter = 0;
+bool entitlement_time_trusted = false;
 uint8_t pending_adv_configuration = 0;
+bool random_address_change_pending = false;
 
 uint8_t staged_value[MAX_STAGED_VALUE_SIZE] = {};
 bool staged_value_bytes[MAX_STAGED_VALUE_SIZE] = {};
@@ -421,6 +452,23 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           sizeof(tag_authorization_proof_attribute),
           0,
           tag_authorization_proof_attribute}},
+
+    [SUBSCRIPTION_ENTITLEMENT_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [SUBSCRIPTION_ENTITLEMENT_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(SUBSCRIPTION_ENTITLEMENT_UUID),
+          SETUP_WRITE_PERMISSION,
+          SUBSCRIPTION_ENTITLEMENT_SIZE,
+          0,
+          subscription_entitlement_attribute}},
 };
 
 void clear_staged_value() {
@@ -549,16 +597,14 @@ void erase_all_bonds() {
 }
 
 esp_err_t configure_finder_advertisement(const uint8_t *key, size_t length) {
-#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
     if (!advertisement_key_is_valid(key, length)) {
         return ESP_ERR_INVALID_ARG;
     }
 
     // The legacy Find My ESP32 test script uses the first six public-key bytes
     // as the static-random BLE address and puts the remaining 22 bytes in the
-    // Apple offline-finding manufacturer payload. This is intentionally behind
-    // the development entitlement bypass; production must gate this path with
-    // a verified backend entitlement.
+    // Apple offline-finding manufacturer payload. This function is called only
+    // after a signed, device-bound entitlement has been verified.
     finder_ble_address[0] = static_cast<uint8_t>(key[0] | 0xC0U);
     std::memcpy(finder_ble_address + 1, key + 1, 5);
 
@@ -574,23 +620,65 @@ esp_err_t configure_finder_advertisement(const uint8_t *key, size_t length) {
     finder_adv_data[29] = static_cast<uint8_t>(key[0] >> 6);
     finder_adv_data[30] = 0x00;  // Hint.
 
-    ESP_LOGW(LOG_TAG,
-             "DEVELOPMENT MODE: entitlement bypassed; Apple-style finder advertising enabled");
     ESP_LOGI(LOG_TAG,
              "Finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
              finder_ble_address[0], finder_ble_address[1], finder_ble_address[2],
              finder_ble_address[3], finder_ble_address[4], finder_ble_address[5]);
     return ESP_OK;
-#else
-    (void)key;
-    (void)length;
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
+}
+
+void configure_advertising_for_mode() {
+    if (active_gatts_if == ESP_GATT_IF_NONE) {
+        return;
+    }
+    pending_adv_configuration = ADV_CONFIG_FLAG | SCAN_RSP_CONFIG_FLAG;
+    advertising_configuration_failed = false;
+    if (ble_mode == BLEMode::TRACKER) {
+        random_address_change_pending = true;
+        esp_err_t address_error = esp_ble_gap_set_rand_addr(finder_ble_address);
+        if (address_error != ESP_OK) {
+            random_address_change_pending = false;
+            ESP_LOGE(LOG_TAG, "Could not activate finder BLE identity: %s",
+                     esp_err_to_name(address_error));
+        }
+    } else if (ble_mode == BLEMode::SETUP) {
+        random_address_change_pending = true;
+        esp_err_t address_error = esp_ble_gap_set_rand_addr(setup_ble_address);
+        if (address_error != ESP_OK) {
+            random_address_change_pending = false;
+            ESP_LOGE(LOG_TAG, "Could not activate setup BLE identity: %s",
+                     esp_err_to_name(address_error));
+        }
+    } else {
+        random_address_change_pending = false;
+    }
+
+    uint8_t *advertisement_data =
+        ble_mode == BLEMode::TRACKER ? finder_adv_data : setup_adv_data;
+    size_t advertisement_data_size =
+        ble_mode == BLEMode::TRACKER ? sizeof(finder_adv_data)
+                                     : sizeof(setup_adv_data);
+    esp_err_t error = esp_ble_gap_config_adv_data_raw(
+        advertisement_data, advertisement_data_size);
+    if (error != ESP_OK) {
+        advertising_configuration_failed = true;
+        pending_adv_configuration &= ~ADV_CONFIG_FLAG;
+        ESP_LOGE(LOG_TAG, "Could not configure BLE advertisement: %s",
+                 esp_err_to_name(error));
+    }
+    error = esp_ble_gap_config_scan_rsp_data_raw(
+        setup_scan_response, sizeof(setup_scan_response));
+    if (error != ESP_OK) {
+        advertising_configuration_failed = true;
+        pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
+        ESP_LOGE(LOG_TAG, "Could not configure Pinkeva scan response: %s",
+                 esp_err_to_name(error));
+    }
 }
 
 void try_start_maintenance_advertising() {
     if (!connected && service_started && pending_adv_configuration == 0 &&
-        !advertising_configuration_failed) {
+        !advertising_configuration_failed && !random_address_change_pending) {
         esp_ble_adv_params_t *parameters = &suspended_adv_params;
         if (ble_mode == BLEMode::SETUP) {
             parameters = &setup_adv_params;
@@ -603,6 +691,106 @@ void try_start_maintenance_advertising() {
                      esp_err_to_name(error));
         }
     }
+}
+
+uint64_t read_uint64_be(const uint8_t *value) {
+    uint64_t result = 0;
+    for (size_t index = 0; index < sizeof(uint64_t); ++index) {
+        result = (result << 8U) | value[index];
+    }
+    return result;
+}
+
+uint32_t read_uint32_be(const uint8_t *value) {
+    return (static_cast<uint32_t>(value[0]) << 24U) |
+           (static_cast<uint32_t>(value[1]) << 16U) |
+           (static_cast<uint32_t>(value[2]) << 8U) |
+           static_cast<uint32_t>(value[3]);
+}
+
+bool verify_entitlement_signature(const uint8_t *entitlement,
+                                  size_t signature_length) {
+    uint8_t digest[32] = {};
+    if (mbedtls_sha256(entitlement, ENTITLEMENT_BODY_SIZE, digest, 0) != 0) {
+        return false;
+    }
+
+    mbedtls_ecdsa_context context;
+    mbedtls_ecdsa_init(&context);
+    int result = mbedtls_ecp_group_load(
+        &context.MBEDTLS_PRIVATE(grp), MBEDTLS_ECP_DP_SECP256R1);
+    if (result == 0) {
+        result = mbedtls_ecp_point_read_binary(
+            &context.MBEDTLS_PRIVATE(grp), &context.MBEDTLS_PRIVATE(Q),
+            ENTITLEMENT_PUBLIC_KEY,
+            sizeof(ENTITLEMENT_PUBLIC_KEY));
+    }
+    if (result == 0) {
+        result = mbedtls_ecdsa_read_signature(
+            &context, digest, sizeof(digest),
+            entitlement + ENTITLEMENT_SIGNATURE_OFFSET, signature_length);
+    }
+    mbedtls_ecdsa_free(&context);
+    std::memset(digest, 0, sizeof(digest));
+    return result == 0;
+}
+
+bool validate_entitlement(const uint8_t *entitlement,
+                          size_t length,
+                          uint64_t *issued_epoch,
+                          uint64_t *expires_epoch,
+                          uint64_t *counter) {
+    if (entitlement == nullptr || length != SUBSCRIPTION_ENTITLEMENT_SIZE ||
+        entitlement[0] != 1 ||
+        (entitlement[1] & ENTITLEMENT_FINDER_CAPABILITY) == 0 ||
+        std::memcmp(entitlement + 2, device_id, DEVICE_ID_LEN - 1) != 0 ||
+        read_uint32_be(entitlement + 58) != ENTITLEMENT_FINDER_CAPABILITY) {
+        return false;
+    }
+
+    const uint8_t signature_length = entitlement[ENTITLEMENT_BODY_SIZE];
+    if (signature_length < ENTITLEMENT_SIGNATURE_MIN_SIZE ||
+        signature_length > ENTITLEMENT_SIGNATURE_MAX_SIZE) {
+        return false;
+    }
+    for (size_t index = ENTITLEMENT_SIGNATURE_OFFSET + signature_length;
+         index < SUBSCRIPTION_ENTITLEMENT_SIZE; ++index) {
+        if (entitlement[index] != 0) {
+            return false;
+        }
+    }
+
+    const uint64_t issued = read_uint64_be(entitlement + 34);
+    const uint64_t expires = read_uint64_be(entitlement + 42);
+    const uint64_t sequence = read_uint64_be(entitlement + 50);
+    if (issued == 0 || expires <= issued || sequence == 0 ||
+        !verify_entitlement_signature(entitlement, signature_length)) {
+        return false;
+    }
+    if (issued_epoch != nullptr) *issued_epoch = issued;
+    if (expires_epoch != nullptr) *expires_epoch = expires;
+    if (counter != nullptr) *counter = sequence;
+    return true;
+}
+
+uint64_t trusted_entitlement_now() {
+    if (!entitlement_time_trusted) return 0;
+    const int64_t elapsed = esp_timer_get_time() - entitlement_time_started_microseconds;
+    if (elapsed < 0) return entitlement_issued_epoch;
+    return entitlement_issued_epoch + static_cast<uint64_t>(elapsed / 1000000LL);
+}
+
+void entitlement_expiry_callback(void *) {
+    if (ble_mode != BLEMode::TRACKER || !entitlement_time_trusted) return;
+    if (trusted_entitlement_now() < entitlement_expires_epoch) return;
+
+    entitlement_time_trusted = false;
+    ble_mode = BLEMode::SUSPENDED;
+    esp_ble_gap_stop_advertising();
+    update_status(ProvisioningState::SUSPENDED,
+                  ProvisioningResult::ENTITLEMENT_REJECTED);
+    configure_advertising_for_mode();
+    ESP_LOGW(LOG_TAG, "Subscription entitlement expired; finder advertising stopped");
 }
 
 esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
@@ -644,23 +832,74 @@ esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
         return ESP_GATT_ERR_UNLIKELY;
     }
 
-#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
-    if (configure_finder_advertisement(key, length) != ESP_OK) {
+    // The tag remains fail closed until a signed entitlement is received and
+    // verified by the firmware.
+    ble_mode = BLEMode::SUSPENDED;
+    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
+    ESP_LOGI(LOG_TAG, "Advertisement key committed; awaiting entitlement");
+    return ESP_GATT_OK;
+}
+
+esp_gatt_status_t persist_entitlement(const uint8_t *entitlement, size_t length) {
+    if (ble_mode != BLEMode::SUSPENDED && ble_mode != BLEMode::TRACKER) {
+        return ESP_GATT_WRITE_NOT_PERMIT;
+    }
+    if (length != SUBSCRIPTION_ENTITLEMENT_SIZE) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INVALID_LENGTH);
+        return ESP_GATT_INVALID_ATTR_LEN;
+    }
+
+    update_status(ProvisioningState::VALIDATING, ProvisioningResult::SUCCESS);
+    uint64_t issued_epoch = 0;
+    uint64_t expires_epoch = 0;
+    uint64_t counter = 0;
+    if (!validate_entitlement(entitlement, length, &issued_epoch,
+                              &expires_epoch, &counter) ||
+        counter <= current_entitlement_counter) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::ENTITLEMENT_REJECTED);
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+
+    update_status(ProvisioningState::PERSISTING, ProvisioningResult::SUCCESS);
+    esp_err_t error = save_subscription_entitlement(entitlement, length);
+    if (error != ESP_OK) {
+        ESP_LOGE(LOG_TAG, "Entitlement persistence failed: %s",
+                 esp_err_to_name(error));
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::STORAGE_FAILURE);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+    std::memcpy(subscription_entitlement_attribute, entitlement,
+                SUBSCRIPTION_ENTITLEMENT_SIZE);
+    if (attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE] != 0) {
+        esp_ble_gatts_set_attr_value(
+            attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE],
+            SUBSCRIPTION_ENTITLEMENT_SIZE, subscription_entitlement_attribute);
+    }
+
+    uint8_t advertisement_key[PUBLIC_KEY_SIZE] = {};
+    error = load_advertisement_key(advertisement_key, sizeof(advertisement_key));
+    if (error != ESP_OK ||
+        configure_finder_advertisement(advertisement_key,
+                                       sizeof(advertisement_key)) != ESP_OK) {
+        std::memset(advertisement_key, 0, sizeof(advertisement_key));
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::INTERNAL_ERROR);
         return ESP_GATT_ERR_UNLIKELY;
     }
+    std::memset(advertisement_key, 0, sizeof(advertisement_key));
+
+    current_entitlement_counter = counter;
+    entitlement_issued_epoch = issued_epoch;
+    entitlement_expires_epoch = expires_epoch;
+    entitlement_time_started_microseconds = esp_timer_get_time();
+    entitlement_time_trusted = true;
     ble_mode = BLEMode::TRACKER;
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    ESP_LOGI(LOG_TAG,
-             "Advertisement key committed; finder advertising will start after reboot");
-#else
-    // The production path remains fail closed until a signed entitlement is
-    // received and verified by the firmware.
-    ble_mode = BLEMode::SUSPENDED;
-    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    ESP_LOGI(LOG_TAG, "Advertisement key committed; awaiting entitlement");
-#endif
+    configure_advertising_for_mode();
+    ESP_LOGI(LOG_TAG, "Signed subscription entitlement accepted; finder advertising enabled");
     return ESP_GATT_OK;
 }
 
@@ -686,7 +925,7 @@ esp_gatt_status_t persist_control_key(const uint8_t *key, size_t length) {
 }
 
 esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
-    if (ble_mode != BLEMode::SUSPENDED) {
+    if (ble_mode != BLEMode::SUSPENDED && ble_mode != BLEMode::TRACKER) {
         return ESP_GATT_WRITE_NOT_PERMIT;
     }
     if (command == nullptr || length != RESET_COMMAND_SIZE) {
@@ -735,10 +974,15 @@ esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
         return ESP_GATT_ERR_UNLIKELY;
     }
     update_key_fingerprint(nullptr);
+    std::memset(subscription_entitlement_attribute, 0,
+                sizeof(subscription_entitlement_attribute));
+    current_entitlement_counter = 0;
+    entitlement_time_trusted = false;
     ble_mode = BLEMode::SETUP;
     bond_cleanup_pending = true;
     update_status(ProvisioningState::UNPROVISIONED,
                   ProvisioningResult::SUCCESS);
+    configure_advertising_for_mode();
     ESP_LOGI(LOG_TAG, "Authenticated reset completed; key material erased");
     return ESP_GATT_OK;
 }
@@ -826,6 +1070,9 @@ size_t secure_value_length(uint16_t handle) {
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
         return RESET_COMMAND_SIZE;
     }
+    if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
+        return SUBSCRIPTION_ENTITLEMENT_SIZE;
+    }
     return 0;
 }
 
@@ -837,6 +1084,9 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
         return false;
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
+        return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
+    }
+    if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
         return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
     }
     return (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE] ||
@@ -863,6 +1113,9 @@ esp_gatt_status_t process_secure_write(uint16_t handle,
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
         return authenticated_reset(value, length);
+    }
+    if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
+        return persist_entitlement(value, length);
     }
     return ESP_GATT_WRITE_NOT_PERMIT;
 }
@@ -964,29 +1217,7 @@ void gatts_callback(esp_gatts_cb_event_t event,
                          esp_err_to_name(error));
             }
 
-            pending_adv_configuration = ADV_CONFIG_FLAG | SCAN_RSP_CONFIG_FLAG;
-            advertising_configuration_failed = false;
-            uint8_t *advertisement_data =
-                ble_mode == BLEMode::TRACKER ? finder_adv_data : setup_adv_data;
-            size_t advertisement_data_size =
-                ble_mode == BLEMode::TRACKER ? sizeof(finder_adv_data)
-                                             : sizeof(setup_adv_data);
-            error = esp_ble_gap_config_adv_data_raw(advertisement_data,
-                                                    advertisement_data_size);
-            if (error != ESP_OK) {
-                advertising_configuration_failed = true;
-                ESP_LOGE(LOG_TAG, "Could not configure BLE advertisement: %s",
-                         esp_err_to_name(error));
-                pending_adv_configuration &= ~ADV_CONFIG_FLAG;
-            }
-            error = esp_ble_gap_config_scan_rsp_data_raw(
-                setup_scan_response, sizeof(setup_scan_response));
-            if (error != ESP_OK) {
-                advertising_configuration_failed = true;
-                ESP_LOGE(LOG_TAG, "Could not configure Pinkeva scan response: %s",
-                         esp_err_to_name(error));
-                pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
-            }
+            configure_advertising_for_mode();
 
             error = esp_ble_gatts_create_attr_tab(
                 provisioning_gatt_db, gatts_if, ATTRIBUTE_COUNT,
@@ -1116,10 +1347,12 @@ void gap_callback(esp_gap_ble_cb_event_t event,
     switch (static_cast<int>(event)) {
         case ESP_GAP_BLE_SET_STATIC_RAND_ADDR_EVT: {
             if (param->set_rand_addr_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                random_address_change_pending = false;
                 ESP_LOGE(LOG_TAG, "Could not activate setup BLE identity: %d",
                          param->set_rand_addr_cmpl.status);
                 break;
             }
+            random_address_change_pending = false;
             const uint8_t *active_address =
                 ble_mode == BLEMode::TRACKER ? finder_ble_address
                                              : setup_ble_address;
@@ -1128,8 +1361,12 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                      ble_mode == BLEMode::TRACKER ? "Finder" : "Setup",
                      active_address[0], active_address[1], active_address[2],
                      active_address[3], active_address[4], active_address[5]);
-            if (esp_ble_gatts_app_register(APP_ID) != ESP_OK) {
-                ESP_LOGE(LOG_TAG, "Could not register GATT application");
+            if (active_gatts_if == ESP_GATT_IF_NONE) {
+                if (esp_ble_gatts_app_register(APP_ID) != ESP_OK) {
+                    ESP_LOGE(LOG_TAG, "Could not register GATT application");
+                }
+            } else {
+                try_start_maintenance_advertising();
             }
             break;
         }
@@ -1263,6 +1500,22 @@ std::optional<ERROR_TAG> ble_init() {
     if (error != ESP_OK) {
         return ERROR_TAG("Authorization timer initialization failed", LOG_TAG);
     }
+    const esp_timer_create_args_t entitlement_timer_arguments = {
+        .callback = &entitlement_expiry_callback,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "entitlement_expiry",
+        .skip_unhandled_events = false,
+    };
+    error = esp_timer_create(&entitlement_timer_arguments,
+                             &entitlement_expiry_timer);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Entitlement timer initialization failed", LOG_TAG);
+    }
+    error = esp_timer_start_periodic(entitlement_expiry_timer, 5ULL * 1000ULL * 1000ULL);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Entitlement timer start failed", LOG_TAG);
+    }
     error = initialize_device_id();
     if (error != ESP_OK) {
         return ERROR_TAG("Device ID initialization failed", "DEVICE_ID");
@@ -1271,23 +1524,31 @@ std::optional<ERROR_TAG> ble_init() {
     uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
     if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
         ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
-#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
-        if (configure_finder_advertisement(existing_key, sizeof(existing_key)) !=
-            ESP_OK) {
-            std::memset(existing_key, 0, sizeof(existing_key));
-            return ERROR_TAG("Finder advertisement initialization failed", LOG_TAG);
+        // A reboot cannot prove that the wall clock is still trustworthy, so
+        // even a valid stored packet starts in renewal mode. The owner can
+        // reconnect and install a fresh entitlement with a fresh backend time.
+        uint8_t stored_entitlement[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
+        uint64_t stored_issued_epoch = 0;
+        uint64_t stored_expires_epoch = 0;
+        uint64_t stored_counter = 0;
+        if (load_subscription_entitlement(stored_entitlement,
+                                           sizeof(stored_entitlement)) == ESP_OK &&
+            validate_entitlement(stored_entitlement, sizeof(stored_entitlement),
+                                 &stored_issued_epoch, &stored_expires_epoch,
+                                 &stored_counter)) {
+            current_entitlement_counter = stored_counter;
+            std::memcpy(subscription_entitlement_attribute, stored_entitlement,
+                        sizeof(subscription_entitlement_attribute));
+            ESP_LOGI(LOG_TAG,
+                     "Stored entitlement verified; waiting for renewal time proof");
+        } else {
+            ESP_LOGW(LOG_TAG, "No valid signed entitlement found; finder advertising disabled");
         }
-        ble_mode = BLEMode::TRACKER;
-        status_value[0] = static_cast<uint8_t>(ProvisioningState::READY);
-        status_value[1] = static_cast<uint8_t>(ProvisioningResult::SUCCESS);
-#else
-        // Production remains fail closed: the finder payload requires a
-        // verified signed entitlement and is never emitted from the key alone.
+        std::memset(stored_entitlement, 0, sizeof(stored_entitlement));
         ble_mode = BLEMode::SUSPENDED;
         status_value[0] = static_cast<uint8_t>(ProvisioningState::SUSPENDED);
         status_value[1] =
             static_cast<uint8_t>(ProvisioningResult::ENTITLEMENT_REJECTED);
-#endif
         if (update_key_fingerprint(existing_key) != ESP_OK) {
             std::memset(existing_key, 0, sizeof(existing_key));
             return ERROR_TAG("Key fingerprint initialization failed", "NVS");
@@ -1333,13 +1594,11 @@ std::optional<ERROR_TAG> ble_init() {
         if (error != ESP_OK) {
             return ERROR_TAG("Setup BLE identity configuration failed", LOG_TAG);
         }
-#if CONFIG_PINQEVA_DEV_BYPASS_ENTITLEMENT
     } else if (ble_mode == BLEMode::TRACKER) {
         error = esp_ble_gap_set_rand_addr(finder_ble_address);
         if (error != ESP_OK) {
             return ERROR_TAG("Finder BLE identity configuration failed", LOG_TAG);
         }
-#endif
     } else {
         error = esp_ble_gatts_app_register(APP_ID);
         if (error != ESP_OK) {

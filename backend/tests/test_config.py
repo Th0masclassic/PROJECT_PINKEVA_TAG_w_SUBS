@@ -5,6 +5,7 @@ from app.config import (
     parse_stripe_price_map,
     validate_database_url,
     validate_https_url,
+    validate_stripe_secret,
 )
 
 
@@ -67,4 +68,12 @@ def test_stripe_price_map_accepts_server_plan_mapping() -> None:
     ) == (
         ("monthly_basic", "price_MONTH1234567", "prod_MONTH1234567"),
         ("yearly_pro", "price_YEAR12345678", "prod_YEAR12345678"),
+    )
+
+
+def test_explicit_stripe_placeholders_boot_without_enabling_billing() -> None:
+    assert parse_stripe_price_map("HERE_STRIPE_PRICE_MAP_JSON") == ()
+    assert (
+        validate_stripe_secret("STRIPE_SECRET_KEY", "HERE_STRIPE_SECRET_KEY", "sk_test_")
+        == "HERE_STRIPE_SECRET_KEY"
     )

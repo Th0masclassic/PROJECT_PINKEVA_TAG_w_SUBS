@@ -40,6 +40,9 @@ export function safeTagSetupErrorCode(error: unknown): TagSetupErrorCode {
     }
     if (code === 'DEVICE_AUTHORIZATION_REJECTED') return 'tag-rejected';
     if (code === 'DEVICE_UNAVAILABLE') return 'tag-unavailable';
+    if (code === 'SUBSCRIPTION_REQUIRED') return 'tag-rejected';
+    if (code === 'ENTITLEMENT_UNAVAILABLE') return 'unavailable';
+    if (code === 'TAG_NOT_READY') return 'tag-busy';
     if (code === 'PROVISIONING_IN_PROGRESS') return 'tag-busy';
     if (code === 'RECOVERY_REQUIRED' || code === 'SESSION_NOT_FOUND') {
       return 'recovery-required';

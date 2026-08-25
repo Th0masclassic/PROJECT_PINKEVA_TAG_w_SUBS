@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   PinqevaProvisioningClient,
   type DeviceClaim,
+  type ProvisioningPlan,
+  type ProvisioningRequest,
   type ProvisioningApiConfig,
 } from './api';
 import { createTagRadio, type DiscoveredTag, type StopTagScan, type TagRadio } from './radio';
@@ -16,25 +18,35 @@ export type TagSetupPhase =
   | 'connecting'
   | 'verifying'
   | 'authorizing'
+  | 'payment'
+  | 'waiting_payment'
   | 'installing'
   | 'associating'
   | 'success'
   | 'error';
 
+export type TagSetupOperation = 'claim' | 'entitlement';
+
 export type TagSetupState = {
   phase: TagSetupPhase;
+  operation: TagSetupOperation;
   candidates: DiscoveredTag[];
   selected: DiscoveredTag | null;
   claim: DeviceClaim | null;
   error: TagSetupErrorCode | null;
+  provisioningRequest: ProvisioningRequest | null;
+  targetDeviceId?: string;
+  targetSerialNumber?: string;
 };
 
 const IDLE_STATE: TagSetupState = {
   phase: 'idle',
+  operation: 'claim',
   candidates: [],
   selected: null,
   claim: null,
   error: null,
+  provisioningRequest: null,
 };
 
 function logDevelopmentSetupFailure(context: string, error: unknown): void {
@@ -56,12 +68,24 @@ export function useTagSetup(input: {
   getAccessToken: () => Promise<string | null>;
   apiConfig: ProvisioningApiConfig | null;
   onClaimed: (claim: DeviceClaim) => Promise<void>;
+  onEntitlementInstalled?: (deviceId: string) => Promise<void>;
+  onProvisioningCheckout: (
+    requestId: string,
+    planCode: string,
+  ) => Promise<{ kind: 'opened' | 'demo' | 'disabled' | 'error'; code?: string }>;
 }) {
   const [state, setState] = useState<TagSetupState>(IDLE_STATE);
   const radio = useRef<TagRadio | null>(null);
   const stopScan = useRef<StopTagScan | null>(null);
   const sequence = useRef(0);
   const idempotencyKeys = useRef(new Map<string, string>());
+  const request = useRef<{
+    operation: TagSetupOperation;
+    deviceId?: string;
+    serialNumber?: string;
+    provisioningRequestId?: string;
+    provisioningRequest?: ProvisioningRequest;
+  }>({ operation: 'claim' });
   const latestInput = useRef(input);
   latestInput.current = input;
 
@@ -74,81 +98,192 @@ export function useTagSetup(input: {
     if (currentRadio) await currentRadio.destroy().catch(() => undefined);
   }, []);
 
-  const beginScan = useCallback(async () => {
-    const currentSequence = ++sequence.current;
-    await releaseRadio();
-    if (currentSequence !== sequence.current) return;
+  const beginScan = useCallback(
+    async (
+      operation: TagSetupOperation = 'claim',
+      target?: {
+        deviceId: string;
+        serialNumber: string;
+        provisioningRequestId?: string;
+        provisioningRequest?: ProvisioningRequest;
+      },
+    ) => {
+      request.current = {
+        operation,
+        deviceId: target?.deviceId,
+        serialNumber: target?.serialNumber,
+        provisioningRequestId: target?.provisioningRequestId,
+        provisioningRequest: target?.provisioningRequest,
+      };
+      const currentSequence = ++sequence.current;
+      await releaseRadio();
+      if (currentSequence !== sequence.current) return;
 
-    // Do not open a BLE scan that can never complete. The claim flow needs both
-    // a live Supabase session and the separately deployed provisioning API; a
-    // missing API URL is a build/configuration problem, not a tag discovery
-    // problem. Failing before scanning also avoids leaving a physical tag in
-    // setup mode while the app cannot finish the ownership transaction.
-    const { getAccessToken, apiConfig } = latestInput.current;
-    // Always use a freshly validated Supabase token. Falling back to a cached
-    // token here can repeat the same 401 after a signing-key/session change.
-    const liveAccessToken = await getAccessToken();
-    if (currentSequence !== sequence.current) return;
-    if (!liveAccessToken || !apiConfig) {
-      setState({
-        ...IDLE_STATE,
-        phase: 'error',
-        error: !liveAccessToken ? 'authentication' : 'configuration',
-      });
-      return;
-    }
-
-    const currentRadio = createTagRadio();
-    radio.current = currentRadio;
-    setState({ ...IDLE_STATE, phase: 'starting' });
-
-    try {
-      const stop = await currentRadio.startScan(
-        (candidate) => {
-          if (currentSequence !== sequence.current) return;
-          setState((current) => {
-            if (current.phase !== 'scanning' && current.phase !== 'starting') return current;
-            const candidates = [
-              candidate,
-              ...current.candidates.filter(
-                (item) => item.peripheralId !== candidate.peripheralId,
-              ),
-            ].sort((left, right) => (right.rssi ?? -999) - (left.rssi ?? -999));
-            return { ...current, phase: 'scanning', candidates };
-          });
-        },
-        (error) => {
-          if (currentSequence !== sequence.current) return;
-          logDevelopmentSetupFailure('scan callback', error);
-          setState((current) => ({
-            ...current,
-            phase: 'error',
-            error: safeTagSetupErrorCode(error),
-          }));
-        },
-      );
-      if (currentSequence !== sequence.current) {
-        await stop().catch(() => undefined);
+      // Do not open a BLE scan that can never complete. The claim flow needs both
+      // a live Supabase session and the separately deployed provisioning API; a
+      // missing API URL is a build/configuration problem, not a tag discovery
+      // problem. Failing before scanning also avoids leaving a physical tag in
+      // setup mode while the app cannot finish the ownership transaction.
+      const { getAccessToken, apiConfig } = latestInput.current;
+      // Always use a freshly validated Supabase token. Falling back to a cached
+      // token here can repeat the same 401 after a signing-key/session change.
+      const liveAccessToken = await getAccessToken();
+      if (currentSequence !== sequence.current) return;
+      if (!liveAccessToken || !apiConfig) {
+        setState({
+          ...IDLE_STATE,
+          phase: 'error',
+          error: !liveAccessToken ? 'authentication' : 'configuration',
+        });
         return;
       }
-      stopScan.current = stop;
-      setState((current) => ({ ...current, phase: 'scanning' }));
-    } catch (error) {
-      if (currentSequence !== sequence.current) return;
-      logDevelopmentSetupFailure('scan start', error);
+
+      const currentRadio = createTagRadio();
+      radio.current = currentRadio;
       setState({
         ...IDLE_STATE,
-        phase: 'error',
-        error: safeTagSetupErrorCode(error),
+        phase: 'starting',
+        operation,
+        targetDeviceId: target?.deviceId,
+        targetSerialNumber: target?.serialNumber,
+        provisioningRequest: target?.provisioningRequest ?? null,
       });
-    }
-  }, [releaseRadio]);
+
+      try {
+        const stop = await currentRadio.startScan(
+          (candidate) => {
+            if (currentSequence !== sequence.current) return;
+            if (target?.serialNumber && candidate.serialNumber !== target.serialNumber) return;
+            setState((current) => {
+              if (current.phase !== 'scanning' && current.phase !== 'starting') return current;
+              const candidates = [
+                candidate,
+                ...current.candidates.filter(
+                  (item) => item.peripheralId !== candidate.peripheralId,
+                ),
+              ].sort((left, right) => (right.rssi ?? -999) - (left.rssi ?? -999));
+              return { ...current, phase: 'scanning', candidates };
+            });
+          },
+          (error) => {
+            if (currentSequence !== sequence.current) return;
+            logDevelopmentSetupFailure('scan callback', error);
+            setState((current) => ({
+              ...current,
+              phase: 'error',
+              error: safeTagSetupErrorCode(error),
+            }));
+          },
+        );
+        if (currentSequence !== sequence.current) {
+          await stop().catch(() => undefined);
+          return;
+        }
+        stopScan.current = stop;
+        setState((current) => ({ ...current, phase: 'scanning' }));
+      } catch (error) {
+        if (currentSequence !== sequence.current) return;
+        logDevelopmentSetupFailure('scan start', error);
+        setState({
+          ...IDLE_STATE,
+          phase: 'error',
+          error: safeTagSetupErrorCode(error),
+        });
+      }
+    },
+    [releaseRadio],
+  );
 
   const close = useCallback(() => {
     sequence.current += 1;
+    request.current = { operation: 'claim' };
     setState(IDLE_STATE);
     void releaseRadio();
   }, [releaseRadio]);
+
+  const waitForPaidRequest = useCallback(
+    async (
+      backend: PinqevaProvisioningClient,
+      requestId: string,
+      serialNumber: string,
+    ) => {
+      const currentSequence = sequence.current;
+      const deadline = Date.now() + 30 * 60 * 1000;
+      while (currentSequence === sequence.current && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+        if (currentSequence !== sequence.current) return;
+        try {
+          const paymentRequest = await backend.getProvisioningRequest(requestId);
+          if (currentSequence !== sequence.current) return;
+          setState((current) => ({ ...current, provisioningRequest: paymentRequest }));
+          if (paymentRequest.status === 'paid' || paymentRequest.status === 'claiming') {
+            await beginScan('claim', {
+              deviceId: paymentRequest.device_id,
+              serialNumber: paymentRequest.serial_number || serialNumber,
+              provisioningRequestId: paymentRequest.request_id,
+              provisioningRequest: paymentRequest,
+            });
+            return;
+          }
+          if (
+            paymentRequest.status === 'expired' ||
+            paymentRequest.status === 'failed'
+          ) {
+            setState((current) => ({
+              ...current,
+              phase: 'error',
+              error: 'timeout',
+              provisioningRequest: paymentRequest,
+            }));
+            return;
+          }
+        } catch (error) {
+          if (currentSequence !== sequence.current) return;
+          logDevelopmentSetupFailure('payment status', error);
+        }
+      }
+      if (currentSequence === sequence.current) {
+        setState((current) => ({ ...current, phase: 'error', error: 'timeout' }));
+      }
+    },
+    [beginScan],
+  );
+
+  const chooseProvisioningPlan = useCallback(
+    async (plan: ProvisioningPlan) => {
+      const requestId = request.current.provisioningRequestId;
+      if (!requestId) return;
+      const { onProvisioningCheckout } = latestInput.current;
+      setState((current) => ({ ...current, phase: 'waiting_payment', error: null }));
+      try {
+        const result = await onProvisioningCheckout(requestId, plan.code);
+        if (result.kind !== 'opened') {
+          setState((current) => ({ ...current, phase: 'payment', error: 'unavailable' }));
+          return;
+        }
+        const { apiConfig } = latestInput.current;
+        if (!apiConfig) {
+          setState((current) => ({ ...current, phase: 'error', error: 'configuration' }));
+          return;
+        }
+        const backend = new PinqevaProvisioningClient(apiConfig, async () => {
+          const currentInput = latestInput.current;
+          const token = await currentInput.getAccessToken();
+          if (!token) throw new Error('Session unavailable');
+          return token;
+        });
+        void waitForPaidRequest(
+          backend,
+          requestId,
+          request.current.serialNumber ?? '',
+        );
+      } catch (error) {
+        logDevelopmentSetupFailure('provisioning checkout', error);
+        setState((current) => ({ ...current, phase: 'payment', error: 'unavailable' }));
+      }
+    },
+    [waitForPaidRequest],
+  );
 
   const select = useCallback(async (candidate: DiscoveredTag) => {
     const currentSequence = sequence.current;
@@ -160,7 +295,13 @@ export function useTagSetup(input: {
     if (currentStop) await currentStop().catch(() => undefined);
     if (currentSequence !== sequence.current) return;
 
-    const { getAccessToken, apiConfig, onClaimed } = latestInput.current;
+    const {
+      getAccessToken,
+      apiConfig,
+      onClaimed,
+      onEntitlementInstalled,
+    } = latestInput.current;
+    const currentRequest = request.current;
     const liveAccessToken = await getAccessToken();
     if (currentSequence !== sequence.current) return;
     if (!liveAccessToken) {
@@ -190,7 +331,9 @@ export function useTagSetup(input: {
     });
     const idempotencyKey =
       idempotencyKeys.current.get(candidate.serialNumber) ?? `provision:${randomUUID()}`;
-    idempotencyKeys.current.set(candidate.serialNumber, idempotencyKey);
+    if (currentRequest.operation === 'claim') {
+      idempotencyKeys.current.set(candidate.serialNumber, idempotencyKey);
+    }
     setState((current) => ({
       ...current,
       phase: 'connecting',
@@ -200,20 +343,88 @@ export function useTagSetup(input: {
     }));
 
     try {
-      const claim = await currentRadio.provision(backend, {
+      if (currentRequest.operation === 'claim') {
+        if (!currentRequest.provisioningRequestId) {
+          const identity = await currentRadio.inspectTag(backend, {
+            peripheralId: candidate.peripheralId,
+            onProgress: (phase) => {
+              if (currentSequence !== sequence.current) return;
+              setState((current) => ({ ...current, phase }));
+            },
+          });
+          if (identity.serialNumber !== candidate.serialNumber) {
+            throw new Error('Tag identity changed during inspection');
+          }
+          const provisioningRequest = await backend.startProvisioningRequest({
+            serialNumber: identity.serialNumber,
+            idempotencyKey: `request:${idempotencyKey}`,
+            tagChallengeBase64url: identity.tagChallengeBase64url,
+            tagAdvertisementKeySha256Base64url:
+              identity.tagAdvertisementKeySha256Base64url,
+          });
+          if (currentSequence !== sequence.current) return;
+          if (
+            !provisioningRequest.device_id ||
+            provisioningRequest.serial_number !== identity.serialNumber ||
+            provisioningRequest.available_plans.length === 0
+          ) {
+            throw new Error('Invalid provisioning request binding');
+          }
+          request.current = {
+            ...request.current,
+            provisioningRequestId: provisioningRequest.request_id,
+            provisioningRequest,
+            serialNumber: provisioningRequest.serial_number,
+            deviceId: provisioningRequest.device_id,
+          };
+          await releaseRadio();
+          setState((current) => ({
+            ...current,
+            phase: 'payment',
+            selected: candidate,
+            provisioningRequest,
+            claim: null,
+            error: null,
+          }));
+          return;
+        }
+        const claim = await currentRadio.provision(backend, {
+          peripheralId: candidate.peripheralId,
+          idempotencyKey,
+          provisioningRequestId: currentRequest.provisioningRequestId,
+          onProgress: (phase) => {
+            if (currentSequence !== sequence.current) return;
+            setState((current) => ({ ...current, phase }));
+          },
+        });
+        if (currentSequence !== sequence.current) return;
+        idempotencyKeys.current.delete(candidate.serialNumber);
+        await onClaimed(claim).catch(() => undefined);
+        if (currentSequence !== sequence.current) return;
+        await releaseRadio();
+        setState((current) => ({ ...current, phase: 'success', claim, error: null }));
+        return;
+      }
+
+      if (!currentRequest.deviceId || !currentRequest.serialNumber) {
+        throw new Error('Missing entitlement target');
+      }
+      await currentRadio.installEntitlement(backend, {
         peripheralId: candidate.peripheralId,
-        idempotencyKey,
+        deviceId: currentRequest.deviceId,
+        serialNumber: currentRequest.serialNumber,
         onProgress: (phase) => {
           if (currentSequence !== sequence.current) return;
           setState((current) => ({ ...current, phase }));
         },
       });
       if (currentSequence !== sequence.current) return;
-      idempotencyKeys.current.delete(candidate.serialNumber);
-      await onClaimed(claim).catch(() => undefined);
+      if (onEntitlementInstalled) {
+        await onEntitlementInstalled(currentRequest.deviceId).catch(() => undefined);
+      }
       if (currentSequence !== sequence.current) return;
       await releaseRadio();
-      setState((current) => ({ ...current, phase: 'success', claim, error: null }));
+      setState((current) => ({ ...current, phase: 'success', claim: null, error: null }));
     } catch (error) {
       if (currentSequence !== sequence.current) return;
       logDevelopmentSetupFailure('provision', error);
@@ -235,8 +446,37 @@ export function useTagSetup(input: {
   return {
     state,
     open: () => void beginScan(),
-    retry: () => void beginScan(),
+    openForEntitlement: (deviceId: string, serialNumber: string) =>
+      void beginScan('entitlement', { deviceId, serialNumber }),
+    retry: () => {
+      const currentRequest = request.current;
+      if (
+        currentRequest.operation === 'entitlement' &&
+        currentRequest.deviceId &&
+        currentRequest.serialNumber
+      ) {
+        void beginScan('entitlement', {
+          deviceId: currentRequest.deviceId,
+          serialNumber: currentRequest.serialNumber,
+        });
+      } else if (
+        currentRequest.provisioningRequestId &&
+        currentRequest.provisioningRequest &&
+        currentRequest.deviceId &&
+        currentRequest.serialNumber
+      ) {
+        void beginScan('claim', {
+          deviceId: currentRequest.deviceId,
+          serialNumber: currentRequest.serialNumber,
+          provisioningRequestId: currentRequest.provisioningRequestId,
+          provisioningRequest: currentRequest.provisioningRequest,
+        });
+      } else {
+        void beginScan('claim');
+      }
+    },
     select: (candidate: DiscoveredTag) => void select(candidate),
+    chooseProvisioningPlan,
     close,
   };
 }

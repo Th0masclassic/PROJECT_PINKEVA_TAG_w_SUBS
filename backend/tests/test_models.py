@@ -1,4 +1,5 @@
 import os
+import uuid
 
 import pytest
 from pydantic import ValidationError
@@ -10,6 +11,7 @@ from app.models import DeviceClaimStart, DeviceReleaseComplete, validate_idempot
 
 def test_serial_is_normalized() -> None:
     request = DeviceClaimStart(
+        provisioning_request_id=uuid.uuid4(),
         serial_number="pkv-aabbccddeeff",
         tag_challenge_base64url=b64url_encode(os.urandom(32)),
     )
@@ -30,6 +32,7 @@ def test_invalid_serial_is_rejected(serial: str) -> None:
 def test_key_fingerprint_must_be_canonical_32_byte_base64url() -> None:
     valid = b64url_encode(os.urandom(32))
     assert DeviceClaimStart(
+        provisioning_request_id=uuid.uuid4(),
         serial_number="PKV-AABBCCDDEEFF",
         tag_challenge_base64url=b64url_encode(os.urandom(32)),
         tag_advertisement_key_sha256_base64url=valid,

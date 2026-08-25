@@ -16,6 +16,7 @@ constexpr char STORAGE_NAMESPACE[] = "pinqeva";
 constexpr char KEY_BLOB[] = "adv_key";
 constexpr char CONTROL_KEY_BLOB[] = "control_key";
 constexpr char BOOTSTRAP_KEY_BLOB[] = "boot_key";
+constexpr char ENTITLEMENT_BLOB[] = "entitlement";
 constexpr char FORMAT_KEY[] = "prov_ver";
 constexpr uint8_t FORMAT_VERSION = 1;
 }  // namespace
@@ -129,6 +130,36 @@ esp_err_t load_device_bootstrap_key(uint8_t *destination,
     return ESP_OK;
 }
 
+esp_err_t load_subscription_entitlement(uint8_t *destination,
+                                        size_t destination_size) {
+    if (destination == nullptr ||
+        destination_size != SUBSCRIPTION_ENTITLEMENT_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    nvs_handle_t handle;
+    esp_err_t error = nvs_open(STORAGE_NAMESPACE, NVS_READONLY, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    size_t stored_size = destination_size;
+    error = nvs_get_blob(handle, ENTITLEMENT_BLOB, destination, &stored_size);
+    nvs_close(handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    bool all_zero = true;
+    bool all_erased = true;
+    for (size_t index = 0; index < stored_size; ++index) {
+        all_zero = all_zero && destination[index] == 0x00;
+        all_erased = all_erased && destination[index] == 0xFF;
+    }
+    if (stored_size != SUBSCRIPTION_ENTITLEMENT_SIZE || all_zero || all_erased) {
+        std::memset(destination, 0, destination_size);
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
+
 esp_err_t save_tag_control_key(const uint8_t *key, size_t length) {
     if (key == nullptr || length != TAG_CONTROL_KEY_SIZE) {
         return ESP_ERR_INVALID_SIZE;
@@ -225,13 +256,52 @@ esp_err_t save_advertisement_key(const uint8_t *key, size_t length) {
     return matches ? ESP_OK : ESP_ERR_INVALID_CRC;
 }
 
+esp_err_t save_subscription_entitlement(const uint8_t *entitlement,
+                                         size_t length) {
+    if (entitlement == nullptr || length != SUBSCRIPTION_ENTITLEMENT_SIZE) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    bool all_zero = true;
+    bool all_erased = true;
+    for (size_t index = 0; index < length; ++index) {
+        all_zero = all_zero && entitlement[index] == 0x00;
+        all_erased = all_erased && entitlement[index] == 0xFF;
+    }
+    if (all_zero || all_erased) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t error = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+    error = nvs_set_blob(handle, ENTITLEMENT_BLOB, entitlement, length);
+    if (error == ESP_OK) {
+        error = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (error != ESP_OK) {
+        return error;
+    }
+
+    uint8_t read_back[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
+    error = load_subscription_entitlement(read_back, sizeof(read_back));
+    bool matches = error == ESP_OK &&
+                   std::memcmp(read_back, entitlement,
+                               SUBSCRIPTION_ENTITLEMENT_SIZE) == 0;
+    std::memset(read_back, 0, sizeof(read_back));
+    return matches ? ESP_OK : ESP_ERR_INVALID_CRC;
+}
+
 esp_err_t erase_provisioning_data() {
     nvs_handle_t handle;
     esp_err_t error = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &handle);
     if (error != ESP_OK) {
         return error;
     }
-    for (const char *key : {KEY_BLOB, CONTROL_KEY_BLOB, FORMAT_KEY}) {
+    for (const char *key : {
+             KEY_BLOB, CONTROL_KEY_BLOB, ENTITLEMENT_BLOB, FORMAT_KEY}) {
         esp_err_t erase_result = nvs_erase_key(handle, key);
         if (erase_result != ESP_OK && erase_result != ESP_ERR_NVS_NOT_FOUND) {
             error = erase_result;
@@ -248,10 +318,13 @@ esp_err_t erase_provisioning_data() {
 
     uint8_t advertisement_key[ADVERTISEMENT_KEY_SIZE] = {};
     uint8_t control_key[TAG_CONTROL_KEY_SIZE] = {};
+    uint8_t entitlement[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
     esp_err_t advertisement_result =
         load_advertisement_key(advertisement_key, sizeof(advertisement_key));
     esp_err_t control_result =
         load_tag_control_key(control_key, sizeof(control_key));
+    esp_err_t entitlement_result =
+        load_subscription_entitlement(entitlement, sizeof(entitlement));
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
     esp_err_t bootstrap_result = ESP_OK;
 #else
@@ -261,10 +334,12 @@ esp_err_t erase_provisioning_data() {
 #endif
     std::memset(advertisement_key, 0, sizeof(advertisement_key));
     std::memset(control_key, 0, sizeof(control_key));
+    std::memset(entitlement, 0, sizeof(entitlement));
 #if !CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
     std::memset(bootstrap_key, 0, sizeof(bootstrap_key));
 #endif
     if (advertisement_result == ESP_OK || control_result == ESP_OK ||
+        entitlement_result == ESP_OK ||
         bootstrap_result != ESP_OK) {
         return ESP_ERR_INVALID_STATE;
     }

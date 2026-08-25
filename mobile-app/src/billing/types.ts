@@ -78,3 +78,11 @@ export function isCurrentSubscription(subscription: DeviceSubscription): boolean
 export function canStartCheckout(subscription: DeviceSubscription): boolean {
   return !isCurrentSubscription(subscription);
 }
+
+export function canInstallEntitlement(subscription: DeviceSubscription): boolean {
+  if (subscription.status !== 'active' && subscription.status !== 'trialing') return false;
+  const expiresAt = subscription.currentPeriodEnd
+    ? Date.parse(subscription.currentPeriodEnd)
+    : Number.NaN;
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}

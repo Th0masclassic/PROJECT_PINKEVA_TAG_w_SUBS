@@ -1,5 +1,9 @@
-import type { DeviceClaim, PinqevaProvisioningClient } from './api';
-import type { ProvisioningProgress } from './provisionTag';
+import type {
+  DeviceClaim,
+  DeviceEntitlement,
+  PinqevaProvisioningClient,
+} from './api';
+import type { ProvisioningProgress, TagIdentity } from './provisionTag';
 
 export type DiscoveredTag = {
   peripheralId: string;
@@ -14,14 +18,31 @@ export interface TagRadio {
     onTag: (tag: DiscoveredTag) => void,
     onError: (error: unknown) => void,
   ): Promise<StopTagScan>;
+  inspectTag(
+    backend: PinqevaProvisioningClient,
+    input: {
+      peripheralId: string;
+      onProgress: (progress: ProvisioningProgress) => void;
+    },
+  ): Promise<TagIdentity>;
   provision(
     backend: PinqevaProvisioningClient,
     input: {
       peripheralId: string;
       idempotencyKey: string;
+      provisioningRequestId: string;
       onProgress: (progress: ProvisioningProgress) => void;
     },
   ): Promise<DeviceClaim>;
+  installEntitlement(
+    backend: PinqevaProvisioningClient,
+    input: {
+      peripheralId: string;
+      deviceId: string;
+      serialNumber: string;
+      onProgress: (progress: ProvisioningProgress) => void;
+    },
+  ): Promise<DeviceEntitlement>;
   destroy(): Promise<void>;
 }
 

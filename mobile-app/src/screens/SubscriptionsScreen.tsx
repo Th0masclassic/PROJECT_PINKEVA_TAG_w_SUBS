@@ -2,6 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { useBillingCopy } from '../billing/copy';
+import { billingIntervalLabel, formatBillingMoney } from '../billing/format';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
 import type { DeviceSubscription } from '../billing/types';
 import {
@@ -48,6 +49,9 @@ export function SubscriptionsScreen({
   const { language, t } = useI18n();
   const copy = useBillingCopy();
   const managedTrackers = trackers.filter((tracker) => tracker.source !== 'local-preview');
+  const referencePlans = managedTrackers
+    .map((tracker) => subscriptions[tracker.id]?.availablePlans ?? [])
+    .find((plans) => plans.length > 0) ?? [];
 
   return (
     <AppSafeArea>
@@ -94,6 +98,27 @@ export function SubscriptionsScreen({
               <Text style={[styles.durationValue, index === 3 && styles.durationValueFeatured]}>
                 {durationLabel(months, language)}
               </Text>
+              {(() => {
+                const plan = referencePlans.find((item) => item.durationMonths === months);
+                if (!plan) return null;
+                const price = formatBillingMoney(plan.amountMinor, plan.currency, language);
+                const interval = billingIntervalLabel(
+                  plan.interval,
+                  copy.month,
+                  copy.year,
+                  plan.intervalCount,
+                );
+                return (
+                  <Text
+                    style={[
+                      styles.durationPrice,
+                      index === 3 && styles.durationPriceFeatured,
+                    ]}
+                  >
+                    {price} / {interval}
+                  </Text>
+                );
+              })()}
             </Surface>
           ))}
         </View>
@@ -126,6 +151,23 @@ export function SubscriptionsScreen({
                     subscription={subscriptions[tracker.id]}
                     loading={subscriptionLoadingIds.has(tracker.id)}
                   />
+                  {subscriptions[tracker.id]?.amountMinor !== null &&
+                  subscriptions[tracker.id]?.amountMinor !== undefined ? (
+                    <Text style={styles.tagPrice}>
+                      {formatBillingMoney(
+                        subscriptions[tracker.id]?.amountMinor ?? null,
+                        subscriptions[tracker.id]?.currency ?? null,
+                        language,
+                      )}{' '}
+                      /{' '}
+                      {billingIntervalLabel(
+                        subscriptions[tracker.id]?.interval ?? null,
+                        copy.month,
+                        copy.year,
+                        subscriptions[tracker.id]?.intervalCount ?? 1,
+                      )}
+                    </Text>
+                  ) : null}
                 </View>
                 <Ionicons name="chevron-forward" size={24} color={colors.muted} />
               </Pressable>
@@ -199,6 +241,8 @@ const styles = StyleSheet.create({
   durationIconFeatured: { backgroundColor: 'rgba(255,255,255,0.2)' },
   durationValue: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 9 },
   durationValueFeatured: { color: '#FFFFFF' },
+  durationPrice: { color: colors.mutedDark, fontSize: 13, fontWeight: '700', marginTop: 3 },
+  durationPriceFeatured: { color: '#EAF1FF' },
   tagList: { overflow: 'hidden', borderRadius: radii.large, backgroundColor: colors.surface, ...shadow },
   tagRow: {
     minHeight: 88,
@@ -222,6 +266,7 @@ const styles = StyleSheet.create({
   tagArtworkImage: { width: '100%', height: '100%' },
   tagCopy: { flex: 1, gap: 7 },
   tagName: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  tagPrice: { color: colors.mutedDark, fontSize: 13, fontWeight: '700' },
   emptyCard: { alignItems: 'center', padding: 22, borderRadius: radii.large },
   emptyIcon: {
     width: 56,

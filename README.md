@@ -6,7 +6,7 @@ Pinqeva is a prototype Bluetooth item-tracking system built around an ESP32-base
 
 The same tag can be attached to personal belongings or left inside a vehicle. When used in a car, the application will associate the tag with owner-provided vehicle information and display the car's last reported location.
 
-> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32-C3 GATT receiver, Stripe subscription workflow, native map surface, and secured admin console exist; signed tag entitlements, the finder-report worker, and final production validation are not yet complete.
+> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32 GATT receiver, Stripe subscription workflow, signed tag-entitlement path, native map surface, and secured admin console exist; the finder-report worker and final production validation are not yet complete.
 
 ## Project overview
 
@@ -39,7 +39,7 @@ The complete architecture and proposed communication contract are documented in 
 | Device identity | Implemented | Derives a stable `PKV-XXXXXXXXXXXX` identifier from the factory MAC address. |
 | Firmware mode selection | Implemented provisioning slice | A missing key enters setup; a valid committed key without an entitlement fails closed into suspended maintenance mode. |
 | Setup mode | Implemented prototype | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`. The checked-in development profile bypasses bootstrap authentication and OS pairing/bonding; production still needs an authenticated application-layer confidential channel. |
-| Tracker mode | Blocked by entitlement | Finder advertising is intentionally disabled until signed entitlement verification is implemented. |
+| Tracker mode | Implemented subscription gate | Finder advertising starts only after the backend-issued entitlement is verified; reboot and expiry fail closed into suspended maintenance mode. |
 | GATT event handling | Implemented provisioning slice | Protocol v1.3 adds QR-free per-connection challenge/proof authorization plus an explicit no-bond development capability before one-time control/key writes and HMAC-authenticated reset. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
@@ -47,10 +47,10 @@ The complete architecture and proposed communication contract are documented in 
 | Supabase database | Partial | Adds encrypted key custody, permanent device allocation, one-active-owner enforcement, per-tag subscriptions, stored last locations, admin RBAC/audit, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
 | Mobile client | Provisioning UI implemented | The authenticated iOS/Android product UI scans for canonical `PKV-XXXXXXXXXXXX` tags, shows nearby candidates, performs the backend-authorized BLE challenge-response, verifies the committed fingerprint, and refreshes the claimed ownership. Physical-device validation is still required. |
-| Backend API and worker | Provisioning, billing, and admin modules | Key custody, claims/releases, server-side Stripe Checkout/webhooks, cancellation worker, MFA-gated administration, and audit are implemented. Signed entitlements and the location-report worker remain. |
+| Backend API and worker | Provisioning, billing, entitlement, and admin modules | Key custody, claims/releases, signed entitlement issuance, server-side Stripe Checkout/webhooks, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
 | Pinqeva map and vehicle UI | Map UI implemented | iOS/Android use native Google Maps when restricted SDK keys are configured and render only stored tracker coordinates. Location ingestion/history and the vehicle profile remain. |
 | Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
-| Subscription enforcement | Fail-closed placeholder | Suspended state is enforced; signed lease issuance and verification remain to be implemented. |
+| Subscription enforcement | Implemented prototype | Active/trialing subscriptions receive signed device-bound entitlements; the firmware fails closed on missing, expired, invalid, or replayed leases. |
 
 ## Current tag behavior
 
@@ -89,14 +89,14 @@ An active subscription is required to use the tag as a finder-network tracker.
 
 - Billing is per physical tag, not per account. An account with several tags needs one subscription for each tag.
 - A tag can have at most one current/nonterminal subscription; cancelled and ended rows remain as billing history.
-- The backend will issue a signed, device-bound subscription entitlement after confirming payment.
-- The mobile application will transfer that entitlement to the tag over BLE.
-- Firmware will verify the backend signature, device binding, anti-rollback value, and expiry.
-- A tag will transmit finder-network advertising data only while its entitlement is valid.
-- When the subscription expires, the finder payload will stop.
-- The public key will remain stored and the tag will expose only a low-duty-cycle maintenance channel so the owner can renew the subscription.
+- The backend issues a signed, device-bound subscription entitlement after confirming payment.
+- The mobile application transfers that entitlement to the tag over BLE.
+- Firmware verifies the backend signature, device binding, anti-rollback value, and expiry.
+- A tag transmits finder-network advertising data only while its entitlement is valid.
+- When the subscription expires, the finder payload stops.
+- The public key remains stored and the tag exposes only a low-duty-cycle maintenance channel so the owner can renew the subscription.
 
-Fail-closed suspension is implemented. Entitlement generation, signature verification, trusted time, renewal, and activation are **not implemented yet**.
+Fail-closed suspension, signed issuance, BLE installation, signature verification, anti-rollback, trusted time, renewal, and activation are implemented in the current prototype. Physical-device validation and production-grade transport confidentiality remain.
 
 ## Vehicle use case
 
@@ -154,14 +154,12 @@ Replace the port with the connected board's serial interface. Firmware behavior 
 
 ## Next milestone
 
-The next milestone completes subscription authorization and proves this slice on hardware:
+The next milestone validates subscription authorization on hardware and completes production hardening:
 
 1. Validate the implemented per-device challenge-response on hardware, then add a reviewed application-layer encrypted no-bond channel, physical presence/OOB, and a tag-signed provisioning receipt.
-2. Implement signed entitlement issuance, atomic storage, signature/device/counter/expiry checks, and trusted time.
-3. Activate finder advertising only after entitlement verification and stop it at expiry.
-4. Test scan, no-bond connection, fragmented write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on ESP32-C3-MINI with iOS and Android.
-5. Validate the implemented product provisioning UI on physical iOS and Android devices, including denial, timeout, retry, and interrupted-setup states.
-6. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
+2. Test scan, no-bond connection, fragmented entitlement write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on the target ESP32 hardware with iOS and Android.
+3. Validate the implemented product provisioning and entitlement UI on physical iOS and Android devices, including denial, timeout, retry, and interrupted-setup states.
+4. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
 
 After this contract is tested end to end, the rest of the client, backend, map, vehicle profile, and payment experience can be developed against a stable interface.
 

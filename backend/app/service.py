@@ -30,6 +30,8 @@ from .models import (
     DeviceClaimResponse,
     DeviceClaimStart,
     DeviceClaimStartResponse,
+    DeviceProvisioningRequestResponse,
+    DeviceProvisioningRequestStart,
     DeviceReleaseComplete,
     DeviceReleaseResponse,
     DeviceReleaseStart,
@@ -51,6 +53,176 @@ class ProvisioningService:
 
     def _associated_data(self, session_id: UUID, user_id: UUID, device_id: UUID) -> bytes:
         return f"pinqeva:v1:{session_id}:{user_id}:{device_id}".encode("ascii")
+
+    async def start_provisioning_request(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        idempotency_key: str,
+        request: DeviceProvisioningRequestStart,
+    ) -> DeviceProvisioningRequestResponse:
+        """Create a payment gate without allocating or returning any key material."""
+
+        device_query = await connection.execute(
+            """
+            SELECT d.id, d.serial_number, d.provisioning_session_id,
+                   dbc.key_ciphertext AS bootstrap_key_ciphertext,
+                   dbc.key_nonce AS bootstrap_key_nonce,
+                   dbc.envelope_version AS bootstrap_key_envelope_version,
+                   (
+                       SELECT o.user_id FROM public.ownership o
+                        WHERE o.device_id = d.id AND o.ended_at IS NULL
+                        LIMIT 1
+                   ) AS owner_user_id
+              FROM public.device d
+              LEFT JOIN public.device_bootstrap_credential dbc
+                ON dbc.device_id = d.id
+             WHERE d.serial_number = %s
+             FOR UPDATE OF d
+            """,
+            (request.serial_number,),
+        )
+        device = await device_query.fetchone()
+        if (
+            device is None
+            or device["bootstrap_key_ciphertext"] is None
+            or device["bootstrap_key_nonce"] is None
+            or device["bootstrap_key_envelope_version"] is None
+        ):
+            raise ProvisioningError(
+                "DEVICE_AUTHORIZATION_REJECTED",
+                "The tag identity or factory authorization could not be verified",
+                403,
+            )
+
+        # This decrypts the manufacturing credential and verifies the supplied
+        # challenge, but the proof is deliberately not returned or persisted.
+        self._authorization_proof(device, request.tag_challenge_base64url)
+
+        if request.tag_advertisement_key_sha256_base64url is not None:
+            raise ProvisioningError(
+                "RECOVERY_REQUIRED",
+                "The tag contains an unrecognized key and must not be overwritten",
+                409,
+            )
+
+        existing_query = await connection.execute(
+            """
+            SELECT id, device_id, serial_number, status, plan_code,
+                   expires_at, claim_deadline
+              FROM public.provisioning_request
+             WHERE user_id = %s AND idempotency_key = %s
+             FOR UPDATE
+            """,
+            (user_id, idempotency_key),
+        )
+        existing = await existing_query.fetchone()
+        if existing is not None:
+            if (
+                existing["device_id"] != device["id"]
+                or existing["serial_number"] != request.serial_number
+            ):
+                raise ProvisioningError(
+                    "IDEMPOTENCY_CONFLICT",
+                    "This idempotency key was already used for a different request",
+                    409,
+                )
+            return self._provisioning_request_response(existing)
+
+        # Expired unpaid requests no longer hold the one-request-per-device
+        # slot. Paid/claiming requests are retained and must be resumed.
+        await connection.execute(
+            """
+            UPDATE public.provisioning_request
+               SET status = 'expired', updated_at = now()
+             WHERE device_id = %s
+               AND status IN ('pending', 'creating', 'open')
+               AND expires_at <= now()
+            """,
+            (device["id"],),
+        )
+
+        active_query = await connection.execute(
+            """
+            SELECT id, user_id, device_id, serial_number, status, plan_code,
+                   expires_at, claim_deadline
+              FROM public.provisioning_request
+             WHERE device_id = %s
+               AND status IN ('pending', 'creating', 'open', 'paid', 'claiming')
+             FOR UPDATE
+            """,
+            (device["id"],),
+        )
+        active = await active_query.fetchone()
+        if active is not None:
+            if (
+                active["user_id"] != user_id
+                or active["serial_number"] != request.serial_number
+            ):
+                raise ProvisioningError(
+                    "DEVICE_UNAVAILABLE",
+                    "The tag is unavailable",
+                    409,
+                )
+            # A new app session can resume the same request without creating a
+            # second checkout or racing the unique device reservation.
+            return self._provisioning_request_response(active)
+
+        if device.get("owner_user_id") is not None or device.get("provisioning_session_id") is not None:
+            raise ProvisioningError(
+                "DEVICE_UNAVAILABLE",
+                "The tag is already allocated",
+                409,
+            )
+
+        subscription_query = await connection.execute(
+            """
+            SELECT 1 FROM public.subscription
+             WHERE device_id = %s
+               AND status NOT IN ('cancelled', 'ended')
+             FOR UPDATE
+            """,
+            (device["id"],),
+        )
+        if await subscription_query.fetchone() is not None:
+            raise ProvisioningError(
+                "DEVICE_UNAVAILABLE",
+                "The tag already has a billing binding",
+                409,
+            )
+
+        try:
+            request_query = await connection.execute(
+                """
+                INSERT INTO public.provisioning_request (
+                    id, user_id, device_id, serial_number, idempotency_key,
+                    status, expires_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, 'pending',
+                    now() + interval '30 minutes'
+                )
+                RETURNING id, device_id, serial_number, status, plan_code,
+                          expires_at, claim_deadline
+                """,
+                (
+                    uuid.uuid4(),
+                    user_id,
+                    device["id"],
+                    device["serial_number"],
+                    idempotency_key,
+                ),
+            )
+        except UniqueViolation:
+            raise ProvisioningError(
+                "PROVISIONING_IN_PROGRESS",
+                "This tag already has an active provisioning request",
+                409,
+            ) from None
+        created = await request_query.fetchone()
+        if created is None:
+            raise RuntimeError("Provisioning-request insert returned no row")
+        return self._provisioning_request_response(created)
 
     async def start_claim(
         self,
@@ -99,12 +271,19 @@ class ProvisioningService:
         authorization_proof = self._authorization_proof(
             device, request.tag_challenge_base64url
         )
+        paid_request = await self._require_paid_provisioning_request(
+            connection,
+            user_id=user_id,
+            device_id=device["id"],
+            serial_number=request.serial_number,
+            request_id=request.provisioning_request_id,
+        )
 
         existing_idempotency_query = await connection.execute(
             """
             SELECT id, user_id, device_id, serial_number, advertisement_key,
                    advertisement_key_sha256, status, expires_at, claim_deadline,
-                   completed_at
+                   completed_at, provisioning_request_id
               FROM public.provisioning_session
              WHERE user_id = %s AND idempotency_key = %s
              FOR UPDATE
@@ -140,7 +319,7 @@ class ProvisioningService:
                 """
                 SELECT id, user_id, device_id, serial_number, advertisement_key,
                        advertisement_key_sha256, status, expires_at, claim_deadline,
-                       completed_at
+                       completed_at, provisioning_request_id
                   FROM public.provisioning_session
                  WHERE id = %s
                  FOR UPDATE
@@ -176,7 +355,7 @@ class ProvisioningService:
             """
             SELECT id, user_id, device_id, serial_number, advertisement_key,
                    advertisement_key_sha256, status, expires_at, claim_deadline,
-                   completed_at
+                   completed_at, provisioning_request_id
               FROM public.provisioning_session
              WHERE device_id = %s
                AND status <> 'revoked'
@@ -232,17 +411,20 @@ class ProvisioningService:
                 """
                 INSERT INTO public.provisioning_session (
                     id, user_id, device_id, serial_number, idempotency_key,
+                    provisioning_request_id,
                     protocol_version, private_key_ciphertext, private_key_nonce,
                     private_key_envelope_version, public_key, advertisement_key,
                     advertisement_key_sha256, status, expires_at, claim_deadline
                 ) VALUES (
                     %s, %s, %s, %s, %s,
+                    %s,
                     1, %s, %s, %s, %s, %s,
                     %s, 'pending', %s, %s
                 )
                 RETURNING id, user_id, device_id, serial_number,
                           advertisement_key, advertisement_key_sha256, status,
-                          expires_at, claim_deadline, completed_at
+                          expires_at, claim_deadline, completed_at,
+                          provisioning_request_id
                 """,
                 (
                     session_id,
@@ -250,6 +432,7 @@ class ProvisioningService:
                     device["id"],
                     device["serial_number"],
                     idempotency_key,
+                    paid_request["id"],
                     encrypted_private.ciphertext,
                     encrypted_private.nonce,
                     encrypted_private.version,
@@ -280,6 +463,14 @@ class ProvisioningService:
             """,
             (session_id, now, device["id"]),
         )
+        await connection.execute(
+            """
+            UPDATE public.provisioning_request
+               SET status = 'claiming', updated_at = now()
+             WHERE id = %s AND status = 'paid'
+            """,
+            (paid_request["id"],),
+        )
         return self._start_response(
             session, user_id, "write_key", authorization_proof
         )
@@ -295,7 +486,8 @@ class ProvisioningService:
             """
             SELECT ps.id, ps.device_id, ps.serial_number, ps.status,
                    ps.advertisement_key_sha256, ps.claim_deadline,
-                   ps.completed_at, d.provisioning_session_id
+                   ps.completed_at, ps.provisioning_request_id,
+                   d.provisioning_session_id
               FROM public.provisioning_session ps
               JOIN public.device d ON d.id = ps.device_id
              WHERE ps.id = %s AND ps.user_id = %s
@@ -395,6 +587,20 @@ class ProvisioningService:
             """,
             (claimed_at, session["id"]),
         )
+        if session.get("provisioning_request_id") is not None:
+            await connection.execute(
+                """
+                UPDATE public.provisioning_request
+                   SET status = 'completed', completed_at = %s, updated_at = %s
+                 WHERE id = %s AND user_id = %s
+                """,
+                (
+                    claimed_at,
+                    claimed_at,
+                    session["provisioning_request_id"],
+                    user_id,
+                ),
+            )
 
         return DeviceClaimResponse(
             device_id=session["device_id"],
@@ -837,6 +1043,67 @@ class ProvisioningService:
             user_id=user_id.bytes,
             device_id=device_id.bytes,
             advertisement_key_sha256=advertisement_key_sha256,
+        )
+
+    async def _require_paid_provisioning_request(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        serial_number: str,
+        request_id: UUID,
+    ) -> dict:
+        query = await connection.execute(
+            """
+            SELECT pr.id, pr.user_id, pr.device_id, pr.serial_number,
+                   pr.status, pr.plan_code, pr.claim_deadline,
+                   s.status AS subscription_status,
+                   s.starts_at, s.current_period_end
+              FROM public.provisioning_request pr
+              LEFT JOIN public.subscription s
+                ON s.id = pr.subscription_id
+             WHERE pr.id = %s
+               AND pr.user_id = %s
+               AND pr.device_id = %s
+               AND pr.serial_number = %s
+             FOR UPDATE OF pr
+            """,
+            (request_id, user_id, device_id, serial_number),
+        )
+        row = await query.fetchone()
+        now = datetime.now(UTC)
+        if (
+            row is None
+            or row["status"] not in {"paid", "claiming", "completed"}
+            or (
+                row["status"] in {"paid", "claiming"}
+                and (
+                    row["claim_deadline"] is None
+                    or row["claim_deadline"] <= now
+                )
+            )
+            or row["subscription_status"] not in {"active", "trialing"}
+            or row["starts_at"] > now
+            or row["current_period_end"] <= now
+        ):
+            raise ProvisioningError(
+                "SUBSCRIPTION_REQUIRED",
+                "An active subscription is required before key allocation",
+                402,
+            )
+        return row
+
+    @staticmethod
+    def _provisioning_request_response(row: dict) -> DeviceProvisioningRequestResponse:
+        return DeviceProvisioningRequestResponse(
+            request_id=row["id"],
+            device_id=row["device_id"],
+            serial_number=row["serial_number"],
+            status=row["status"],
+            plan_code=row.get("plan_code"),
+            expires_at=row["expires_at"],
+            claim_deadline=row.get("claim_deadline"),
         )
 
     def _tag_control_key(

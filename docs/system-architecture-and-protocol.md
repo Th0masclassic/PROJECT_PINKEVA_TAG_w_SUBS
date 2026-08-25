@@ -1,7 +1,7 @@
 # Pinqeva System Architecture and Communication Protocol
 
-> **Document version:** 0.2 — Provisioning implementation<br>
-> **Date:** 23 August 2026<br>
+> **Document version:** 0.4 — Payment-gated provisioning and subscription entitlement implementation<br>
+> **Date:** 25 August 2026<br>
 > **Repository:** [PROJECT_PINKEVA_TAG_w_SUBS](https://github.com/Th0masclassic/PROJECT_PINKEVA_TAG_w_SUBS)<br>
 > **Purpose:** Architecture baseline before client and server development
 
@@ -358,9 +358,9 @@ An unprovisioned tracker sends a connectable BLE advertisement containing standa
 
 The client scans for the service UUID, displays candidate device identifiers, and connects after user selection. Setup advertising resumes after an unexpected disconnect while the device remains unprovisioned.
 
-### 4.3 Proposed Pinqeva Provisioning GATT service
+### 4.3 Pinqeva Provisioning GATT service
 
-The following UUIDs define implemented provisioning protocol version 1.2.
+The following UUIDs define implemented provisioning protocol version 1.3.
 
 | Attribute | UUID | Properties | Value |
 |---|---|---|---|
@@ -374,7 +374,7 @@ The following UUIDs define implemented provisioning protocol version 1.2.
 | Authenticated Reset | `a6f0f007-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; application-channel protection required in production | 32-byte nonce plus 32-byte HMAC; erases key/control material after verification. |
 | Tag Challenge | `a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | Fresh random 32-byte value generated for each BLE connection. |
 | Tag Authorization Proof | `a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response | `HMAC-SHA256(device_bootstrap_key, domain || serial || challenge)`. Unlocks sensitive writes for this connection only. |
-| Subscription Entitlement | `a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01` | Future | Reserved proposal; not implemented. |
+| Subscription Entitlement | `a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; application-channel protection required in production | Exactly 135 raw binary bytes containing a signed device-bound lease. |
 
 GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for the 32-byte authorization proof, 28-byte advertisement key, 32-byte control key, and 64-byte reset command. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
 
@@ -429,22 +429,18 @@ The finder key pair contains a private key and a 28-byte advertisement public ke
 7. The mobile client installs the control key followed by the public key over protected BLE.
 8. The tracker validates, stores, reads back, and exposes only the SHA-256 public-key fingerprint.
 9. Backend ownership is created only after that fingerprint is relayed and matched.
-8. The tracker derives its random BLE address and advertising payload from that public key only after entitlement work is implemented.
+8. The tracker derives its random BLE address and advertising payload from that public key only after a valid signed entitlement is installed.
 9. The backend later uses the private key to decrypt reports associated with the public-key identifier.
 
 The private key must never be written to the tracker, displayed in the administration interface, logged, or stored in ordinary mobile application storage.
 
 ### 4.7 Subscription entitlement protocol
 
-The subscription entitlement is a signed lease rather than a Boolean value sent by the application. A version-1 entitlement contains:
+The subscription entitlement is a signed lease rather than a Boolean value sent by the application. The implemented version-1 packet is 135 bytes:
 
-- Entitlement format version.
-- Device identifier.
-- Subscription identifier.
-- Validity start and expiry timestamps in UTC.
-- Monotonically increasing issuance counter or unique nonce.
-- Permitted capability flags.
-- Backend signature over every preceding field.
+- Bytes `0..61`: version, capability flags, 16-byte ASCII device serial, 16-byte subscription UUID, UTC issuance epoch, UTC expiry epoch, uint64 anti-rollback counter, and uint32 capability flags, all integer fields big-endian.
+- Byte `62`: DER-encoded ECDSA signature length.
+- Bytes `63..134`: P-256 ECDSA/SHA-256 signature over bytes `0..61`, padded with zero bytes to the fixed 72-byte field.
 
 Firmware contains only the backend's public verification key. It verifies the signature, device binding, anti-rollback counter, and expiry before storing the entitlement. The backend signing key never enters the mobile application or tracker. A successfully verified renewal atomically replaces the previous entitlement and allows tracker advertising to restart.
 
@@ -462,7 +458,16 @@ sequenceDiagram
     App->>Tag: BLE connect
     App->>Tag: Read version, device ID, challenge, and key fingerprint
     Tag-->>App: Version, PKV ID, fresh challenge, empty or stored fingerprint
-    App->>API: Start/resume claim (PKV ID + challenge + observed fingerprint)
+    App->>API: Create provisioning request (PKV ID + challenge + observed fingerprint)
+    API->>Store: Verify factory credential; reserve one 30-minute request
+    API-->>App: Request ID + server plan catalog with prices
+    App->>API: Choose plan and create Stripe Checkout
+    API-->>App: Hosted Checkout URL
+    App->>API: Poll request status (webhook is authoritative)
+    API->>Store: Verify signed Stripe event; bind active subscription; mark paid
+    API-->>App: paid + bounded claim deadline
+    App->>Tag: BLE reconnect and read a fresh challenge
+    App->>API: Start claim (paid request ID + fresh challenge + fingerprint)
     API->>Store: Lock device; reuse allocation or generate once; bind immediately
     API-->>App: One-time tag proof + action + advertisement/control keys
     App->>Tag: Write authorization proof
@@ -477,16 +482,26 @@ sequenceDiagram
     App->>Tag: Read key fingerprint after persistence
     App->>API: Complete claim (fingerprint + completion capability)
     API->>Store: Create ownership
-    API-->>App: Registered device
+    API-->>App: Registered device (suspended)
+    App->>API: Request signed entitlement (same fresh challenge)
+    API-->>App: Entitlement + authorization proof
+    App->>Tag: Write proof, then signed entitlement
+    Tag-->>App: READY; finder advertising enabled
 ```
 
-If BLE succeeds but completion fails, the client resumes the same allocation. A passed deadline or mismatch enters recovery and never causes automatic regeneration.
+The unpaid request expires after 30 minutes. A paid request receives the
+configured claim deadline and is marked completed only after the tag reports
+the expected fingerprint. If BLE succeeds but completion fails, the client
+resumes the same allocation. A passed deadline or mismatch enters recovery and
+never causes automatic regeneration. The mobile client polls request status
+instead of depending on a socket connection; the signed provider webhook is
+the source of truth and polling only observes the committed state.
 
 Transfer is another two-phase operation: the current owner requests a reset command bound to the device's control key, the tag verifies the HMAC and erases both keys, and the app confirms the empty fingerprint. Only then does the backend end ownership, revoke the old key allocation, cancel local subscriptions, queue external billing cancellation, and allow a new owner to generate a fresh keypair.
 
 ### 4.9 Tracker advertising protocol
 
-**Legacy experiment:** the earlier firmware constructed a 31-byte manufacturer-specific BLE advertisement using Apple company identifier `0x004C`, offline-finding type `0x12`, and length `0x19`. The secure provisioning firmware no longer activates that path from a stored key alone. It remains suspended until signed entitlement verification is implemented.
+**Legacy experiment:** the earlier firmware constructed a 31-byte manufacturer-specific BLE advertisement using Apple company identifier `0x004C`, offline-finding type `0x12`, and length `0x19`. The secure provisioning firmware no longer activates that path from a stored key alone. It remains suspended until signed entitlement verification succeeds.
 
 Tracker advertising is non-connectable in the prototype. Future nearby commands require a controlled connectable window, maintenance mode, or alternative scheduling strategy. That choice affects both battery life and security.
 
@@ -494,7 +509,10 @@ Tracker advertising is non-connectable in the prototype. Future nearby commands 
 
 | Operation | Example route | Authorization |
 |---|---|---|
-| Start/resume device claim | `POST /v1/devices/claim` | Authenticated user + fresh tag challenge |
+| Create payment-gated provisioning request | `POST /v1/provisioning/requests` | Authenticated user + fresh tag challenge |
+| Read provisioning request | `GET /v1/provisioning/requests/{requestId}` | Request owner |
+| Open provisioning Checkout | `POST /v1/provisioning/requests/{requestId}/checkout` | Request owner + server plan code |
+| Start/resume device claim | `POST /v1/devices/claim` | Authenticated user + paid request + fresh tag challenge |
 | Complete device claim | `POST /v1/devices/claim/complete` | Allocation owner + completion capability |
 | Start device release | `POST /v1/devices/{deviceId}/release` | Active owner + connected-tag fingerprint |
 | Complete device release | `POST /v1/devices/{deviceId}/release/complete` | Active owner + release capability + empty tag |
@@ -540,6 +558,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Protocol-v1.3 GATT service with a per-connection challenge/proof gate, explicit no-bond development capability, 30-second unauthorized-client timeout, key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
 - Validated factory-bootstrap plus one-time NVS key/control persistence, commit/read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
 - React Native claim/release service that automatically obtains and writes backend authorization proofs, verifies fingerprints, avoids rewrites, installs key material in safe order, and confirms reset before backend release.
+- Backend entitlement issuance, mobile BLE entitlement installation, firmware signature verification, anti-rollback, trusted-time activation, and expiry suspension for active/trialing per-tag subscriptions.
 - Authenticated API that decrypts device bootstrap credentials to issue nonce-bound proofs, conditionally generates P-224 material once, binds allocations atomically, encrypts private scalars, completes one ownership, and performs two-phase release.
 - Supabase migrations for backend-only bootstrap credentials, encrypted key custody, permanent allocation markers, one active owner, release audit, subscription cancellation, and provider outbox delivery.
 - ESP32-C3 build baseline verified with ESP-IDF 5.4.
@@ -554,20 +573,19 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Production KMS/HSM private-key wrapping and report-worker integration.
 - Location-report schema and Pinqeva map implementation.
 - Vehicle profile schema, API, and vehicle-focused map experience.
-- Signed subscription-entitlement issuance, BLE synchronization, trusted-time handling, firmware enforcement, and payment-provider integration.
+- Physical entitlement integration testing and production-grade payment/provider operations.
 - Administrative roles, policies, audit events, and operator UI.
 - Production power, RF, security, anti-stalking, and certification tests.
 
 ### 5.3 Next milestone
 
-The next milestone completes authorization and validates the provisioning slice on physical hardware:
+The next milestone validates authorization and the entitlement slice on physical hardware:
 
 1. Add an authenticated application-layer encrypted no-bond channel, physical presence/OOB, and a cryptographic provisioning receipt.
-2. Implement signed entitlement issuance, storage, verification, anti-rollback, and trusted time.
-3. Reboot the tracker and verify that it enters tracker mode only with both a stored key and an active entitlement.
-4. Verify that an expired entitlement stops the finder payload while the renewal channel remains available.
-5. Validate scan, no-bond connection, fragmented write, disconnect, persistence, reboot, expiry, and renewal on ESP32-C3-MINI from iOS and Android.
-6. Replace the development envelope key with KMS/HSM-backed per-record data keys.
+2. Reboot the tracker and verify that it enters tracker mode only with both a stored key and a freshly installed active entitlement.
+3. Verify that an expired entitlement stops the finder payload while the renewal channel remains available.
+4. Validate scan, no-bond connection, fragmented entitlement write, persistence, reboot, expiry, and renewal on the target ESP32 from iOS and Android.
+5. Replace the development envelope key with KMS/HSM-backed per-record data keys.
 
 The milestone is complete when a blank tracker can be provisioned from the mobile client, receives a signed entitlement, survives a reboot, broadcasts the expected tracker payload only during the paid period, enters suspended mode after expiry, can be renewed, and appears under the correct authenticated account.
 
@@ -577,4 +595,4 @@ Pinqeva is an end-to-end Bluetooth tracking platform rather than only an embedde
 
 The architecture separates low-power hardware from mobile onboarding, cloud location processing, subscriptions, vehicle and map presentation, and administration. The tracker stores the advertisement public key and a signed subscription entitlement, while the backend protects the private key and controls entitlement issuance.
 
-The current firmware distinguishes a device with a stored advertisement key from one that must enter setup mode and fails closed into suspended maintenance mode after provisioning or reboot. The immediate engineering task is signed entitlement issuance and verification, an authenticated and confidential application-layer no-bond transport with physical presence/OOB, and physical hardware testing. Only a valid key together with an active signed entitlement may eventually permit finder advertising.
+The current firmware distinguishes a device with a stored advertisement key from one that must enter setup mode and fails closed into suspended maintenance mode after provisioning or reboot. Signed entitlement issuance, BLE delivery, verification, anti-rollback, trusted time, expiry suspension, and renewal are implemented in the current prototype. The remaining work is an authenticated and confidential application-layer no-bond transport with physical presence/OOB and physical hardware testing. Only a valid key together with an active signed entitlement permits finder advertising.
