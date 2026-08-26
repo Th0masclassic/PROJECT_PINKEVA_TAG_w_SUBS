@@ -520,6 +520,10 @@ export class TagProvisioner {
       }
       const packetSha256Base64url = encodeBase64Url(actualPacketDigest);
       actualPacketDigest.fill(0);
+      // The backend only marks this billing period installed after the full
+      // BLE read-back has matched. Keep the UI in the secure update flow while
+      // that acknowledgement is committed.
+      input.onProgress?.('associating');
       const acknowledgement = await this.backend.acknowledgeDeviceEntitlement({
         deviceId: input.deviceId,
         entitlement,

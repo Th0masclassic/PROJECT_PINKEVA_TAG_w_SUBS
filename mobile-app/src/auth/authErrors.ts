@@ -7,6 +7,7 @@ export type AuthErrorContext =
   | 'oauth'
   | 'reset'
   | 'update-password'
+  | 'update-profile'
   | 'sign-out';
 
 function property(error: unknown, name: string): string | null {

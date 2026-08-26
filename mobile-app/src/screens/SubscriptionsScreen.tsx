@@ -1,10 +1,15 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { useBillingCopy } from '../billing/copy';
-import { billingIntervalLabel, formatBillingMoney } from '../billing/format';
+import { interpolateBillingCopy, useBillingCopy } from '../billing/copy';
+import { billingIntervalLabel, formatBillingMoney, localizedBillingPlanName } from '../billing/format';
+import { useRenewalCopy } from '../billing/renewalCopy';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
-import type { DeviceSubscription } from '../billing/types';
+import {
+  canInstallEntitlement,
+  type BillingPlan,
+  type DeviceSubscription,
+} from '../billing/types';
 import {
   AppSafeArea,
   PrimaryButton,
@@ -12,25 +17,26 @@ import {
   Surface,
   TrackerArtwork,
 } from '../components';
-import { useI18n, type Language } from '../i18n';
+import { useI18n } from '../i18n';
 import type { Tracker } from '../model';
 import { colors, radii, shadow } from '../theme';
 
-const DURATION_MONTHS = [1, 3, 6, 12] as const;
-
-const durationUnits: Record<Language, { one: string; many: string }> = {
-  en: { one: 'month', many: 'months' },
-  pt: { one: 'mês', many: 'meses' },
-  fr: { one: 'mois', many: 'mois' },
-  de: { one: 'Monat', many: 'Monate' },
-  zh: { one: '个月', many: '个月' },
-  it: { one: 'mese', many: 'mesi' },
-  es: { one: 'mes', many: 'meses' },
-};
-
-function durationLabel(months: number, language: Language) {
-  const unit = durationUnits[language];
-  return `${months} ${months === 1 ? unit.one : unit.many}`;
+function collectAvailablePlans(
+  trackers: readonly Tracker[],
+  subscriptions: Record<string, DeviceSubscription>,
+): BillingPlan[] {
+  const plans = new Map<string, BillingPlan>();
+  for (const tracker of trackers) {
+    for (const plan of subscriptions[tracker.id]?.availablePlans ?? []) {
+      plans.set(plan.code, plan);
+    }
+  }
+  return [...plans.values()].sort(
+    (left, right) =>
+      left.amountMinor - right.amountMinor ||
+      left.durationMonths - right.durationMonths ||
+      left.code.localeCompare(right.code),
+  );
 }
 
 export function SubscriptionsScreen({
@@ -48,10 +54,20 @@ export function SubscriptionsScreen({
 }) {
   const { language, t } = useI18n();
   const copy = useBillingCopy();
+  const renewalCopy = useRenewalCopy();
   const managedTrackers = trackers.filter((tracker) => tracker.source !== 'local-preview');
-  const referencePlans = managedTrackers
-    .map((tracker) => subscriptions[tracker.id]?.availablePlans ?? [])
-    .find((plans) => plans.length > 0) ?? [];
+  const availablePlans = collectAvailablePlans(managedTrackers, subscriptions);
+  const featuredPlan = availablePlans[availablePlans.length - 1];
+  const pendingTrackers = managedTrackers.filter((tracker) => {
+    const subscription = subscriptions[tracker.id];
+    return subscription ? canInstallEntitlement(subscription) : false;
+  });
+  const pendingSummary = interpolateBillingCopy(
+    pendingTrackers.length === 1
+      ? renewalCopy.updatesPendingOne
+      : renewalCopy.updatesPendingMany,
+    { count: String(pendingTrackers.length) },
+  );
 
   return (
     <AppSafeArea>
@@ -81,47 +97,47 @@ export function SubscriptionsScreen({
           <Text style={styles.sectionBody}>{copy.choosePlan}</Text>
         </View>
 
-        <View style={styles.durationGrid}>
-          {DURATION_MONTHS.map((months, index) => (
-            <Surface
-              key={months}
-              style={[styles.durationCard, index === 3 ? styles.durationCardFeatured : {}]}
-              accessibilityLabel={durationLabel(months, language)}
-            >
-              <View style={[styles.durationIcon, index === 3 && styles.durationIconFeatured]}>
-                <Ionicons
-                  name={index === 3 ? 'star' : 'time-outline'}
-                  size={19}
-                  color={index === 3 ? '#FFFFFF' : colors.blue}
-                />
-              </View>
-              <Text style={[styles.durationValue, index === 3 && styles.durationValueFeatured]}>
-                {durationLabel(months, language)}
-              </Text>
-              {(() => {
-                const plan = referencePlans.find((item) => item.durationMonths === months);
-                if (!plan) return null;
-                const price = formatBillingMoney(plan.amountMinor, plan.currency, language);
-                const interval = billingIntervalLabel(
-                  plan.interval,
-                  copy.month,
-                  copy.year,
-                  plan.intervalCount,
-                );
-                return (
-                  <Text
-                    style={[
-                      styles.durationPrice,
-                      index === 3 && styles.durationPriceFeatured,
-                    ]}
-                  >
+        {availablePlans.length ? (
+          <View style={styles.planGrid}>
+            {availablePlans.map((plan) => {
+              const featured = plan.code === featuredPlan?.code;
+              const price = formatBillingMoney(plan.amountMinor, plan.currency, language);
+              const interval = billingIntervalLabel(
+                plan.interval,
+                copy.month,
+                copy.year,
+                plan.intervalCount,
+              );
+              return (
+                <Surface
+                  key={plan.code}
+                  style={[styles.planCard, featured ? styles.planCardFeatured : {}]}
+                  accessibilityLabel={localizedBillingPlanName(plan.code, plan.name, language)}
+                >
+                  <View style={[styles.planIcon, featured && styles.planIconFeatured]}>
+                    <Ionicons
+                      name={featured ? 'star' : 'time-outline'}
+                      size={19}
+                      color={featured ? '#FFFFFF' : colors.blue}
+                    />
+                  </View>
+                  <Text style={[styles.planName, featured && styles.planNameFeatured]}>
+                    {localizedBillingPlanName(plan.code, plan.name, language)}
+                  </Text>
+                  <Text style={[styles.planPrice, featured && styles.planPriceFeatured]}>
                     {price} / {interval}
                   </Text>
-                );
-              })()}
-            </Surface>
-          ))}
-        </View>
+                </Surface>
+              );
+            })}
+          </View>
+        ) : (
+          <Surface style={styles.noPlansCard}>
+            {subscriptionLoadingIds.size ? <ActivityIndicator color={colors.blue} /> : null}
+            <Ionicons name="hourglass-outline" size={24} color={colors.muted} />
+            <Text style={styles.noPlansText}>{copy.noPlans}</Text>
+          </Surface>
+        )}
 
         <View style={styles.tagsHeader}>
           <Text style={styles.sectionTitle}>{t('common.trackers')}</Text>
@@ -189,6 +205,38 @@ export function SubscriptionsScreen({
             />
           </Surface>
         )}
+
+        {managedTrackers.length ? (
+          <Surface
+            style={[
+              styles.renewalFooter,
+              pendingTrackers.length > 0 ? styles.renewalFooterPending : {},
+            ]}
+          >
+            <View style={styles.renewalFooterIcon}>
+              <Ionicons
+                name={pendingTrackers.length ? 'download-outline' : 'shield-checkmark-outline'}
+                size={25}
+                color={pendingTrackers.length ? '#9A5A00' : colors.blue}
+              />
+            </View>
+            <View style={styles.renewalFooterCopy}>
+              <Text style={styles.renewalFooterTitle}>{renewalCopy.updatesTitle}</Text>
+              <Text style={styles.renewalFooterBody}>
+                {pendingTrackers.length ? pendingSummary : renewalCopy.updatesComplete}
+              </Text>
+            </View>
+            {pendingTrackers.length ? (
+              <PrimaryButton
+                label={renewalCopy.updateTag}
+                icon="download-outline"
+                onPress={() => onOpenSubscription(pendingTrackers[0]!.id)}
+                style={styles.renewalFooterButton}
+                testID="subscription-footer-update-tag"
+              />
+            ) : null}
+          </Surface>
+        ) : null}
       </ScrollView>
     </AppSafeArea>
   );
@@ -221,16 +269,16 @@ const styles = StyleSheet.create({
   tagsHeader: { gap: 5, marginTop: 2 },
   sectionTitle: { color: colors.text, fontSize: 22, fontWeight: '800' },
   sectionBody: { color: colors.muted, fontSize: 14, lineHeight: 20 },
-  durationGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  durationCard: {
+  planGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
+  planCard: {
     width: '47.8%',
-    minHeight: 112,
+    minHeight: 124,
     borderRadius: radii.medium,
     padding: 14,
     justifyContent: 'space-between',
   },
-  durationCardFeatured: { backgroundColor: colors.blue, borderColor: colors.blue },
-  durationIcon: {
+  planCardFeatured: { backgroundColor: colors.blue, borderColor: colors.blue },
+  planIcon: {
     width: 34,
     height: 34,
     borderRadius: 11,
@@ -238,11 +286,13 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: colors.bluePale,
   },
-  durationIconFeatured: { backgroundColor: 'rgba(255,255,255,0.2)' },
-  durationValue: { color: colors.text, fontSize: 18, fontWeight: '800', marginTop: 9 },
-  durationValueFeatured: { color: '#FFFFFF' },
-  durationPrice: { color: colors.mutedDark, fontSize: 13, fontWeight: '700', marginTop: 3 },
-  durationPriceFeatured: { color: '#EAF1FF' },
+  planIconFeatured: { backgroundColor: 'rgba(255,255,255,0.2)' },
+  planName: { color: colors.text, fontSize: 16, fontWeight: '800', marginTop: 9 },
+  planNameFeatured: { color: '#FFFFFF' },
+  planPrice: { color: colors.mutedDark, fontSize: 13, fontWeight: '700', marginTop: 3 },
+  planPriceFeatured: { color: '#EAF1FF' },
+  noPlansCard: { padding: 20, alignItems: 'center', gap: 9 },
+  noPlansText: { color: colors.muted, fontSize: 14, textAlign: 'center' },
   tagList: { overflow: 'hidden', borderRadius: radii.large, backgroundColor: colors.surface, ...shadow },
   tagRow: {
     minHeight: 88,
@@ -280,5 +330,25 @@ const styles = StyleSheet.create({
   emptyTitle: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   emptyBody: { color: colors.muted, fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 8 },
   emptyButton: { width: '100%', marginTop: 18 },
+  renewalFooter: {
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: '#F5F8FF',
+  },
+  renewalFooterPending: { backgroundColor: '#FFF8E8', borderWidth: 1, borderColor: '#F4D89B' },
+  renewalFooterIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  renewalFooterCopy: { flex: 1, gap: 4, paddingTop: 1 },
+  renewalFooterTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  renewalFooterBody: { color: colors.mutedDark, fontSize: 14, lineHeight: 20 },
+  renewalFooterButton: { alignSelf: 'flex-end', minWidth: 0, flexShrink: 1 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.99 }] },
 });

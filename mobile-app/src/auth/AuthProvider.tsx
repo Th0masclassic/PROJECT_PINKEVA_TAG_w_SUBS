@@ -12,12 +12,13 @@ import {
 } from 'react';
 import { AppState, Platform } from 'react-native';
 
-import { safeAuthFeedback, type AuthErrorContext } from './authErrors';
+import { AuthOperationError, safeAuthFeedback, type AuthErrorContext } from './authErrors';
 import {
   performNativeAppleSignIn,
   subscribeToAppleCredentialRevocation,
 } from './appleSignIn';
 import { AUTH_RESET_PATH } from './config';
+import { normalizeUserDisplayName } from './userNames';
 import {
   exchangeAuthCallback,
   launchGoogleOAuth,
@@ -268,6 +269,27 @@ export function AuthProvider({ children }: PropsWithChildren) {
     [runOperation],
   );
 
+  const updateProfileName = useCallback(
+    (name: string) =>
+      runOperation('update-profile', 'update-profile', async (client) => {
+        const normalizedName = normalizeUserDisplayName(name);
+        if (!normalizedName) throw new AuthOperationError('invalid_profile_name');
+        const { data, error } = await client.auth.updateUser({
+          data: {
+            ...(session?.user.user_metadata ?? {}),
+            full_name: normalizedName,
+            display_name: normalizedName,
+          },
+        });
+        if (error) throw error;
+        if (data.user) {
+          setSession((current) => (current ? { ...current, user: data.user } : current));
+        }
+        return { kind: 'success', key: 'auth.profileUpdated' };
+      }),
+    [runOperation, session?.user.user_metadata],
+  );
+
   const signOut = useCallback(
     () =>
       runOperation('sign-out', 'sign-out', async (client) => {
@@ -295,6 +317,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       signInWithApple,
       requestPasswordReset,
       updatePassword,
+      updateProfileName,
       cancelPasswordRecovery: () => setPasswordRecovery(false),
       signOut,
     }),
@@ -311,6 +334,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       signInWithGoogle,
       signOut,
       updatePassword,
+      updateProfileName,
     ],
   );
 

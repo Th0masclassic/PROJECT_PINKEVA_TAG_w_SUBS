@@ -10,6 +10,7 @@ export type AuthOperation =
   | 'apple'
   | 'reset'
   | 'update-password'
+  | 'update-profile'
   | 'sign-out';
 
 export type AuthFeedback = {
@@ -40,6 +41,7 @@ export type AuthContextValue = {
   signInWithApple: () => Promise<AuthFeedback>;
   requestPasswordReset: (email: string) => Promise<AuthFeedback>;
   updatePassword: (password: string) => Promise<AuthFeedback>;
+  updateProfileName: (name: string) => Promise<AuthFeedback>;
   cancelPasswordRecovery: () => void;
   signOut: () => Promise<AuthFeedback>;
 };

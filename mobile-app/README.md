@@ -18,6 +18,8 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
   renewal, cancellation-at-period-end, checkout, and management screen.
 - Native renewal notifications and a durable per-tag update state that remains
   pending until the app reads the exact signed entitlement back from the tag.
+- Account settings that show the authenticated email and allow the owner to
+  update their display name without changing provider-managed account details.
 
 ## Connection model
 
@@ -102,11 +104,15 @@ URLs are validated and opened in the system's secure browser.
 
 Stripe renews a recurring subscription and informs the backend without the app
 being open. The backend advances the paid period and records the physical tag
-as `pending`. The subscription screen then offers the tag-update action until
-the app writes the new signed expiry, reads all 135 bytes back over BLE,
-verifies the SHA-256 digest, and acknowledges that exact counter and period to
-the backend. A Stripe renewal is therefore app-independent, but updating an
-offline ESP32 necessarily requires the owner to bring the phone near the tag.
+as `pending`. The subscription screen and its dynamic **Tag updates** footer
+surface every tag that still needs a physical update. Before scanning, the app
+asks the owner to hold the tag button for five seconds to enter **Receive
+info** mode. It then connects only to that selected tag, establishes the
+challenge/proof session, writes the new signed expiry, reads all 135 bytes back
+over BLE, verifies the SHA-256 digest, and acknowledges that exact counter and
+period to the backend. A Stripe renewal is therefore app-independent, but
+updating an offline ESP32 necessarily requires the owner to bring the phone
+near the tag.
 
 Checkout buttons are enabled whenever the authenticated app has a valid HTTPS
 `EXPO_PUBLIC_API_URL`. Missing API/auth configuration still fails closed. The
@@ -138,7 +144,8 @@ week before renewal, one day before renewal, and expiry. A separate notice is
 created when a renewed entitlement remains absent from the tag for ten minutes.
 Notification permission can be denied without affecting billing or BLE tag
 updates; the backend inbox retains the event even when no push destination is
-available.
+available. **Settings → Notifications** shows that durable inbox, and tapping a
+renewal item refreshes and opens the affected tag’s subscription page.
 
 ## Configure Google Maps
 

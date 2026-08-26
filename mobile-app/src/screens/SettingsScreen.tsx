@@ -15,7 +15,6 @@ type SettingDefinition = {
 };
 
 const primarySettings: SettingDefinition[] = [
-  { icon: 'notifications-outline', topic: 'notifications', titleKey: 'settings.notifications' },
   { icon: 'shield-checkmark-outline', topic: 'privacy', titleKey: 'settings.privacy' },
   { icon: 'lock-closed-outline', topic: 'permissions', titleKey: 'settings.permissions' },
 ];
@@ -28,11 +27,19 @@ const supportSettings: SettingDefinition[] = [
 
 export function SettingsScreen({
   accountName,
+  accountEmail,
+  unreadNotificationCount,
+  onOpenAccount,
+  onOpenNotifications,
   onOpenInfo,
   onOpenLanguage,
   onSignOut,
 }: {
   accountName: string;
+  accountEmail: string | null;
+  unreadNotificationCount: number;
+  onOpenAccount: () => void;
+  onOpenNotifications: () => void;
   onOpenInfo: (topic: InfoTopic) => void;
   onOpenLanguage: () => void;
   onSignOut: () => void;
@@ -47,20 +54,28 @@ export function SettingsScreen({
         <Pressable
           accessibilityRole="button"
           accessibilityLabel={t('a11y.openAccount')}
-          onPress={() => onOpenInfo('account')}
+          onPress={onOpenAccount}
           style={({ pressed }) => [pressed && styles.pressed]}
         >
           <Surface style={styles.profileCard}>
             <Image source={avatarAsset} resizeMode="cover" style={styles.avatar} />
             <View style={styles.profileCopy}>
               <Text numberOfLines={2} style={styles.profileName}>{accountName}</Text>
-              <Text style={styles.profileSubtitle}>{t('settings.account')}</Text>
+              <Text numberOfLines={1} style={styles.profileSubtitle}>
+                {accountEmail ?? t('settings.account')}
+              </Text>
             </View>
             <Ionicons name="chevron-forward" size={27} color={colors.muted} />
           </Surface>
         </Pressable>
 
         <Surface style={styles.groupCard}>
+          <SettingRow
+            icon="notifications-outline"
+            title={t('settings.notifications')}
+            value={unreadNotificationCount ? String(unreadNotificationCount) : undefined}
+            onPress={onOpenNotifications}
+          />
           {primarySettings.map((item) => (
             <SettingRow
               key={item.topic}

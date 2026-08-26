@@ -35,6 +35,7 @@ import {
   saveTrackerPreferences,
 } from './src/preferences';
 import { AuthScreen } from './src/screens/AuthScreen';
+import { AccountScreen } from './src/screens/AccountScreen';
 import { ConfirmRemoveModal } from './src/screens/ConfirmRemoveModal';
 import { FirmwareUpdateScreen } from './src/screens/FirmwareUpdateScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
@@ -42,6 +43,7 @@ import { InfoScreen } from './src/screens/InfoScreen';
 import { IntervalScreen } from './src/screens/IntervalScreen';
 import { LanguageScreen } from './src/screens/LanguageScreen';
 import { MapScreen } from './src/screens/MapScreen';
+import { NotificationsScreen } from './src/screens/NotificationsScreen';
 import { PairingModal } from './src/screens/PairingModal';
 import { PasswordResetScreen } from './src/screens/PasswordResetScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
@@ -54,6 +56,7 @@ import { TrackerCloudStateScreen } from './src/trackers/TrackerCloudStateScreen'
 import { useOwnedTrackers } from './src/trackers/useOwnedTrackers';
 import { useLocationReports } from './src/location/useLocationReports';
 import { useRenewalPushRegistration } from './src/notifications/push';
+import { useNotificationInbox } from './src/notifications/useNotificationInbox';
 import { requestLocationHistory24h } from './src/location/api';
 import { PROVISIONING_API_CONFIG, type DeviceClaim } from './src/provisioning/api';
 import { TagSetupModal } from './src/provisioning/TagSetupModal';
@@ -114,18 +117,17 @@ function AppContent() {
   );
   const { trackers, setTrackers } = trackerCatalog;
 
-  useRenewalPushRegistration({
-    enabled: Boolean(auth.session),
-    userId: auth.user?.id ?? null,
-    apiConfig: PROVISIONING_API_CONFIG,
-    getAccessToken: auth.getAccessToken,
-  });
-
   const showNotice = useCallback((message: string) => {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     setNotice(message);
     noticeTimer.current = setTimeout(() => setNotice(null), 2400);
   }, []);
+
+  const notificationInbox = useNotificationInbox({
+    enabled: Boolean(auth.session),
+    apiConfig: PROVISIONING_API_CONFIG,
+    getAccessToken: auth.getAccessToken,
+  });
 
   const handleTagClaimed = useCallback(
     async (claim: DeviceClaim) => {
@@ -237,6 +239,22 @@ function AppContent() {
   );
   refreshBillingDevice.current = billing.refreshDevice;
   provisioningCheckout.current = billing.startProvisioningCheckout;
+  const openSubscriptionFromNotification = useCallback(
+    (deviceId: string) => {
+      void notificationInbox.refresh();
+      void billing.refreshDevice(deviceId);
+      setActiveTab('subscriptions');
+      setRoute({ name: 'subscription', trackerId: deviceId });
+    },
+    [billing.refreshDevice, notificationInbox.refresh],
+  );
+  useRenewalPushRegistration({
+    enabled: Boolean(auth.session),
+    userId: auth.user?.id ?? null,
+    apiConfig: PROVISIONING_API_CONFIG,
+    getAccessToken: auth.getAccessToken,
+    onOpenSubscription: openSubscriptionFromNotification,
+  });
   const mainTracker = useMemo(
     () => displayTrackers.find((tracker) => tracker.id === trackerPreferences.mainTrackerId),
     [displayTrackers, trackerPreferences.mainTrackerId],
@@ -384,6 +402,11 @@ function AppContent() {
         return true;
       }
       setRoute({ name: 'tracker', trackerId: route.trackerId });
+      return true;
+    }
+    if (route.name === 'account' || route.name === 'notifications') {
+      setActiveTab('settings');
+      setRoute({ name: 'main' });
       return true;
     }
     if (route.name !== 'main') {
@@ -596,6 +619,37 @@ function AppContent() {
       );
     }
 
+    if (route.name === 'account') {
+      return (
+        <AccountScreen
+          accountName={accountName}
+          email={auth.user?.email ?? null}
+          busy={auth.busy !== null}
+          onBack={() => changeTab('settings')}
+          onSaveName={async (name) => {
+            const feedback = await auth.updateProfileName(name);
+            presentAuthFeedback(feedback);
+            return feedback.kind === 'success';
+          }}
+          onNotice={showNotice}
+        />
+      );
+    }
+
+    if (route.name === 'notifications') {
+      return (
+        <NotificationsScreen
+          notifications={notificationInbox.notifications}
+          loading={notificationInbox.loading}
+          error={notificationInbox.error}
+          onBack={() => changeTab('settings')}
+          onRetry={notificationInbox.refresh}
+          onOpenSubscription={openSubscriptionFromNotification}
+          onMarkRead={notificationInbox.markRead}
+        />
+      );
+    }
+
     if (route.name === 'info') {
       return <InfoScreen topic={route.topic} onBack={() => changeTab('settings')} />;
     }
@@ -642,6 +696,10 @@ function AppContent() {
       return (
         <SettingsScreen
           accountName={accountName}
+          accountEmail={auth.user?.email ?? null}
+          unreadNotificationCount={notificationInbox.unreadCount}
+          onOpenAccount={() => setRoute({ name: 'account' })}
+          onOpenNotifications={() => setRoute({ name: 'notifications' })}
           onOpenInfo={(topic) => setRoute({ name: 'info', topic })}
           onOpenLanguage={() => setRoute({ name: 'language' })}
           onSignOut={signOut}
@@ -732,6 +790,8 @@ function AppContent() {
     route.name !== 'firmware' &&
     route.name !== 'subscription' &&
     route.name !== 'info' &&
+    route.name !== 'account' &&
+    route.name !== 'notifications' &&
     route.name !== 'language';
 
   return (
@@ -796,6 +856,7 @@ function AppContent() {
         state={tagSetup.state}
         onSelect={tagSetup.select}
         onChoosePlan={tagSetup.chooseProvisioningPlan}
+        onBeginEntitlementScan={tagSetup.beginEntitlementScan}
         onRetry={tagSetup.retry}
         onClose={tagSetup.close}
       />

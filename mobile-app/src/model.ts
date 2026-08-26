@@ -46,6 +46,8 @@ export type AppRoute =
   | { name: 'interval'; trackerId: string }
   | { name: 'firmware'; trackerId: string }
   | { name: 'language' }
+  | { name: 'account' }
+  | { name: 'notifications' }
   | { name: 'info'; topic: InfoTopic };
 
 export type TrackerPreferences = {

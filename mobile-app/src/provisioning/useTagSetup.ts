@@ -13,6 +13,7 @@ import { safeTagSetupErrorCode, type TagSetupErrorCode } from './setup';
 
 export type TagSetupPhase =
   | 'idle'
+  | 'entitlement_ready'
   | 'starting'
   | 'scanning'
   | 'connecting'
@@ -190,6 +191,27 @@ export function useTagSetup(input: {
           error: safeTagSetupErrorCode(error),
         });
       }
+    },
+    [releaseRadio],
+  );
+
+  const prepareEntitlement = useCallback(
+    async (deviceId: string, serialNumber: string) => {
+      const currentSequence = ++sequence.current;
+      request.current = {
+        operation: 'entitlement',
+        deviceId,
+        serialNumber,
+      };
+      await releaseRadio();
+      if (currentSequence !== sequence.current) return;
+      setState({
+        ...IDLE_STATE,
+        phase: 'entitlement_ready',
+        operation: 'entitlement',
+        targetDeviceId: deviceId,
+        targetSerialNumber: serialNumber,
+      });
     },
     [releaseRadio],
   );
@@ -446,8 +468,6 @@ export function useTagSetup(input: {
   return {
     state,
     open: () => void beginScan(),
-    openForEntitlement: (deviceId: string, serialNumber: string) =>
-      void beginScan('entitlement', { deviceId, serialNumber }),
     retry: () => {
       const currentRequest = request.current;
       if (
@@ -455,10 +475,13 @@ export function useTagSetup(input: {
         currentRequest.deviceId &&
         currentRequest.serialNumber
       ) {
-        void beginScan('entitlement', {
-          deviceId: currentRequest.deviceId,
-          serialNumber: currentRequest.serialNumber,
-        });
+        // The maintenance advertising window is deliberately physical and
+        // bounded. Ask the owner to enable it again rather than rescanning a
+        // tag that may no longer be accepting entitlement delivery.
+        void prepareEntitlement(
+          currentRequest.deviceId,
+          currentRequest.serialNumber,
+        );
       } else if (
         currentRequest.provisioningRequestId &&
         currentRequest.provisioningRequest &&
@@ -477,6 +500,22 @@ export function useTagSetup(input: {
     },
     select: (candidate: DiscoveredTag) => void select(candidate),
     chooseProvisioningPlan,
+    beginEntitlementScan: () => {
+      const currentRequest = request.current;
+      if (
+        currentRequest.operation !== 'entitlement' ||
+        !currentRequest.deviceId ||
+        !currentRequest.serialNumber
+      ) {
+        return;
+      }
+      void beginScan('entitlement', {
+        deviceId: currentRequest.deviceId,
+        serialNumber: currentRequest.serialNumber,
+      });
+    },
     close,
+    openForEntitlement: (deviceId: string, serialNumber: string) =>
+      void prepareEntitlement(deviceId, serialNumber),
   };
 }
