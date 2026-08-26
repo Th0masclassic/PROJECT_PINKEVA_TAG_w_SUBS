@@ -81,6 +81,8 @@ PODS:
   - ExpoModulesWorklets (57.0.13):
     - ExpoModulesCore
     - ExpoModulesJSI
+  - ExpoNotifications (57.0.14):
+    - ExpoModulesCore
   - ExpoSecureStore (57.0.1):
     - ExpoModulesCore
   - ExpoSplashScreen (57.0.8):
@@ -2076,7 +2078,7 @@ PODS:
   - Yoga (0.0.0)
 
 DEPENDENCIES:
-  - EXApplication (from `../node_modules/expo-auth-session/node_modules/expo-application/ios`)
+  - EXApplication (from `../node_modules/expo-application/ios`)
   - EXConstants (from `../node_modules/expo-constants/ios`)
   - Expo (from `../node_modules/expo`)
   - ExpoAppleAuthentication (from `../node_modules/expo-apple-authentication/ios`)
@@ -2093,6 +2095,7 @@ DEPENDENCIES:
   - ExpoModulesCore (from `../node_modules/expo-modules-core/ExpoModulesCore.podspec`)
   - ExpoModulesJSI (from `../node_modules/expo-modules-jsi/apple`)
   - ExpoModulesWorklets (from `../node_modules/expo-modules-core/ExpoModulesWorklets.podspec`)
+  - ExpoNotifications (from `../node_modules/expo-notifications/ios`)
   - ExpoSecureStore (from `../node_modules/expo-secure-store/ios`)
   - ExpoSplashScreen (from `../node_modules/expo-splash-screen/ios`)
   - ExpoSystemUI (from `../node_modules/expo-system-ui/ios`)
@@ -2180,7 +2183,7 @@ DEPENDENCIES:
 
 EXTERNAL SOURCES:
   EXApplication:
-    :path: "../node_modules/expo-auth-session/node_modules/expo-application/ios"
+    :path: "../node_modules/expo-application/ios"
   EXConstants:
     :path: "../node_modules/expo-constants/ios"
   Expo:
@@ -2213,6 +2216,8 @@ EXTERNAL SOURCES:
     :path: "../node_modules/expo-modules-jsi/apple"
   ExpoModulesWorklets:
     :podspec: "../node_modules/expo-modules-core/ExpoModulesWorklets.podspec"
+  ExpoNotifications:
+    :path: "../node_modules/expo-notifications/ios"
   ExpoSecureStore:
     :path: "../node_modules/expo-secure-store/ios"
   ExpoSplashScreen:
@@ -2399,6 +2404,7 @@ SPEC CHECKSUMS:
   ExpoModulesCore: 08dea93458c73bd81f4da5d9063793d0d637f82c
   ExpoModulesJSI: ea64813990c7650f3a2d469f176a54c3c7b2c66a
   ExpoModulesWorklets: ba8252c1824dce38008bdbd1de28566c6591ab7b
+  ExpoNotifications: 6c0393cf9fe8dd90e85dc51585aacbe93372b79b
   ExpoSecureStore: 94793113049a2d7478dfe1a13aa15081e9f61755
   ExpoSplashScreen: 6f422fd595600d78520c6b7dcf8a908fb8a7fec0
   ExpoSystemUI: ff3142b323ae7b4d11dc0b1dc4acfa30d92be7dc
