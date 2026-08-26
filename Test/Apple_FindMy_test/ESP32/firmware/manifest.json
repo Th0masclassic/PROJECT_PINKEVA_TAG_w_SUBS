@@ -1,21 +1,38 @@
 {
   "target": "esp32",
-  "idf_version": "5.4.2",
+  "idf_version": "5.4.4",
+  "firmware_version": "0.3.0",
+  "protocol_version": "1.6",
   "profile": "development-no-bootstrap-no-bond",
   "requires_factory_bootstrap": false,
   "warning": "Development image only. It requires a backend-signed subscription entitlement before finder advertising; it bypasses factory bootstrap authentication and OS pairing/bonding; key confidentiality is not production-grade.",
   "setup_ble_identity_version": 3,
   "service_uuid": "a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01",
+  "ota": {
+    "transport": "ble",
+    "signed_manifest_format": 1,
+    "slot_size": 917504,
+    "initial_install": "wired",
+    "nvs_preserved": true
+  },
   "application": {
     "file": "Pinkeva-ESP32.bin",
-    "sha256": "a3e51b4850b147d6465810dde6458075fd01be3f08bd7d8411ce73431bcfcdb8"
+    "offset": "0x20000",
+    "sha256": "95a86092888181285d20b915a9c9082bfa50511f7bac2241cdb8fb19e61a8ffa"
   },
   "bootloader": {
     "file": "bootloader-esp32.bin",
-    "sha256": "45cc765cc5d796d7b21161954ae5d1be50aa087f892d803dd67a092f5d0898c0"
+    "offset": "0x1000",
+    "sha256": "29f32987b138a09ed2777a61d6ddb47427ef07d38efec8f4cce0211664100299"
   },
   "partition_table": {
     "file": "partition-table.bin",
-    "sha256": "7f00b6c042a89b15b0cac534f82ed988caf29278ff5700b0c511eb1b5bb7c820"
+    "offset": "0x8000",
+    "sha256": "bcd2c3a69dfd14e76213013211c8549d5cf99478773cd1baed162df96953722a"
+  },
+  "ota_data": {
+    "file": "ota-data-initial.bin",
+    "offset": "0xF000",
+    "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
   }
 }

@@ -3,6 +3,7 @@ idf_component_register(
         "src/app_api.cpp"
         "src/ble_driver.cpp"
         "src/nvs_driver.cpp"
+        "src/ota_update.cpp"
         "src/utils.cpp"
     INCLUDE_DIRS
         "include"
@@ -12,5 +13,7 @@ idf_component_register(
 	mbedtls
 	log
         esp_timer
+        app_update
+        esp_app_format
         driver
 )

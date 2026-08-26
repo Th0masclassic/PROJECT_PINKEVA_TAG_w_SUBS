@@ -139,6 +139,69 @@ class DeviceEntitlementAcknowledgeResponse(StrictModel):
     status: Literal["installed"]
 
 
+FIRMWARE_VERSION_PATTERN = r"^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$"
+
+
+class FirmwareAvailabilityResponse(StrictModel):
+    device_id: UUID
+    current_version: str | None
+    update_available: bool
+    latest_version: str | None
+    image_size: int | None = Field(default=None, ge=1, le=917_504)
+    image_sha256_base64url: str | None = Field(
+        default=None, min_length=43, max_length=43
+    )
+
+
+class FirmwareUpdateSessionRequest(StrictModel):
+    serial_number: str = Field(min_length=16, max_length=16)
+    current_version: str = Field(pattern=FIRMWARE_VERSION_PATTERN)
+    tag_challenge_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("serial_number")
+    @classmethod
+    def valid_serial(cls, value: str) -> str:
+        normalized = value.upper()
+        if not SERIAL_PATTERN.fullmatch(normalized):
+            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
+        return normalized
+
+    @field_validator("tag_challenge_base64url")
+    @classmethod
+    def valid_challenge(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class FirmwareUpdateSessionResponse(StrictModel):
+    device_id: UUID
+    serial_number: str
+    version: str = Field(pattern=FIRMWARE_VERSION_PATTERN)
+    install_required: bool
+    image_size: int = Field(ge=1, le=917_504)
+    image_sha256_base64url: str = Field(min_length=43, max_length=43)
+    manifest_base64url: str = Field(min_length=154, max_length=154)
+    tag_authorization_proof_base64url: str = Field(min_length=43, max_length=43)
+    image_url: str = Field(min_length=1, max_length=512)
+
+
+class FirmwareUpdateAcknowledge(StrictModel):
+    version: str = Field(pattern=FIRMWARE_VERSION_PATTERN)
+    image_sha256_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("image_sha256_base64url")
+    @classmethod
+    def valid_digest(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class FirmwareUpdateAcknowledgeResponse(StrictModel):
+    device_id: UUID
+    version: str = Field(pattern=FIRMWARE_VERSION_PATTERN)
+    status: Literal["installed"]
+
+
 class DeviceProvisioningRequestStart(StrictModel):
     serial_number: str = Field(min_length=16, max_length=16)
     tag_challenge_base64url: str = Field(min_length=43, max_length=43)

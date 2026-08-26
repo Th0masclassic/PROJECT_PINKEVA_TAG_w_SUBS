@@ -1,6 +1,6 @@
 export type MainTab = 'home' | 'trackers' | 'map' | 'settings';
 
-export type PairingPhase = 'idle' | 'searching' | 'connecting' | 'installing' | 'success';
+export type PairingPhase = 'idle' | 'searching' | 'connecting' | 'installing' | 'success' | 'error';
 
 export type ConnectionOperation = 'add' | 'interval' | 'firmware';
 

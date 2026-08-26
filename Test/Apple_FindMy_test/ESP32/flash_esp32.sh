@@ -71,8 +71,9 @@ fi
 
 BOOTLOADER="${FIRMWARE_DIR}/bootloader-esp32.bin"
 PARTITION_TABLE="${FIRMWARE_DIR}/partition-table.bin"
+OTA_DATA="${FIRMWARE_DIR}/ota-data-initial.bin"
 APPLICATION="${FIRMWARE_DIR}/Pinkeva-ESP32.bin"
-for image in "$BOOTLOADER" "$PARTITION_TABLE" "$APPLICATION"; do
+for image in "$BOOTLOADER" "$PARTITION_TABLE" "$OTA_DATA" "$APPLICATION"; do
     if [[ ! -f "$image" ]]; then
         echo "Missing firmware image: $image" >&2
         echo "Run 'idf.py set-target esp32 && idf.py build' first." >&2
@@ -124,7 +125,8 @@ fi
     --flash_size 2MB \
     0x1000 "$BOOTLOADER" \
     0x8000 "$PARTITION_TABLE" \
-    0x10000 "$APPLICATION"
+    0xF000 "$OTA_DATA" \
+    0x20000 "$APPLICATION"
 
 if [[ "$ERASE_NVS" == true ]]; then
     echo "Pinkeva ESP32 firmware flashed after clearing development NVS."

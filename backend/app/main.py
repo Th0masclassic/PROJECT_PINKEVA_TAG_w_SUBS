@@ -19,6 +19,7 @@ from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
 from .database import Database
 from .entitlement import EntitlementService
+from .firmware import FirmwareError, FirmwareService
 from .location import LocationError, LocationService
 from .notifications import (
     ExpoPushGateway,
@@ -35,6 +36,11 @@ from .models import (
     DeviceEntitlementResponse,
     DeviceEntitlementAcknowledge,
     DeviceEntitlementAcknowledgeResponse,
+    FirmwareAvailabilityResponse,
+    FirmwareUpdateAcknowledge,
+    FirmwareUpdateAcknowledgeResponse,
+    FirmwareUpdateSessionRequest,
+    FirmwareUpdateSessionResponse,
     DeviceProvisioningRequestResponse,
     DeviceProvisioningRequestStart,
     DeviceReleaseComplete,
@@ -135,6 +141,16 @@ SAFE_LOCATION_MESSAGES = {
     "LOCATION_UNAVAILABLE": "Location reports are temporarily unavailable. Please try again.",
 }
 
+SAFE_FIRMWARE_MESSAGES = {
+    "DEVICE_AUTHORIZATION_REJECTED": "The tag could not be verified.",
+    "TAG_UNAVAILABLE": "This tag is unavailable.",
+    "TAG_NOT_READY": "This tag is not ready for a firmware update.",
+    "FIRMWARE_UNAVAILABLE": "Firmware updates are temporarily unavailable. Please try again.",
+    "FIRMWARE_UP_TO_DATE": "This tag already has the latest firmware.",
+    "FIRMWARE_NOT_FOUND": "This firmware release is no longer available.",
+    "FIRMWARE_ACK_REJECTED": "The firmware installation could not be confirmed.",
+}
+
 
 def _configure_application_logging() -> None:
     """Send structured application events to Uvicorn's visible error stream."""
@@ -207,6 +223,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.database = database
     app.state.service = ProvisioningService(settings)
     app.state.entitlement = EntitlementService(settings)
+    app.state.firmware = FirmwareService(settings)
     app.state.findmy_auth = findmy_auth
     app.state.location = LocationService(settings, auth_manager=findmy_auth)
     app.state.billing = BillingService(settings)
@@ -377,6 +394,18 @@ async def location_error_handler(request: Request, exc: LocationError):
         code=exc.code,
         message=SAFE_LOCATION_MESSAGES.get(
             exc.code, "Location reports are temporarily unavailable. Please try again."
+        ),
+    )
+
+
+@app.exception_handler(FirmwareError)
+async def firmware_error_handler(request: Request, exc: FirmwareError):
+    return _error_response(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        message=SAFE_FIRMWARE_MESSAGES.get(
+            exc.code, "The firmware request could not be completed."
         ),
     )
 
@@ -667,6 +696,87 @@ async def acknowledge_device_entitlement(
 ) -> DeviceEntitlementAcknowledgeResponse:
     async with app.state.database.transaction() as connection:
         return await app.state.entitlement.acknowledge(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+            request=request,
+        )
+
+
+@app.get(
+    "/v1/devices/{device_id}/firmware",
+    response_model=FirmwareAvailabilityResponse,
+)
+async def firmware_availability(
+    device_id: UUID,
+    principal: AuthenticatedPrincipal,
+) -> FirmwareAvailabilityResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.firmware.availability(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+        )
+
+
+@app.post(
+    "/v1/devices/{device_id}/firmware/session",
+    response_model=FirmwareUpdateSessionResponse,
+    status_code=201,
+)
+async def start_firmware_update(
+    device_id: UUID,
+    request: FirmwareUpdateSessionRequest,
+    principal: AuthenticatedPrincipal,
+) -> FirmwareUpdateSessionResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.firmware.issue_session(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+            request=request,
+        )
+
+
+@app.get(
+    "/v1/devices/{device_id}/firmware/image",
+    response_model=None,
+)
+async def download_firmware_image(
+    device_id: UUID,
+    principal: AuthenticatedPrincipal,
+    version: Annotated[str, Query(min_length=5, max_length=11)],
+) -> Response:
+    async with app.state.database.transaction() as connection:
+        release = await app.state.firmware.image_for_download(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+            version=version,
+        )
+    return Response(
+        content=release.image,
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": f'attachment; filename="Pinkeva-{release.version}.bin"',
+            "ETag": f'"{release.image_sha256.hex()}"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.post(
+    "/v1/devices/{device_id}/firmware/acknowledge",
+    response_model=FirmwareUpdateAcknowledgeResponse,
+)
+async def acknowledge_firmware_update(
+    device_id: UUID,
+    request: FirmwareUpdateAcknowledge,
+    principal: AuthenticatedPrincipal,
+) -> FirmwareUpdateAcknowledgeResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.firmware.acknowledge(
             connection,
             user_id=principal.user_id,
             device_id=device_id,

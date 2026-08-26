@@ -4,6 +4,7 @@ import type {
   PinqevaProvisioningClient,
 } from './api';
 import type { ProvisioningProgress, TagIdentity } from './provisionTag';
+import type { FirmwareUpdateProgress, InstalledFirmware } from './firmwareUpdate';
 
 export type DiscoveredTag = {
   peripheralId: string;
@@ -43,6 +44,15 @@ export interface TagRadio {
       onProgress: (progress: ProvisioningProgress) => void;
     },
   ): Promise<DeviceEntitlement>;
+  installFirmware(
+    backend: PinqevaProvisioningClient,
+    input: {
+      peripheralId: string;
+      deviceId: string;
+      serialNumber: string;
+      onProgress: (progress: FirmwareUpdateProgress) => void;
+    },
+  ): Promise<InstalledFirmware>;
   destroy(): Promise<void>;
 }
 

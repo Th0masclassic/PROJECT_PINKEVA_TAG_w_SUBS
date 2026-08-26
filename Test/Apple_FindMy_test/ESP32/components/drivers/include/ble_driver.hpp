@@ -42,3 +42,6 @@ std::optional<ERROR_TAG> ble_init();
 
 /** Open a time-bounded connectable BLE window after the physical button hold. */
 esp_err_t ble_open_maintenance_window();
+
+/** True only after the asynchronous Pinkeva GATT service has started. */
+bool ble_service_ready();

@@ -60,7 +60,11 @@ export function FirmwareUpdateScreen({
           <View style={styles.infoIcon}>
             <Ionicons name="bluetooth" size={25} color={colors.blue} />
           </View>
-          <Text style={styles.infoText}>{t('tracker.softwareUpdateSubtitle')}</Text>
+          <Text style={styles.infoText}>
+            {updateAvailable
+              ? t('interval.pressBody', { name: tracker.name })
+              : t('tracker.softwareUpdateSubtitle')}
+          </Text>
         </Surface>
 
         <PrimaryButton

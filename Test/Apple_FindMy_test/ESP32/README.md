@@ -52,6 +52,34 @@ channel before retaining the no-bond UX, re-enable the factory bootstrap,
 inject a unique `boot_key`, and register the matching encrypted backend
 credential.
 
+## Signed BLE firmware updates
+
+Firmware `0.3.0` implements protocol `1.6` and advertises capability `0x0080`.
+During the physical two-minute maintenance window, an authorized phone can
+install a newer classic-ESP32 application into the inactive OTA slot. The
+tracker accepts a transfer only when its fixed 115-byte manifest:
+
+- is signed by the backend P-256 release key embedded in the tracker;
+- targets the classic ESP32 and names a strictly newer semantic version;
+- binds the exact image byte length and SHA-256 digest; and
+- fits one 896 KiB OTA slot.
+
+The image is streamed in ordered BLE chunks. Firmware hashes bytes while
+writing, lets ESP-IDF validate the completed application, selects the inactive
+slot, and reboots. ESP-IDF rollback is enabled: a new image that cannot finish
+BLE initialization marks itself invalid and returns to the previous slot. A
+healthy image opens a maintenance window after its first boot so the phone can
+read the exact three-component version before acknowledging installation to
+the backend. An interrupted transfer is aborted on disconnect and the current
+slot continues to boot.
+
+The old checked-in layout had only one application partition. Consequently,
+the first installation of this OTA-capable build must be wired and must flash
+the new bootloader, partition table, initial OTA data, and application. Later
+versions can use BLE. The migration keeps the existing NVS range
+`0x9000`-`0xEFFF` unchanged, so tracker identity and provisioning data are
+preserved unless `--erase-nvs` is explicitly supplied.
+
 ## Entitlement and expiry behavior
 
 The firmware accepts only a backend-signed, serial-bound P-256 entitlement with
@@ -86,10 +114,12 @@ script verifies the image target before writing it. Flash them with:
 ./flash_esp32.sh --port /dev/tty.usbmodemXXXX
 ```
 
-By default the script updates the bootloader, partition table, and application
-without erasing NVS. To start this development board as a completely new tag,
-including removing old advertisement/control/bootstrap data, use the explicit
-development-only reset:
+By default the script updates the bootloader, partition table, initial OTA
+metadata, and `ota_0` application without erasing NVS. This wired step is
+required once for any board still using the earlier single-application layout.
+To start this development board as a completely new tag, including removing
+old advertisement/control/bootstrap data, use the explicit development-only
+reset:
 
 ```sh
 ./flash_esp32.sh --port /dev/tty.usbmodemXXXX --erase-nvs

@@ -1,12 +1,14 @@
 #include "ble_driver.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <vector>
 
 #include "esp_bt.h"
 #include "esp_bt_main.h"
+#include "esp_app_desc.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gatt_defs.h"
 #include "esp_gatts_api.h"
@@ -19,6 +21,8 @@
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs_driver.hpp"
+#include "ota_update.hpp"
+#include "release_signing_key.hpp"
 #include "sdkconfig.h"
 
 #ifndef CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
@@ -55,6 +59,7 @@ constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
 constexpr uint16_t TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 constexpr uint16_t NON_BONDING_SETUP_CAPABILITY = 0x0020;
 constexpr uint16_t UTC_TIME_SYNC_CAPABILITY = 0x0040;
+constexpr uint16_t FIRMWARE_UPDATE_CAPABILITY = 0x0080;
 constexpr size_t FINDER_ADV_DATA_SIZE = 31;
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
@@ -111,19 +116,25 @@ constexpr uint8_t UTC_TIME_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x0B, 0xF0, 0xF0, 0xA6,
 };
-
-// P-256 public verification key for the backend entitlement signer. The
-// matching PKCS#8 private key lives only in the backend environment.
-constexpr uint8_t ENTITLEMENT_PUBLIC_KEY[65] = {
-    0x04, 0x05, 0x6C, 0xB2, 0x6D, 0x81, 0x34, 0xFB,
-    0x88, 0x61, 0xF6, 0x78, 0xB0, 0x87, 0xA2, 0x26,
-    0xD6, 0x7A, 0x85, 0x57, 0x2F, 0x4C, 0x0F, 0x8F,
-    0x89, 0x5B, 0xEE, 0x23, 0xDE, 0x28, 0xD0, 0xCB,
-    0xFF, 0x14, 0x25, 0x11, 0x9C, 0x61, 0x29, 0xDC,
-    0x8B, 0xBB, 0xF5, 0x28, 0xE7, 0x4C, 0xEA, 0xD6,
-    0x90, 0x34, 0x24, 0x34, 0xE4, 0x69, 0x53, 0xFA,
-    0xF3, 0x05, 0xCB, 0x0D, 0xF0, 0xD0, 0x5A, 0x23,
-    0xD3
+constexpr uint8_t FIRMWARE_MANIFEST_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x0C, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t FIRMWARE_DATA_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x0D, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t FIRMWARE_CONTROL_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x0E, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t FIRMWARE_STATUS_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x0F, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t FIRMWARE_VERSION_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x10, 0xF0, 0xF0, 0xA6,
 };
 
 enum AttributeIndex : uint8_t {
@@ -151,6 +162,16 @@ enum AttributeIndex : uint8_t {
     SUBSCRIPTION_ENTITLEMENT_VALUE,
     UTC_TIME_DECLARATION,
     UTC_TIME_VALUE,
+    FIRMWARE_MANIFEST_DECLARATION,
+    FIRMWARE_MANIFEST_VALUE,
+    FIRMWARE_DATA_DECLARATION,
+    FIRMWARE_DATA_VALUE,
+    FIRMWARE_CONTROL_DECLARATION,
+    FIRMWARE_CONTROL_VALUE,
+    FIRMWARE_STATUS_DECLARATION,
+    FIRMWARE_STATUS_VALUE,
+    FIRMWARE_VERSION_DECLARATION,
+    FIRMWARE_VERSION_VALUE,
     ATTRIBUTE_COUNT,
 };
 
@@ -161,22 +182,26 @@ constexpr uint8_t READ_PROPERTY = ESP_GATT_CHAR_PROP_BIT_READ;
 constexpr uint8_t WRITE_PROPERTY = ESP_GATT_CHAR_PROP_BIT_WRITE;
 constexpr uint8_t READ_WRITE_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
+constexpr uint8_t WRITE_WITHOUT_RESPONSE_PROPERTY =
+    ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-// Protocol 1.5, firmware 0.2. Capability bit 0x10 requires a backend-issued,
+// Protocol 1.6, firmware 0.3. Capability bit 0x10 requires a backend-issued,
 // nonce-bound authorization proof before any provisioning/reset write. The
 // checked-in development profile also advertises bit 0x20: setup deliberately
 // avoids OS pairing/bonding and therefore must never be shipped as the final
 // production transport until application-layer key confidentiality is added.
 // Bit 0x40 asks an authorized phone to provide Unix UTC on each connection.
+// Bit 0x80 supports signed, rollback-safe BLE OTA through dual app partitions.
 uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
     1,
-    5,
+    6,
     0,
-    2,
+    3,
     static_cast<uint8_t>(
         0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
+        FIRMWARE_UPDATE_CAPABILITY |
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
         NON_BONDING_SETUP_CAPABILITY
 #else
@@ -220,6 +245,11 @@ uint8_t tag_challenge_attribute[TAG_CHALLENGE_SIZE] = {};
 uint8_t tag_authorization_proof_attribute[TAG_AUTHORIZATION_PROOF_SIZE] = {};
 uint8_t subscription_entitlement_attribute[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
 uint8_t utc_time_attribute[UTC_TIME_SIZE] = {};
+uint8_t firmware_manifest_attribute[FIRMWARE_MANIFEST_SIZE] = {};
+uint8_t firmware_data_attribute[512] = {};
+uint8_t firmware_control_attribute[1] = {};
+uint8_t firmware_status_attribute[FIRMWARE_STATUS_SIZE] = {};
+uint8_t firmware_version_attribute[3] = {0, 3, 0};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
@@ -227,7 +257,7 @@ esp_gatt_if_t active_gatts_if = ESP_GATT_IF_NONE;
 uint16_t active_connection_id = 0;
 bool connected = false;
 bool notifications_enabled = false;
-bool service_started = false;
+std::atomic_bool service_started{false};
 bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
@@ -508,6 +538,91 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           sizeof(utc_time_attribute),
           0,
           utc_time_attribute}},
+
+    [FIRMWARE_MANIFEST_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [FIRMWARE_MANIFEST_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(FIRMWARE_MANIFEST_UUID),
+          SETUP_WRITE_PERMISSION,
+          sizeof(firmware_manifest_attribute),
+          0,
+          firmware_manifest_attribute}},
+
+    [FIRMWARE_DATA_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_WITHOUT_RESPONSE_PROPERTY)}},
+    [FIRMWARE_DATA_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(FIRMWARE_DATA_UUID),
+          SETUP_WRITE_PERMISSION,
+          sizeof(firmware_data_attribute),
+          0,
+          firmware_data_attribute}},
+
+    [FIRMWARE_CONTROL_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [FIRMWARE_CONTROL_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(FIRMWARE_CONTROL_UUID),
+          SETUP_WRITE_PERMISSION,
+          sizeof(firmware_control_attribute),
+          0,
+          firmware_control_attribute}},
+
+    [FIRMWARE_STATUS_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&READ_PROPERTY)}},
+    [FIRMWARE_STATUS_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(FIRMWARE_STATUS_UUID),
+          SETUP_READ_PERMISSION,
+          sizeof(firmware_status_attribute),
+          0,
+          firmware_status_attribute}},
+
+    [FIRMWARE_VERSION_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&READ_PROPERTY)}},
+    [FIRMWARE_VERSION_VALUE] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(FIRMWARE_VERSION_UUID),
+          ESP_GATT_PERM_READ,
+          sizeof(firmware_version_attribute),
+          sizeof(firmware_version_attribute),
+          firmware_version_attribute}},
 };
 
 void clear_staged_value() {
@@ -792,8 +907,8 @@ bool verify_entitlement_signature(const uint8_t *entitlement,
     if (result == 0) {
         result = mbedtls_ecp_point_read_binary(
             &context.MBEDTLS_PRIVATE(grp), &context.MBEDTLS_PRIVATE(Q),
-            ENTITLEMENT_PUBLIC_KEY,
-            sizeof(ENTITLEMENT_PUBLIC_KEY));
+            PINKEVA_RELEASE_PUBLIC_KEY,
+            sizeof(PINKEVA_RELEASE_PUBLIC_KEY));
     }
     if (result == 0) {
         result = mbedtls_ecdsa_read_signature(
@@ -1279,6 +1394,12 @@ size_t secure_value_length(uint16_t handle) {
     if (handle == attribute_handles[UTC_TIME_VALUE]) {
         return UTC_TIME_SIZE;
     }
+    if (handle == attribute_handles[FIRMWARE_MANIFEST_VALUE]) {
+        return FIRMWARE_MANIFEST_SIZE;
+    }
+    if (handle == attribute_handles[FIRMWARE_CONTROL_VALUE]) {
+        return 1;
+    }
     return 0;
 }
 
@@ -1297,6 +1418,15 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
     }
     if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
         return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
+    }
+    if (handle == attribute_handles[FIRMWARE_MANIFEST_VALUE]) {
+        return maintenance_window_open &&
+               (ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER);
+    }
+    if (handle == attribute_handles[FIRMWARE_CONTROL_VALUE]) {
+        return ota_update_active() ||
+               (maintenance_window_open &&
+                (ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER));
     }
     return (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE] ||
             handle == attribute_handles[CONTROL_KEY_VALUE]) &&
@@ -1329,7 +1459,24 @@ esp_gatt_status_t process_secure_write(uint16_t handle,
     if (handle == attribute_handles[UTC_TIME_VALUE]) {
         return persist_trusted_utc(value, length);
     }
+    if (handle == attribute_handles[FIRMWARE_MANIFEST_VALUE]) {
+        return ota_update_begin(value, length);
+    }
+    if (handle == attribute_handles[FIRMWARE_CONTROL_VALUE]) {
+        return ota_update_control(value, length);
+    }
     return ESP_GATT_WRITE_NOT_PERMIT;
+}
+
+esp_gatt_status_t process_firmware_data_write(const uint8_t *value,
+                                               size_t length) {
+    if (!connection_authorized) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::UNAUTHORIZED);
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+    if (!ota_update_active()) return ESP_GATT_WRITE_NOT_PERMIT;
+    return ota_update_write(value, length);
 }
 
 void handle_prepared_secure_write(esp_gatt_if_t gatts_if,
@@ -1493,6 +1640,7 @@ void gatts_callback(esp_gatts_cb_event_t event,
             connected = false;
             notifications_enabled = false;
             clear_staged_value();
+            if (ota_update_active()) ota_update_abort();
             clear_connection_authorization();
             if (bond_cleanup_pending) {
                 erase_all_bonds();
@@ -1514,7 +1662,22 @@ void gatts_callback(esp_gatts_cb_event_t event,
         case ESP_GATTS_READ_EVT: {
             esp_gatt_status_t read_status = ESP_GATT_READ_NOT_PERMIT;
             esp_gatt_rsp_t response = {};
-            if (param->read.handle ==
+            if (param->read.handle == attribute_handles[FIRMWARE_STATUS_VALUE] &&
+                connection_authorized) {
+                uint8_t firmware_status[FIRMWARE_STATUS_SIZE] = {};
+                ota_update_status(firmware_status);
+                if (param->read.offset > FIRMWARE_STATUS_SIZE) {
+                    read_status = ESP_GATT_INVALID_OFFSET;
+                } else {
+                    const size_t remaining = FIRMWARE_STATUS_SIZE - param->read.offset;
+                    response.attr_value.handle = param->read.handle;
+                    response.attr_value.offset = param->read.offset;
+                    response.attr_value.len = static_cast<uint16_t>(remaining);
+                    std::memcpy(response.attr_value.value,
+                                firmware_status + param->read.offset, remaining);
+                    read_status = ESP_GATT_OK;
+                }
+            } else if (param->read.handle ==
                     attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE] &&
                 connection_authorized) {
                 if (param->read.offset > SUBSCRIPTION_ENTITLEMENT_SIZE) {
@@ -1543,6 +1706,14 @@ void gatts_callback(esp_gatts_cb_event_t event,
             } else if (secure_value_length(param->write.handle) != 0) {
                 esp_gatt_status_t result = process_secure_write(
                     param->write.handle, param->write.value, param->write.len);
+                send_write_response(gatts_if, param, result);
+                if (result == ESP_GATT_INSUF_AUTHORIZATION) {
+                    esp_ble_gatts_close(gatts_if, param->write.conn_id);
+                }
+            } else if (param->write.handle ==
+                       attribute_handles[FIRMWARE_DATA_VALUE]) {
+                const esp_gatt_status_t result = process_firmware_data_write(
+                    param->write.value, param->write.len);
                 send_write_response(gatts_if, param, result);
                 if (result == ESP_GATT_INSUF_AUTHORIZATION) {
                     esp_ble_gatts_close(gatts_if, param->write.conn_id);
@@ -1676,6 +1847,26 @@ void gap_callback(esp_gap_ble_cb_event_t event,
 }
 #pragma GCC diagnostic pop
 
+esp_err_t initialize_firmware_version() {
+    const esp_app_desc_t *description = esp_app_get_description();
+    unsigned int major = 0;
+    unsigned int minor = 0;
+    unsigned int patch = 0;
+    char trailing = '\0';
+    if (description == nullptr ||
+        std::sscanf(description->version, "%u.%u.%u%c", &major, &minor,
+                    &patch, &trailing) != 3 ||
+        major > 255 || minor > 255 || patch > 255) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    firmware_version_attribute[0] = static_cast<uint8_t>(major);
+    firmware_version_attribute[1] = static_cast<uint8_t>(minor);
+    firmware_version_attribute[2] = static_cast<uint8_t>(patch);
+    protocol_value[2] = firmware_version_attribute[0];
+    protocol_value[3] = firmware_version_attribute[1];
+    return ESP_OK;
+}
+
 esp_err_t initialize_device_id() {
     uint8_t mac[6] = {};
     esp_err_t error = esp_efuse_mac_get_default(mac);
@@ -1803,6 +1994,10 @@ std::optional<ERROR_TAG> ble_init() {
     // a stored entitlement can resume advertising.
     entitlement_time_trusted = false;
 
+    error = initialize_firmware_version();
+    if (error != ESP_OK) {
+        return ERROR_TAG("Firmware version initialization failed", "APP_VERSION");
+    }
     error = initialize_device_id();
     if (error != ESP_OK) {
         return ERROR_TAG("Device ID initialization failed", "DEVICE_ID");
@@ -1909,4 +2104,8 @@ esp_err_t ble_open_maintenance_window() {
              "Maintenance advertising opened for 120 seconds after button hold");
     request_advertising_refresh();
     return ESP_OK;
+}
+
+bool ble_service_ready() {
+    return service_started.load(std::memory_order_acquire);
 }

@@ -41,6 +41,33 @@ export type DeviceEntitlementAcknowledgement = {
   status: 'installed';
 };
 
+export type FirmwareAvailability = {
+  device_id: string;
+  current_version: string | null;
+  update_available: boolean;
+  latest_version: string | null;
+  image_size: number | null;
+  image_sha256_base64url: string | null;
+};
+
+export type FirmwareUpdateSession = {
+  device_id: string;
+  serial_number: string;
+  version: string;
+  install_required: boolean;
+  image_size: number;
+  image_sha256_base64url: string;
+  manifest_base64url: string;
+  tag_authorization_proof_base64url: string;
+  image_url: string;
+};
+
+export type FirmwareUpdateAcknowledgement = {
+  device_id: string;
+  version: string;
+  status: 'installed';
+};
+
 export type ProvisioningPlan = {
   code: string;
   name: string;
@@ -83,6 +110,17 @@ type ErrorEnvelope = {
 };
 
 const REQUEST_TIMEOUT_MS = 20_000;
+const FIRMWARE_DOWNLOAD_TIMEOUT_MS = 120_000;
+const FIRMWARE_PARTITION_MAX_SIZE = 0xe0000;
+const FIRMWARE_VERSION_PATTERN = /^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$/;
+
+function isFirmwareVersion(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    FIRMWARE_VERSION_PATTERN.test(value) &&
+    value.split('.').every((component) => Number(component) <= 255)
+  );
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -172,6 +210,61 @@ function isDeviceEntitlementAcknowledgement(
     value.counter > 0 &&
     typeof expiresAt === 'string' &&
     Number.isFinite(Date.parse(expiresAt)) &&
+    value.status === 'installed'
+  );
+}
+
+function isFirmwareAvailability(value: unknown): value is FirmwareAvailability {
+  if (!isRecord(value)) return false;
+  const nullableVersion = value.latest_version === null ||
+    isFirmwareVersion(value.latest_version);
+  const nullableCurrent = value.current_version === null || typeof value.current_version === 'string';
+  const nullableSize = value.image_size === null ||
+    (typeof value.image_size === 'number' && Number.isSafeInteger(value.image_size) && value.image_size > 0);
+  const nullableDigest = value.image_sha256_base64url === null ||
+    (typeof value.image_sha256_base64url === 'string' && value.image_sha256_base64url.length === 43);
+  return (
+    hasString(value, 'device_id') &&
+    nullableCurrent &&
+    typeof value.update_available === 'boolean' &&
+    nullableVersion &&
+    nullableSize &&
+    nullableDigest &&
+    (value.latest_version === null
+      ? value.image_size === null && value.image_sha256_base64url === null && !value.update_available
+      : value.image_size !== null && value.image_sha256_base64url !== null)
+  );
+}
+
+function isFirmwareUpdateSession(value: unknown): value is FirmwareUpdateSession {
+  return (
+    isRecord(value) &&
+    hasString(value, 'device_id') &&
+    hasString(value, 'serial_number') &&
+    isFirmwareVersion(value.version) &&
+    typeof value.install_required === 'boolean' &&
+    typeof value.image_size === 'number' &&
+    Number.isSafeInteger(value.image_size) &&
+    value.image_size > 0 &&
+    value.image_size <= FIRMWARE_PARTITION_MAX_SIZE &&
+    typeof value.image_sha256_base64url === 'string' &&
+    value.image_sha256_base64url.length === 43 &&
+    typeof value.manifest_base64url === 'string' &&
+    value.manifest_base64url.length === 154 &&
+    typeof value.tag_authorization_proof_base64url === 'string' &&
+    value.tag_authorization_proof_base64url.length === 43 &&
+    typeof value.image_url === 'string' &&
+    value.image_url.startsWith('/')
+  );
+}
+
+function isFirmwareUpdateAcknowledgement(
+  value: unknown,
+): value is FirmwareUpdateAcknowledgement {
+  return (
+    isRecord(value) &&
+    hasString(value, 'device_id') &&
+    isFirmwareVersion(value.version) &&
     value.status === 'installed'
   );
 }
@@ -384,6 +477,102 @@ export class PinqevaProvisioningClient {
       },
       isDeviceEntitlementAcknowledgement,
     );
+  }
+
+  getFirmwareAvailability(deviceId: string): Promise<FirmwareAvailability> {
+    return this.request(
+      `/v1/devices/${encodeURIComponent(deviceId)}/firmware`,
+      {},
+      isFirmwareAvailability,
+    );
+  }
+
+  startFirmwareUpdateSession(input: {
+    deviceId: string;
+    serialNumber: string;
+    currentVersion: string;
+    tagChallengeBase64url: string;
+  }): Promise<FirmwareUpdateSession> {
+    return this.request(
+      `/v1/devices/${encodeURIComponent(input.deviceId)}/firmware/session`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          serial_number: input.serialNumber,
+          current_version: input.currentVersion,
+          tag_challenge_base64url: input.tagChallengeBase64url,
+        }),
+      },
+      isFirmwareUpdateSession,
+    );
+  }
+
+  acknowledgeFirmwareUpdate(input: {
+    deviceId: string;
+    version: string;
+    imageSha256Base64url: string;
+  }): Promise<FirmwareUpdateAcknowledgement> {
+    return this.request(
+      `/v1/devices/${encodeURIComponent(input.deviceId)}/firmware/acknowledge`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          version: input.version,
+          image_sha256_base64url: input.imageSha256Base64url,
+        }),
+      },
+      isFirmwareUpdateAcknowledgement,
+    );
+  }
+
+  async downloadFirmwareImage(session: FirmwareUpdateSession): Promise<Uint8Array> {
+    let token: string;
+    try {
+      token = await this.accessToken();
+    } catch {
+      throw new ProvisioningApiError('AUTH_TOKEN_UNAVAILABLE', 401);
+    }
+    if (!token) throw new ProvisioningApiError('AUTH_TOKEN_UNAVAILABLE', 401);
+
+    const base = new URL(this.config.baseUrl);
+    const imageUrl = new URL(session.image_url, base);
+    if (imageUrl.origin !== base.origin) {
+      throw new ProvisioningApiError('INVALID_RESPONSE', 502);
+    }
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FIRMWARE_DOWNLOAD_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await fetch(imageUrl.toString(), {
+        headers: {
+          Accept: 'application/octet-stream',
+          Authorization: `Bearer ${token}`,
+        },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new ProvisioningApiError('REQUEST_TIMEOUT');
+      }
+      throw new ProvisioningApiError('NETWORK_ERROR');
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (!response.ok) {
+      const parsed: unknown = await response.json().catch(() => null);
+      const body: ErrorEnvelope = isRecord(parsed) ? (parsed as ErrorEnvelope) : {};
+      throw new ProvisioningApiError(
+        body.error?.code ?? 'REQUEST_FAILED',
+        response.status,
+        body.error?.request_id ?? response.headers.get('X-Request-ID') ?? undefined,
+      );
+    }
+    const image = new Uint8Array(await response.arrayBuffer());
+    if (image.length !== session.image_size || image.length === 0 || image[0] !== 0xe9) {
+      image.fill(0);
+      throw new ProvisioningApiError('INVALID_FIRMWARE_IMAGE', 502);
+    }
+    return image;
   }
 
   private async request<T>(

@@ -8,6 +8,7 @@ import { PermissionsAndroid, Platform } from 'react-native';
 import type { PinqevaProvisioningClient } from './api';
 import { normalizeAdvertisedSerial } from './protocol';
 import { TagProvisioner, type ProvisioningProgress } from './provisionTag';
+import { TagFirmwareUpdater, type FirmwareUpdateProgress } from './firmwareUpdate';
 import type { DiscoveredTag, StopTagScan, TagRadio } from './radio.types';
 import { TagRadioError } from './radio.types';
 
@@ -113,6 +114,19 @@ class NativeTagRadio implements TagRadio {
   ) {
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
     return new TagProvisioner(this.manager, backend).installEntitlement(input);
+  }
+
+  installFirmware(
+    backend: PinqevaProvisioningClient,
+    input: {
+      peripheralId: string;
+      deviceId: string;
+      serialNumber: string;
+      onProgress: (progress: FirmwareUpdateProgress) => void;
+    },
+  ) {
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    return new TagFirmwareUpdater(this.manager, backend).install(input);
   }
 
   async destroy(): Promise<void> {

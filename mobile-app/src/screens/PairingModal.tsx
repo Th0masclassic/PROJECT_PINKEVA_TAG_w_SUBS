@@ -3,7 +3,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { ActivityIndicator, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { OutlineButton, TrackerArtwork } from '../components';
+import { OutlineButton, PrimaryButton, TrackerArtwork } from '../components';
 import { useI18n } from '../i18n';
 import type { ConnectionOperation, PairingPhase, TrackerKind } from '../model';
 import { colors, radii, shadow } from '../theme';
@@ -13,12 +13,18 @@ export function PairingModal({
   operation = 'add',
   trackerName = 'Pinkeva Card',
   trackerKind = 'card',
+  progress = 0,
+  errorMessage,
+  onRetry,
   onCancel,
 }: {
   phase: PairingPhase;
   operation?: ConnectionOperation;
   trackerName?: string;
   trackerKind?: TrackerKind;
+  progress?: number;
+  errorMessage?: string;
+  onRetry?: () => void;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
@@ -26,6 +32,7 @@ export function PairingModal({
   const connecting = phase === 'connecting';
   const installing = phase === 'installing';
   const success = phase === 'success';
+  const failed = phase === 'error';
   const title = installing
     ? t('tracker.installing')
     : success
@@ -53,7 +60,9 @@ export function PairingModal({
             <ScrollView bounces={false} contentContainerStyle={styles.sheetContent} showsVerticalScrollIndicator={false}>
               <Text style={styles.title}>{title}</Text>
               <Text style={styles.subtitle}>
-                {installing
+                {failed
+                  ? errorMessage ?? t('pairing.errorGeneric')
+                  : installing
                   ? t('tracker.installingNotice', { name: trackerName })
                   : success && operation === 'firmware'
                     ? t('tracker.updateCompletedNotice', { name: trackerName })
@@ -68,7 +77,7 @@ export function PairingModal({
                 <View style={styles.bluetoothBadge}>
                   <LinearGradient colors={['#72A5FF', colors.blue]} style={styles.bluetoothGradient}>
                     <Ionicons
-                      name={success ? 'checkmark' : installing ? 'cloud-download' : 'bluetooth'}
+                      name={success ? 'checkmark' : failed ? 'alert' : installing ? 'cloud-download' : 'bluetooth'}
                       size={33}
                       color="#FFFFFF"
                     />
@@ -81,20 +90,37 @@ export function PairingModal({
               </View>
 
               <View style={styles.stateRow} accessibilityLiveRegion="polite">
-                {success ? <Ionicons name="checkmark-circle" size={34} color={colors.blue} /> : <ActivityIndicator size="small" color={colors.blue} />}
-                <Text style={[styles.stateText, success && styles.successText]}>
+                {success ? (
+                  <Ionicons name="checkmark-circle" size={34} color={colors.blue} />
+                ) : failed ? (
+                  <Ionicons name="alert-circle" size={34} color="#C23B3B" />
+                ) : (
+                  <ActivityIndicator size="small" color={colors.blue} />
+                )}
+                <Text style={[styles.stateText, success && styles.successText, failed && styles.errorText]}>
                   {phase === 'searching'
                     ? t('pairing.searching')
                     : phase === 'connecting'
                       ? t('pairing.connecting')
                       : phase === 'installing'
-                        ? t('tracker.installing')
+                        ? `${t('tracker.installing')} ${Math.max(0, Math.min(100, Math.round(progress)))}%`
+                        : failed
+                          ? t('pairing.errorGeneric')
                         : operation === 'firmware'
                           ? t('tracker.updateCompleted')
                           : t('pairing.connected')}
                 </Text>
               </View>
 
+              {failed && onRetry ? (
+                <PrimaryButton
+                  label={t('pairing.retry')}
+                  icon="refresh"
+                  onPress={onRetry}
+                  style={styles.retryButton}
+                  testID="firmware-retry"
+                />
+              ) : null}
               <OutlineButton label={t('common.cancel')} onPress={onCancel} style={styles.cancelButton} testID="pairing-cancel" />
             </ScrollView>
           </View>
@@ -128,5 +154,7 @@ const styles = StyleSheet.create({
   stateRow: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 14 },
   stateText: { color: colors.mutedDark, fontSize: 18, fontWeight: '500' },
   successText: { color: colors.blue, fontWeight: '700' },
+  errorText: { color: '#A52F2F', fontWeight: '700' },
+  retryButton: { alignSelf: 'stretch', marginTop: 20 },
   cancelButton: { alignSelf: 'stretch', marginTop: 24 },
 });

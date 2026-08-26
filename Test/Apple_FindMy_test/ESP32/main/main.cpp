@@ -8,6 +8,7 @@
 #include "driver/gpio.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_pm.h"
 #include "ble_driver.hpp"
 #include "sdkconfig.h"
@@ -106,11 +107,60 @@ void task_blink_led(void *pvParameters)
 
 void task_ble_init(void *pvParameters)
 {
+    constexpr TickType_t BLE_READY_TIMEOUT = pdMS_TO_TICKS(10000);
+    constexpr TickType_t BLE_READY_POLL_INTERVAL = pdMS_TO_TICKS(50);
+    const esp_partition_t *running_partition = esp_ota_get_running_partition();
+    esp_ota_img_states_t running_state = ESP_OTA_IMG_UNDEFINED;
+    const bool pending_ota_validation =
+        running_partition != nullptr &&
+        esp_ota_get_state_partition(running_partition, &running_state) == ESP_OK &&
+        running_state == ESP_OTA_IMG_PENDING_VERIFY;
     std::optional<ERROR_TAG> error = ble_init();
     if (error.has_value()) {
         error->log_error();
+        if (pending_ota_validation) {
+            ESP_LOGE(TAG, "New OTA image failed initialization; rolling back");
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+        }
         ERROR_LED error_led;
         error_led.blink(3, 500, true, &error.value());
+        vTaskDelete(NULL);
+        return;
+    }
+
+    if (pending_ota_validation) {
+        const TickType_t ready_started_at = xTaskGetTickCount();
+        while (!ble_service_ready() &&
+               xTaskGetTickCount() - ready_started_at < BLE_READY_TIMEOUT) {
+            vTaskDelay(BLE_READY_POLL_INTERVAL);
+        }
+        if (!ble_service_ready()) {
+            ESP_LOGE(TAG, "New OTA image did not start its GATT service; rolling back");
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+            vTaskDelete(NULL);
+            return;
+        }
+
+        // Let the phone reconnect after the reboot and verify the running
+        // version before it acknowledges installation to the backend.
+        const esp_err_t maintenance_result = ble_open_maintenance_window();
+        if (maintenance_result != ESP_OK) {
+            ESP_LOGE(TAG, "New OTA image could not open maintenance: %s",
+                     esp_err_to_name(maintenance_result));
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+            vTaskDelete(NULL);
+            return;
+        }
+
+        const esp_err_t validation_result =
+            esp_ota_mark_app_valid_cancel_rollback();
+        if (validation_result != ESP_OK) {
+            ESP_LOGE(TAG, "Could not confirm OTA image: %s; rolling back",
+                     esp_err_to_name(validation_result));
+            esp_ota_mark_app_invalid_rollback_and_reboot();
+            vTaskDelete(NULL);
+            return;
+        }
     }
     vTaskDelete(NULL);
 }

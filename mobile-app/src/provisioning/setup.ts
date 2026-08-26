@@ -42,6 +42,9 @@ export function safeTagSetupErrorCode(error: unknown): TagSetupErrorCode {
     if (code === 'DEVICE_UNAVAILABLE') return 'tag-unavailable';
     if (code === 'SUBSCRIPTION_REQUIRED') return 'tag-rejected';
     if (code === 'ENTITLEMENT_UNAVAILABLE') return 'unavailable';
+    if (code === 'FIRMWARE_UNAVAILABLE' || code === 'FIRMWARE_NOT_FOUND') return 'unavailable';
+    if (code === 'FIRMWARE_UP_TO_DATE') return 'tag-busy';
+    if (code === 'FIRMWARE_ACK_REJECTED') return 'recovery-required';
     if (code === 'TAG_NOT_READY') return 'tag-busy';
     if (code === 'PROVISIONING_IN_PROGRESS') return 'tag-busy';
     if (code === 'RECOVERY_REQUIRED' || code === 'SESSION_NOT_FOUND') {
@@ -59,6 +62,7 @@ export function safeTagSetupErrorCode(error: unknown): TagSetupErrorCode {
     if (code === 'SESSION_EXPIRED' || code === 'TAG_CONFIRMATION_TIMEOUT') {
       return 'timeout';
     }
+    if (code === 'FIRMWARE_REBOOT_TIMEOUT') return 'timeout';
     if (
       code === 'TAG_REJECTED_KEY' ||
       code === 'TAG_KEY_MISMATCH' ||

@@ -337,7 +337,7 @@ The most important trust boundaries are:
 - Between the payment provider and webhook receiver.
 - Between location data and any requester.
 
-Protocol v1.4 retains capability `0x20` for the current non-bonding development transport and adds capability `0x40` for authenticated UTC synchronization. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes, including clock updates, before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
+Protocol v1.6 retains capability `0x20` for the current non-bonding development transport, capability `0x40` for authenticated UTC synchronization, and capability `0x80` for signed dual-slot BLE firmware updates. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes, including clock and firmware-update control, before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. This authenticates backend authorization without placing a reusable fleet-wide secret in the app. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
 
 ## 4. Communication Protocol
 
@@ -360,7 +360,7 @@ The client scans for the service UUID, displays candidate device identifiers, an
 
 ### 4.3 Pinqeva Provisioning GATT service
 
-The following UUIDs define implemented provisioning protocol version 1.4.
+The following UUIDs define implemented provisioning protocol version 1.6.
 
 | Attribute | UUID | Properties | Value |
 |---|---|---|---|
@@ -376,6 +376,11 @@ The following UUIDs define implemented provisioning protocol version 1.4.
 | Tag Authorization Proof | `a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response | `HMAC-SHA256(device_bootstrap_key, domain || serial || challenge)`. Unlocks sensitive writes for this connection only. |
 | Subscription Entitlement | `a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; application-channel protection required in production | Exactly 135 raw binary bytes containing a signed device-bound lease. |
 | UTC Time | `a6f0f00b-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; backend-authorized connection required | Eight-byte unsigned Unix UTC seconds, big-endian. Persisted immediately and checkpointed hourly. |
+| Firmware Manifest | `a6f0f00c-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response; authorized physical maintenance window | Fixed 115-byte signed release manifest. |
+| Firmware Data | `a6f0f00d-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with or without response; authorized active transfer | Ordered raw ESP application-image chunks. |
+| Firmware Control | `a6f0f00e-3e4d-4b1a-9c2e-72d24c8f0a01` | Write with response | One-byte command: `0x01` commit or `0x02` abort. |
+| Firmware Status | `a6f0f00f-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | State, result, and big-endian received-byte count. |
+| Exact Firmware Version | `a6f0f010-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | Three bytes: major, minor, and patch. |
 
 GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for every sensitive value, including the authorization proof, UTC value, keys, reset command, and entitlement. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
 
@@ -390,6 +395,12 @@ GATT values are raw binary, not Base64 text. The client requests a suitable MTU,
 | 4 | 2 bytes | Capability flags, little-endian |
 
 An incompatible major version stops provisioning. A newer minor version can be accepted when the required characteristics and capability flags are present.
+
+Capability flags are little-endian. The implemented update path requires both
+the challenge/proof flag `0x0010` and signed-OTA flag `0x0080`. The legacy
+Protocol Information value carries only firmware major and minor for backward
+compatibility; update clients read the exact three-byte Firmware Version
+characteristic before comparing or acknowledging a release.
 
 ### 4.5 Provisioning Status value
 
@@ -447,7 +458,33 @@ Firmware contains only the backend's public verification key. It verifies the si
 
 The active tag needs a defined maintenance mechanism so the app can install renewals before expiry. The production design may use short periodic connectable maintenance windows or a physical action that temporarily enables the GATT service. Suspended mode always provides a low-duty-cycle renewal window, but never includes the finder-network advertisement key.
 
-### 4.8 Provisioning sequence
+### 4.8 Signed firmware-update protocol
+
+The backend publishes at most one classic-ESP32 application release. Its
+version, byte length, and SHA-256 digest are encoded in a 42-byte manifest body.
+The body is followed by a one-byte DER signature length and a P-256
+ECDSA/SHA-256 signature padded to 72 bytes, producing a fixed 115-byte manifest.
+The matching private key stays in the backend; firmware embeds only the public
+verification key.
+
+An update requires active ownership, a fresh tag challenge, the physical
+two-minute maintenance window, and a strictly newer version. The app verifies
+the downloaded image's digest and manifest binding before transfer. Firmware
+verifies the signature and target, writes ordered chunks directly to the
+inactive 896 KiB OTA partition while hashing them, compares the final digest,
+lets ESP-IDF validate the application image, and only then changes the boot
+partition. Disconnecting before commit aborts the inactive write without
+affecting the running slot.
+
+Rollback is enabled. A newly booted image that cannot initialize BLE marks
+itself invalid and reboots into the previous slot. A healthy image exposes a
+temporary maintenance connection so the app can read the exact running version
+and acknowledge it to the backend. If acknowledgement is interrupted, the next
+session can reconcile the already-installed equal version without reflashing.
+The first migration from the historical single-app partition table is wired;
+the migration layout preserves the existing NVS range.
+
+### 4.9 Provisioning sequence
 
 ```mermaid
 sequenceDiagram
@@ -500,13 +537,13 @@ the source of truth and polling only observes the committed state.
 
 Transfer is another two-phase operation: the current owner requests a reset command bound to the device's control key, the tag verifies the HMAC and erases both keys, and the app confirms the empty fingerprint. Only then does the backend end ownership, revoke the old key allocation, cancel local subscriptions, queue external billing cancellation, and allow a new owner to generate a fresh keypair.
 
-### 4.9 Tracker advertising protocol
+### 4.10 Tracker advertising protocol
 
 **Legacy experiment:** the earlier firmware constructed a 31-byte manufacturer-specific BLE advertisement using Apple company identifier `0x004C`, offline-finding type `0x12`, and length `0x19`. The secure provisioning firmware no longer activates that path from a stored key alone. It remains suspended until signed entitlement verification succeeds.
 
 Tracker advertising is non-connectable in the prototype. Future nearby commands require a controlled connectable window, maintenance mode, or alternative scheduling strategy. That choice affects both battery life and security.
 
-### 4.10 Proposed application HTTPS API
+### 4.11 Proposed application HTTPS API
 
 | Operation | Example route | Authorization |
 |---|---|---|
@@ -527,11 +564,15 @@ Tracker advertising is non-connectable in the prototype. Future nearby commands 
 | List plans | `GET /v1/plans` | Public or authenticated according to policy |
 | Manage subscription | `POST /v1/subscriptions` | Authenticated owner |
 | Issue/refresh entitlement | `POST /v1/devices/{deviceId}/entitlements` | Active owner with paid subscription |
+| Check firmware release | `GET /v1/devices/{deviceId}/firmware` | Active owner |
+| Start/reconcile firmware update | `POST /v1/devices/{deviceId}/firmware/session` | Active owner + fresh tag challenge |
+| Download firmware image | `GET /v1/devices/{deviceId}/firmware/image` | Active owner + exact release version |
+| Acknowledge verified firmware | `POST /v1/devices/{deviceId}/firmware/acknowledge` | Active owner after tag-version read-back |
 | Payment webhook | `POST /v1/webhooks/payments` | Valid payment-provider signature |
 
 All application traffic uses HTTPS and schema-validated JSON. Ownership is checked server-side. Provisioning and payment retries use idempotency keys. Precise coordinates are never returned for a device the requester does not actively own.
 
-### 4.11 Failure and recovery behavior
+### 4.12 Failure and recovery behavior
 
 - A device with no valid key remains in setup mode.
 - An interrupted transfer leaves the previous valid key unchanged.
@@ -543,6 +584,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Suspended mode retains the public key and exposes only the renewal channel.
 - A renewed signed entitlement atomically reactivates tracker advertising after verification.
 - A reboot resumes from the last monotonic UTC checkpoint in NVS; the next authorized phone connection refreshes it without permitting rollback.
+- An interrupted OTA transfer leaves the current boot partition selected; an invalid new image rolls back, and an interrupted final acknowledgement can be reconciled without reflashing.
 - Success is reported only after persistent read-back verification.
 - Backend claim completion is idempotent so retries cannot create duplicate ownership records.
 - Factory reset clears the public key and ownership binding through an explicit, auditable process.

@@ -13,7 +13,8 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
 - Card, keys, bag, and car presentations. Card is the default and therefore requires no stored override.
 - Native Google Maps UI for the latest stored tracker reports, plus lost-mode
   demo, settings, and localized support pages.
-- Per-tag advertising interval and software-update flows.
+- Per-tag advertising interval and signed BLE software-update flows with real
+  backend release discovery, transfer progress, reboot verification, and retry.
 - A visible subscription state on every tracker plus a dedicated per-tag plan,
   renewal, cancellation-at-period-end, checkout, and management screen.
 - Native renewal notifications and a durable per-tag update state that remains
@@ -31,6 +32,28 @@ opens a connectable maintenance advertisement for two minutes, and the app
 scans and creates a fresh connection. Normal finder advertising is
 non-connectable and resumes after the exact signed packet is persisted and
 verified.
+
+## Install tracker firmware
+
+For hosted trackers, the app asks the backend for the current published release
+when it hydrates the owner's device catalog. The tracker detail screen displays
+the installed database version and the newer release only when one is
+available. Before choosing **Connect & Update**, hold the tracker's maintenance
+button for five seconds as shown on the firmware screen.
+
+The native app then scans for that exact `PKV-XXXXXXXXXXXX` serial, verifies
+protocol `1.6` and OTA capability `0x0080`, obtains a challenge-bound backend
+authorization, validates the signed manifest binding and downloaded SHA-256,
+and streams the application over BLE. The progress sheet reflects actual bytes
+written. After commit, the app reconnects to the rebooted tracker, reads its
+exact `major.minor.patch` version, and only then acknowledges the release to the
+backend and refreshes the UI. A retry can reconcile an update that reached the
+tag but lost connectivity before backend acknowledgement.
+
+Firmware installation is unavailable on web, Expo Go, simulators, and the
+static preview; it requires a physical iOS or Android native build. Trackers on
+the old single-application flash layout need one wired installation of firmware
+`0.3.0` before future versions can be delivered over BLE.
 
 ## Configure tag setup
 

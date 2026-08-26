@@ -6,7 +6,7 @@ Pinqeva is a prototype Bluetooth item-tracking system built around an ESP32-base
 
 The same tag can be attached to personal belongings or left inside a vehicle. When used in a car, the application will associate the tag with owner-provided vehicle information and display the car's last reported location.
 
-> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32 GATT receiver, Stripe subscription workflow, signed tag-entitlement path, native map surface, and secured admin console exist; the finder-report worker and final production validation are not yet complete.
+> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32 GATT receiver, signed BLE firmware-update path, Stripe subscription workflow, signed tag-entitlement path, native map surface, and secured admin console exist; the finder-report worker and final production validation are not yet complete.
 
 ## Project overview
 
@@ -40,14 +40,15 @@ The complete architecture and proposed communication contract are documented in 
 | Firmware mode selection | Implemented provisioning slice | A missing key enters setup; a valid committed key without an entitlement fails closed into suspended maintenance mode. |
 | Setup mode | Implemented prototype | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`. The checked-in development profile bypasses bootstrap authentication and OS pairing/bonding; production still needs an authenticated application-layer confidential channel. |
 | Tracker mode | Implemented subscription gate | Finder advertising starts only after the backend-issued entitlement is verified; reboot and expiry fail closed into suspended maintenance mode. |
-| GATT event handling | Implemented provisioning slice | Protocol v1.5 adds QR-free per-connection challenge/proof authorization, signed entitlement read-back, UTC synchronization, and a five-second physical maintenance gesture before renewal connections. |
+| GATT event handling | Implemented provisioning and OTA slice | Protocol v1.6 adds QR-free per-connection challenge/proof authorization, signed entitlement read-back, UTC synchronization, a five-second physical maintenance gesture, and signed dual-slot BLE firmware updates. |
+| Firmware updates | Implemented, hardware validation pending | The backend publishes an owner-scoped signed release, the native app streams and verifies it over BLE, and the ESP32 boots the inactive slot with rollback protection. The first partition-layout migration is wired. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
 | Supabase database | Partial | Adds encrypted key custody, permanent device allocation, one-active-owner enforcement, per-tag subscriptions, desired/issued/installed entitlement delivery state, durable renewal notifications, stored last locations, admin RBAC/audit, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
-| Mobile client | Provisioning UI implemented | The authenticated iOS/Android product UI scans for canonical `PKV-XXXXXXXXXXXX` tags, shows nearby candidates, performs the backend-authorized BLE challenge-response, verifies the committed fingerprint, and refreshes the claimed ownership. Physical-device validation is still required. |
-| Backend API and worker | Provisioning, billing, entitlement, notification, and admin modules | Key custody, claims/releases, app-independent Stripe renewal reconciliation, signed entitlement issuance/read-back acknowledgement, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
+| Mobile client | Provisioning and firmware UI implemented | The authenticated iOS/Android product UI performs backend-authorized setup and now discovers published firmware, displays the real available version, streams actual BLE progress, verifies the rebooted version, and supports interrupted-acknowledgement retry. Physical-device validation is still required. |
+| Backend API and worker | Provisioning, firmware, billing, entitlement, notification, and admin modules | Key custody, claims/releases, owner-scoped signed firmware publication, app-independent Stripe renewal reconciliation, signed entitlement issuance/read-back acknowledgement, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
 | Pinqeva map and vehicle UI | Map UI implemented | iOS/Android use native Google Maps when restricted SDK keys are configured and render only stored tracker coordinates. Location ingestion/history and the vehicle profile remain. |
 | Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
 | Subscription enforcement | Implemented prototype | Active/trialing subscriptions receive signed device-bound entitlements; the firmware fails closed on missing, expired, invalid, or replayed leases. |
@@ -71,6 +72,7 @@ stateDiagram-v2
 - **Setup mode:** the LED indicates setup mode and the tag advertises `PKV-XXXXXXXXXXXX`. A phone can discover and connect to it.
 - **Provisioning:** the app requires the non-bonding capability, reads the stored-key fingerprint, installs a 32-byte control key followed by exactly 28 advertisement-key bytes only when empty, and waits for explicit flash read-back confirmation. The checked-in development transport is not confidential and must be replaced by a reviewed application-layer secure channel for production.
 - **Suspended mode:** the public advertisement key remains stored, but no finder payload or continuously connectable service is emitted. Holding the physical button for five seconds opens maintenance advertising for two minutes.
+- **Firmware update:** during that physical maintenance window, an authorized owner can install a strictly newer backend-signed ESP32 image into the inactive OTA slot. The tag verifies the signature, size, digest, and version before rebooting, and rolls back if the new image cannot initialize BLE.
 - **Release/transfer:** the active owner obtains a backend-authenticated reset command. The tag erases key/control data, the backend ends the single ownership and cancels device subscriptions, and the next owner receives a newly generated keypair.
 
 The implemented entitlement state machine is:
@@ -145,20 +147,26 @@ idf.py set-target esp32
 idf.py build
 ```
 
-To flash the checked-in classic ESP32 images without erasing the per-device NVS/bootstrap key:
+To flash the checked-in classic ESP32 OTA layout without erasing the per-device
+NVS/bootstrap key:
 
 ```sh
 ./flash_esp32.sh --port /dev/tty.usbmodemXXXX
 ```
 
-Replace the port with the connected board's serial interface. Firmware behavior must still be validated on real hardware; a successful build and the UUID in the image are not a substitute for testing the exact board.
+Replace the port with the connected board's serial interface. This wired bundle
+installs the bootloader, dual-slot partition table, initial OTA metadata, and
+firmware `0.3.0`; it is required once for boards on the old single-app layout.
+Later releases can be installed from the mobile firmware screen. Firmware
+behavior must still be validated on real hardware; a successful build and the
+UUID in the image are not a substitute for testing the exact board.
 
 ## Next milestone
 
 The next milestone validates subscription authorization on hardware and completes production hardening:
 
 1. Validate the implemented per-device challenge-response on hardware, then add a reviewed application-layer encrypted no-bond channel, physical presence/OOB, and a tag-signed provisioning receipt.
-2. Test scan, no-bond connection, fragmented entitlement write, disconnect, flash failure, confirmation, reboot, expiry, and renewal on the target ESP32 hardware with iOS and Android.
+2. Test scan, no-bond connection, fragmented entitlement and OTA writes, disconnect, power loss, digest/signature rejection, rollback, confirmation, reboot, expiry, and renewal on the target ESP32 hardware with iOS and Android.
 3. Validate the implemented product provisioning and entitlement UI on physical iOS and Android devices, including denial, timeout, retry, and interrupted-setup states.
 4. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
 

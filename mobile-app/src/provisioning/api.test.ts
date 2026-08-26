@@ -122,3 +122,79 @@ test('returns only a safe API error code from failed responses', async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test('discovers, downloads, and acknowledges one authenticated firmware release', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ url: string; init?: RequestInit }> = [];
+  const digest = 'd'.repeat(43);
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    const requestUrl = String(url);
+    requests.push({ url: requestUrl, init });
+    if (requestUrl.endsWith('/firmware')) {
+      return Response.json({
+        device_id: '22222222-2222-4222-8222-222222222222',
+        current_version: '0.3.0',
+        update_available: true,
+        latest_version: '0.4.1',
+        image_size: 4,
+        image_sha256_base64url: digest,
+      });
+    }
+    if (requestUrl.endsWith('/firmware/session')) {
+      return Response.json({
+        device_id: '22222222-2222-4222-8222-222222222222',
+        serial_number: 'PKV-AABBCCDDEEFF',
+        version: '0.4.1',
+        install_required: true,
+        image_size: 4,
+        image_sha256_base64url: digest,
+        manifest_base64url: 'm'.repeat(154),
+        tag_authorization_proof_base64url: 'p'.repeat(43),
+        image_url: '/v1/devices/22222222-2222-4222-8222-222222222222/firmware/image?version=0.4.1',
+      }, { status: 201 });
+    }
+    if (requestUrl.includes('/firmware/image?')) {
+      return new Response(Uint8Array.of(0xe9, 1, 2, 3), {
+        headers: { 'Content-Type': 'application/octet-stream' },
+      });
+    }
+    return Response.json({
+      device_id: '22222222-2222-4222-8222-222222222222',
+      version: '0.4.1',
+      status: 'installed',
+    });
+  }) as typeof fetch;
+
+  try {
+    const client = new PinqevaProvisioningClient(
+      { baseUrl: 'https://api.pinkeva.com' },
+      async () => 'access-token',
+    );
+    const availability = await client.getFirmwareAvailability(
+      '22222222-2222-4222-8222-222222222222',
+    );
+    const session = await client.startFirmwareUpdateSession({
+      deviceId: availability.device_id,
+      serialNumber: 'PKV-AABBCCDDEEFF',
+      currentVersion: '0.3.0',
+      tagChallengeBase64url: 'c'.repeat(43),
+    });
+    const image = await client.downloadFirmwareImage(session);
+    const acknowledgement = await client.acknowledgeFirmwareUpdate({
+      deviceId: availability.device_id,
+      version: session.version,
+      imageSha256Base64url: session.image_sha256_base64url,
+    });
+
+    assert.equal(availability.latest_version, '0.4.1');
+    assert.deepEqual(image, Uint8Array.of(0xe9, 1, 2, 3));
+    assert.equal(acknowledgement.status, 'installed');
+    assert.equal(requests.length, 4);
+    assert.equal(
+      new Headers(requests[2]?.init?.headers).get('Authorization'),
+      'Bearer access-token',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

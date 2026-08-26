@@ -2,12 +2,26 @@ import pytest
 
 from app.config import (
     ConfigurationError,
+    parse_firmware_release,
     parse_stripe_price_map,
     parse_findmy_second_factor,
     validate_database_url,
     validate_https_url,
     validate_stripe_secret,
 )
+
+
+def test_firmware_release_requires_path_and_exact_version_together() -> None:
+    assert parse_firmware_release(" /srv/pinkeva.bin ", " 0.3.1 ") == (
+        "/srv/pinkeva.bin",
+        "0.3.1",
+    )
+    with pytest.raises(ConfigurationError):
+        parse_firmware_release("/srv/pinkeva.bin", "")
+    with pytest.raises(ConfigurationError):
+        parse_firmware_release("/srv/pinkeva.bin", "0.3")
+    with pytest.raises(ConfigurationError):
+        parse_firmware_release("/srv/pinkeva.bin", "0.3.256")
 
 
 def test_remote_database_requires_tls() -> None:

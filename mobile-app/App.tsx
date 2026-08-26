@@ -59,6 +59,8 @@ import { requestLocationHistory24h } from './src/location/api';
 import { PROVISIONING_API_CONFIG, type DeviceClaim } from './src/provisioning/api';
 import { TagSetupModal } from './src/provisioning/TagSetupModal';
 import { useTagSetup } from './src/provisioning/useTagSetup';
+import { useFirmwareUpdate } from './src/provisioning/useFirmwareUpdate';
+import { tagSetupErrorTranslationKey } from './src/provisioning/setup';
 
 type PairingContext =
   | { kind: 'add' }
@@ -112,6 +114,8 @@ function AppContent() {
     auth.user?.id ?? null,
     auth.session?.access_token ?? null,
     demoPreviewActive && __DEV__,
+    PROVISIONING_API_CONFIG,
+    auth.getAccessToken,
   );
   const { trackers, setTrackers } = trackerCatalog;
 
@@ -151,6 +155,19 @@ function AppContent() {
     },
     onProvisioningCheckout: (requestId, planCode) =>
       provisioningCheckout.current(requestId, planCode),
+  });
+  const firmwareUpdate = useFirmwareUpdate({
+    getAccessToken: auth.getAccessToken,
+    apiConfig: PROVISIONING_API_CONFIG,
+    onInstalled: async (deviceId, version) => {
+      setTrackers((current) =>
+        updateTracker(current, deviceId, {
+          firmwareVersion: version,
+          firmwareUpdateVersion: undefined,
+        }),
+      );
+      await trackerCatalog.refresh();
+    },
   });
 
   useEffect(() => {
@@ -218,8 +235,9 @@ function AppContent() {
     setRoute({ name: 'main' });
     setPairingPhase('idle');
     tagSetup.close();
+    firmwareUpdate.close();
     setRemoveTrackerId(null);
-  }, [auth.ready, tagSetup.close, userId]);
+  }, [auth.ready, firmwareUpdate.close, tagSetup.close, userId]);
 
   useEffect(() => {
     if (auth.session) setDemoPreviewActive(false);
@@ -383,9 +401,25 @@ function AppContent() {
     return () => clearTimeout(timer);
   }, [pairingContext, pairingPhase, pairingTracker?.name, showNotice, t]);
 
+  useEffect(() => {
+    if (firmwareUpdate.state.phase !== 'success' || !firmwareUpdate.state.trackerId) return;
+    const trackerId = firmwareUpdate.state.trackerId;
+    const trackerName = trackers.find((tracker) => tracker.id === trackerId)?.name ?? 'Tracker';
+    const timer = setTimeout(() => {
+      firmwareUpdate.close();
+      setRoute({ name: 'tracker', trackerId });
+      showNotice(t('tracker.updateCompletedNotice', { name: trackerName }));
+    }, 950);
+    return () => clearTimeout(timer);
+  }, [firmwareUpdate.close, firmwareUpdate.state.phase, firmwareUpdate.state.trackerId, showNotice, t, trackers]);
+
   const back = useCallback(() => {
     if (tagSetup.state.phase !== 'idle') {
       tagSetup.close();
+      return true;
+    }
+    if (firmwareUpdate.state.phase !== 'idle') {
+      firmwareUpdate.close();
       return true;
     }
     if (pairingPhase !== 'idle') {
@@ -406,7 +440,7 @@ function AppContent() {
       return true;
     }
     return false;
-  }, [pairingPhase, route, tagSetup.close, tagSetup.state.phase]);
+  }, [activeTab, firmwareUpdate.close, firmwareUpdate.state.phase, pairingPhase, route, tagSetup.close, tagSetup.state.phase]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', back);
@@ -585,8 +619,12 @@ function AppContent() {
           tracker={selectedTracker}
           onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
           onStartUpdate={() => {
-            setPairingContext({ kind: 'firmware', trackerId: selectedTracker.id });
-            setPairingPhase('searching');
+            if (selectedTracker.source === 'demo' && demoPreviewActive && __DEV__) {
+              setPairingContext({ kind: 'firmware', trackerId: selectedTracker.id });
+              setPairingPhase('searching');
+            } else {
+              firmwareUpdate.start(selectedTracker);
+            }
           }}
         />
       );
@@ -821,11 +859,30 @@ function AppContent() {
       )}
 
       <PairingModal
-        phase={pairingPhase}
-        operation={pairingContext.kind}
-        trackerName={pairingTracker?.name}
-        trackerKind={pairingTracker?.kind}
-        onCancel={() => setPairingPhase('idle')}
+        phase={firmwareUpdate.state.phase !== 'idle' ? firmwareUpdate.state.phase : pairingPhase}
+        operation={firmwareUpdate.state.phase !== 'idle' ? 'firmware' : pairingContext.kind}
+        trackerName={
+          firmwareUpdate.state.phase !== 'idle'
+            ? displayTrackers.find((tracker) => tracker.id === firmwareUpdate.state.trackerId)?.name
+            : pairingTracker?.name
+        }
+        trackerKind={
+          firmwareUpdate.state.phase !== 'idle'
+            ? displayTrackers.find((tracker) => tracker.id === firmwareUpdate.state.trackerId)?.kind
+            : pairingTracker?.kind
+        }
+        progress={firmwareUpdate.state.progress}
+        errorMessage={
+          firmwareUpdate.state.error
+            ? t(tagSetupErrorTranslationKey(firmwareUpdate.state.error))
+            : undefined
+        }
+        onRetry={firmwareUpdate.state.phase === 'error' ? firmwareUpdate.retry : undefined}
+        onCancel={
+          firmwareUpdate.state.phase !== 'idle'
+            ? firmwareUpdate.close
+            : () => setPairingPhase('idle')
+        }
       />
       <TagSetupModal
         state={tagSetup.state}

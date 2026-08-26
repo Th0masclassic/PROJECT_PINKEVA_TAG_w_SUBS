@@ -10,6 +10,8 @@ import {
   decodeTagKeyFingerprint,
   encodeUtcUnixSeconds,
   normalizeAdvertisedSerial,
+  parseFirmwareStatus,
+  parseFirmwareVersion,
   parseProtocolInformation,
   provisioningStatusIsReady,
 } from './protocol.ts';
@@ -19,6 +21,16 @@ test('accepts only canonical advertised PKV serials', () => {
   assert.equal(normalizeAdvertisedSerial('PKV-123'), null);
   assert.equal(normalizeAdvertisedSerial('OTHER-AABBCCDDEEFF'), null);
   assert.equal(normalizeAdvertisedSerial(null), null);
+});
+
+test('parses exact OTA firmware versions and transfer status', () => {
+  assert.equal(parseFirmwareVersion(Uint8Array.of(0, 3, 1)), '0.3.1');
+  assert.deepEqual(parseFirmwareStatus(Uint8Array.of(2, 0, 0, 1, 2, 3)), {
+    state: 2,
+    result: 0,
+    receivedBytes: 0x010203,
+  });
+  assert.throws(() => parseFirmwareVersion(Uint8Array.of(1, 2)), ProvisioningClientError);
 });
 
 test('parses protocol v1 capability bytes and the GATT serial', () => {

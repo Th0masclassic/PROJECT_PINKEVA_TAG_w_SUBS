@@ -1,6 +1,7 @@
 # Pinqeva provisioning backend
 
-This service implements the payment-gated key-lifecycle portion of protocol v1.5:
+This service implements the payment-gated key lifecycle and signed firmware
+release portion of protocol v1.6:
 
 1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
 2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 45 minutes.
@@ -273,6 +274,45 @@ Content-Type: application/json
 Only an exact current counter, period, digest, owner, and device transition the
 row from `issued` to `installed`. This lets operators distinguish “Stripe paid”
 from “the physical tag has the new date.”
+
+## Signed firmware releases
+
+The firmware screen is backed by authenticated, owner-scoped endpoints rather
+than a client-side version constant:
+
+```http
+GET  /v1/devices/{device_id}/firmware
+POST /v1/devices/{device_id}/firmware/session
+GET  /v1/devices/{device_id}/firmware/image?version=0.3.0
+POST /v1/devices/{device_id}/firmware/acknowledge
+```
+
+Configure one release by setting both `PINQEVA_FIRMWARE_IMAGE_PATH` and
+`PINQEVA_FIRMWARE_VERSION`. The path must point to the classic-ESP32
+application binary and the version must be `major.minor.patch`, with every
+component in `0..255`. Leaving both values empty disables update publication.
+The configured image is loaded at startup, checked for the ESP image marker and
+896 KiB slot limit, hashed, and bound into a fixed manifest signed with
+`PINQEVA_ENTITLEMENT_PRIVATE_KEY`. That key's P-256 public half is embedded in
+the tracker; neither the signing key nor an unsigned digest reaches the app as
+a trust root.
+
+To start an update, the app reads the selected tag's exact serial, current
+three-component version, and fresh BLE challenge. The backend verifies active
+ownership, device state, serial binding, and the factory authorization
+credential before returning a challenge-bound tag proof, signed manifest, and
+authenticated image URL. The app verifies the downloaded SHA-256 value and
+manifest binding before streaming it over BLE. It acknowledges only after the
+tracker reboots and reports the requested version; only then is
+`device.firmware_version` advanced. If installation succeeded but that final
+request was interrupted, a later session returns `install_required: false` so
+the app can verify the already-running version and safely finish the
+acknowledgement without reflashing.
+
+No schema migration is needed because `public.device.firmware_version` is the
+existing release-delivery record. The initial move from the old single-app
+partition layout still requires the wired flash bundle described in the ESP32
+README; all subsequent releases can use signed BLE OTA.
 
 ## Per-tag Stripe subscriptions
 

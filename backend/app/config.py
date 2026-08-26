@@ -25,6 +25,9 @@ STRIPE_PRODUCT_ID_PATTERN = re.compile(r"^prod_[A-Za-z0-9]{8,}$")
 STRIPE_API_VERSION_PATTERN = re.compile(
     r"^20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:\.[a-z]+)?$"
 )
+FIRMWARE_VERSION_PATTERN = re.compile(
+    r"^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$"
+)
 
 
 def _required(name: str) -> str:
@@ -207,6 +210,23 @@ def parse_findmy_second_factor(value: str) -> str:
     )
 
 
+def parse_firmware_release(image_path: str, version: str) -> tuple[str, str]:
+    normalized_path = image_path.strip()
+    normalized_version = version.strip()
+    if bool(normalized_path) != bool(normalized_version):
+        raise ConfigurationError(
+            "PINQEVA_FIRMWARE_IMAGE_PATH and PINQEVA_FIRMWARE_VERSION must be configured together"
+        )
+    if normalized_version and (
+        not FIRMWARE_VERSION_PATTERN.fullmatch(normalized_version)
+        or any(int(component) > 255 for component in normalized_version.split("."))
+    ):
+        raise ConfigurationError(
+            "PINQEVA_FIRMWARE_VERSION must be major.minor.patch with components from 0 to 255"
+        )
+    return normalized_path, normalized_version
+
+
 def parse_uuid_set(name: str, value: str) -> frozenset[UUID]:
     result: set[UUID] = set()
     for item in value.split(","):
@@ -279,6 +299,8 @@ class Settings:
     notification_worker_enabled: bool = False
     notification_poll_interval_seconds: int = 60
     expo_push_access_token: str = ""
+    firmware_image_path: str = ""
+    firmware_version: str = ""
 
     def __post_init__(self) -> None:
         if len(
@@ -409,6 +431,11 @@ def get_settings() -> Settings:
             "PINQEVA_FINDMY_APPLE_ID is required when an Apple password is configured"
         )
 
+    firmware_image_path, firmware_version = parse_firmware_release(
+        os.getenv("PINQEVA_FIRMWARE_IMAGE_PATH", ""),
+        os.getenv("PINQEVA_FIRMWARE_VERSION", ""),
+    )
+
     return Settings(
         database_url=validate_database_url(_required("DATABASE_URL")),
         supabase_jwks_url=jwks_url,
@@ -510,4 +537,6 @@ def get_settings() -> Settings:
         ),
         notification_poll_interval_seconds=notification_poll_interval,
         expo_push_access_token=os.getenv("EXPO_PUSH_ACCESS_TOKEN", "").strip(),
+        firmware_image_path=firmware_image_path,
+        firmware_version=firmware_version,
     )

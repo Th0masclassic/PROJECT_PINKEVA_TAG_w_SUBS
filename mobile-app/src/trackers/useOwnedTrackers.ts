@@ -12,6 +12,10 @@ import { AppState } from 'react-native';
 import { supabase } from '../auth/supabase';
 import { DEMO_TRACKERS, type Tracker } from '../model';
 import {
+  PinqevaProvisioningClient,
+  type ProvisioningApiConfig,
+} from '../provisioning/api';
+import {
   OwnedTrackerError,
   fetchOwnedTrackers,
   type OwnedTrackerErrorCode,
@@ -42,6 +46,8 @@ export function useOwnedTrackers(
   userId: string | null,
   accessToken: string | null,
   demoPreviewEnabled: boolean,
+  apiConfig: ProvisioningApiConfig | null,
+  getAccessToken: () => Promise<string | null>,
 ): OwnedTrackerCatalog {
   const mode = demoPreviewEnabled
     ? 'demo'
@@ -53,7 +59,7 @@ export function useOwnedTrackers(
   const ownerKey = mode === 'live' || mode === 'configuration'
     ? `account:${userId ?? ''}`
     : mode;
-  const requestKey = `${mode}\u001f${userId ?? ''}\u001f${accessToken ?? ''}`;
+  const requestKey = `${mode}\u001f${userId ?? ''}\u001f${accessToken ?? ''}\u001f${apiConfig?.baseUrl ?? ''}`;
   const currentRequestKey = useRef(requestKey);
   currentRequestKey.current = requestKey;
   const requestSequence = useRef(0);
@@ -115,7 +121,34 @@ export function useOwnedTrackers(
     );
 
     try {
-      const hostedTrackers = await fetchOwnedTrackers(supabase, userId);
+      let hostedTrackers = await fetchOwnedTrackers(supabase, userId);
+      if (apiConfig) {
+        const backend = new PinqevaProvisioningClient(apiConfig, async () => {
+          const token = await getAccessToken();
+          if (!token) throw new Error('Session unavailable');
+          return token;
+        });
+        hostedTrackers = await Promise.all(
+          hostedTrackers.map(async (tracker) => {
+            try {
+              const release = await backend.getFirmwareAvailability(tracker.id);
+              if (release.device_id !== tracker.id) return tracker;
+              return {
+                ...tracker,
+                firmwareVersion: release.current_version ?? tracker.firmwareVersion,
+                firmwareUpdateVersion:
+                  release.update_available && release.latest_version
+                    ? release.latest_version
+                    : undefined,
+              };
+            } catch {
+              // Tracker loading must remain usable if the separately deployed
+              // release API is temporarily unavailable.
+              return tracker;
+            }
+          }),
+        );
+      }
       if (
         currentRequestKey.current !== expectedRequestKey ||
         requestSequence.current !== sequence
@@ -146,7 +179,7 @@ export function useOwnedTrackers(
         refreshing: false,
       });
     }
-  }, [mode, ownerKey, requestKey, userId]);
+  }, [apiConfig, getAccessToken, mode, ownerKey, requestKey, userId]);
 
   useEffect(() => {
     void refresh();

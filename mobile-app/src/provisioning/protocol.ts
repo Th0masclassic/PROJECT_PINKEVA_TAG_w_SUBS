@@ -11,6 +11,11 @@ export const TAG_CHALLENGE_UUID = 'a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const TAG_AUTHORIZATION_PROOF_UUID = 'a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const SUBSCRIPTION_ENTITLEMENT_UUID = 'a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const UTC_TIME_UUID = 'a6f0f00b-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const FIRMWARE_MANIFEST_UUID = 'a6f0f00c-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const FIRMWARE_DATA_UUID = 'a6f0f00d-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const FIRMWARE_CONTROL_UUID = 'a6f0f00e-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const FIRMWARE_STATUS_UUID = 'a6f0f00f-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const FIRMWARE_VERSION_UUID = 'a6f0f010-3e4d-4b1a-9c2e-72d24c8f0a01';
 
 export const ADVERTISEMENT_KEY_LENGTH = 28;
 export const KEY_FINGERPRINT_LENGTH = 32;
@@ -19,9 +24,13 @@ export const TAG_CHALLENGE_LENGTH = 32;
 export const TAG_AUTHORIZATION_PROOF_LENGTH = 32;
 export const SUBSCRIPTION_ENTITLEMENT_LENGTH = 135;
 export const UTC_TIME_LENGTH = 8;
+export const FIRMWARE_MANIFEST_LENGTH = 115;
+export const FIRMWARE_STATUS_LENGTH = 6;
+export const FIRMWARE_VERSION_LENGTH = 3;
 export const TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 export const NON_BONDING_SETUP_CAPABILITY = 0x0020;
 export const UTC_TIME_SYNC_CAPABILITY = 0x0040;
+export const FIRMWARE_UPDATE_CAPABILITY = 0x0080;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
 export const PINKEVA_SERIAL_PATTERN = /^PKV-[0-9A-F]{12}$/;
 
@@ -101,6 +110,34 @@ export function parseProtocolInformation(value: Uint8Array): ProtocolInformation
     firmwareMajor: value[2],
     firmwareMinor: value[3],
     capabilities: value[4] | (value[5] << 8),
+  };
+}
+
+export function parseFirmwareVersion(value: Uint8Array): string {
+  if (value.length !== FIRMWARE_VERSION_LENGTH) {
+    throw new ProvisioningClientError('INVALID_FIRMWARE_VERSION', 'Unexpected firmware version');
+  }
+  return `${value[0]}.${value[1]}.${value[2]}`;
+}
+
+export type FirmwareStatus = {
+  state: number;
+  result: number;
+  receivedBytes: number;
+};
+
+export function parseFirmwareStatus(value: Uint8Array): FirmwareStatus {
+  if (value.length !== FIRMWARE_STATUS_LENGTH) {
+    throw new ProvisioningClientError('INVALID_FIRMWARE_STATUS', 'Unexpected firmware status');
+  }
+  return {
+    state: value[0],
+    result: value[1],
+    receivedBytes:
+      value[2] * 0x1000000 +
+      (value[3] << 16) +
+      (value[4] << 8) +
+      value[5],
   };
 }
 
