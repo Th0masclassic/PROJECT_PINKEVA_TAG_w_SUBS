@@ -20,6 +20,8 @@ export function GoogleTrackerMap({
   focusTrackerId,
   showsUserLocation = false,
   pathCoordinates = EMPTY_PATH,
+  onPressInTracker,
+  onPressOutTracker,
   onLongPressTracker,
   onOpenTracker,
 }: {
@@ -29,6 +31,8 @@ export function GoogleTrackerMap({
   focusTrackerId?: string;
   showsUserLocation?: boolean;
   pathCoordinates?: LatLng[];
+  onPressInTracker?: (trackerId: string) => void;
+  onPressOutTracker?: () => void;
   onLongPressTracker?: (trackerId: string) => void;
   onOpenTracker: (trackerId: string) => void;
 }) {
@@ -148,17 +152,12 @@ export function GoogleTrackerMap({
             <TrackerMapMarker
               tracker={tracker}
               onOpenTracker={onOpenTracker}
+              onPressInTracker={onPressInTracker}
+              onPressOutTracker={onPressOutTracker}
               onLongPressTracker={onLongPressTracker}
             />
           </Marker>
         ))}
-        {pathCoordinates.length ? (
-          <Marker
-            coordinate={pathCoordinates[pathCoordinates.length - 1]}
-            pinColor="#0B57D0"
-            title="Latest location"
-          />
-        ) : null}
       </MapView>
     </View>
   );
@@ -167,10 +166,14 @@ export function GoogleTrackerMap({
 function TrackerMapMarker({
   tracker,
   onOpenTracker,
+  onPressInTracker,
+  onPressOutTracker,
   onLongPressTracker,
 }: {
   tracker: Tracker;
   onOpenTracker: (trackerId: string) => void;
+  onPressInTracker?: (trackerId: string) => void;
+  onPressOutTracker?: () => void;
   onLongPressTracker?: (trackerId: string) => void;
 }) {
   const handledLongPress = useRef(false);
@@ -180,6 +183,8 @@ function TrackerMapMarker({
       accessibilityRole="button"
       accessibilityLabel={tracker.name}
       delayLongPress={3000}
+      onPressIn={() => onPressInTracker?.(tracker.id)}
+      onPressOut={onPressOutTracker}
       onLongPress={() => {
         handledLongPress.current = true;
         onLongPressTracker?.(tracker.id);

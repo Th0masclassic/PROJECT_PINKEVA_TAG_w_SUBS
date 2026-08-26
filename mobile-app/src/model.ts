@@ -1,4 +1,4 @@
-export type MainTab = 'home' | 'trackers' | 'subscriptions' | 'settings';
+export type MainTab = 'home' | 'trackers' | 'map' | 'settings';
 
 export type PairingPhase = 'idle' | 'searching' | 'connecting' | 'installing' | 'success';
 
@@ -40,7 +40,7 @@ export type InfoTopic =
 
 export type AppRoute =
   | { name: 'main' }
-  | { name: 'map' }
+  | { name: 'map'; historyTrackerId?: string }
   | { name: 'tracker'; trackerId: string }
   | { name: 'subscription'; trackerId: string }
   | { name: 'interval'; trackerId: string }

@@ -100,6 +100,32 @@ export function useLocationReports(scope: LocationReportScope) {
     };
   }, [scopeKey]);
 
+  const refreshTracker = useCallback(async (deviceId: string): Promise<DeviceLocationReport> => {
+    const currentScope = scopeRef.current;
+    const isHostedTarget = currentScope.trackers.some(
+      (tracker) => tracker.id === deviceId && tracker.source === 'hosted',
+    );
+    if (!currentScope.enabled || !currentScope.apiConfig || !isHostedTarget) {
+      throw new Error('Location reporting is unavailable for this tracker');
+    }
+
+    const sequence = ++requestSequence.current;
+    setRefreshing(true);
+    try {
+      const report = await requestLocationReport(
+        currentScope.apiConfig,
+        currentScope.getAccessToken,
+        deviceId,
+      );
+      if (requestSequence.current === sequence) {
+        currentScope.updateTrackers((trackers) => applyReport(trackers, report));
+      }
+      return report;
+    } finally {
+      if (requestSequence.current === sequence) setRefreshing(false);
+    }
+  }, [scopeKey]);
+
   useEffect(() => {
     // Invalidate an in-flight request if the authenticated owner or visible
     // device scope changes. A report from the previous account must never be
@@ -108,5 +134,5 @@ export function useLocationReports(scope: LocationReportScope) {
     setRefreshing(false);
   }, [scopeKey]);
 
-  return { refreshing, refresh };
+  return { refreshing, refresh, refreshTracker };
 }

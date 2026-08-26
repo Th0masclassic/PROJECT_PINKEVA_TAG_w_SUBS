@@ -361,10 +361,10 @@ const tabs: { id: MainTab; labelKey: TranslationKey; icon: IconName; activeIcon:
   { id: 'home', labelKey: 'common.home', icon: 'home-outline', activeIcon: 'home' },
   { id: 'trackers', labelKey: 'common.trackers', icon: 'wallet-outline', activeIcon: 'wallet' },
   {
-    id: 'subscriptions',
-    labelKey: 'common.subscriptions',
-    icon: 'card-outline',
-    activeIcon: 'card',
+    id: 'map',
+    labelKey: 'common.map',
+    icon: 'navigate-outline',
+    activeIcon: 'navigate',
   },
   { id: 'settings', labelKey: 'common.settings', icon: 'settings-outline', activeIcon: 'settings' },
 ];

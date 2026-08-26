@@ -5,7 +5,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import type { AuthFeedback, AuthMode, EmailAuthInput } from './src/auth/types';
-import { getUserDisplayName, getUserFirstName } from './src/auth/userNames';
+import { getUserDisplayName } from './src/auth/userNames';
 import { canUseDemoPreview } from './src/auth/demoPreview';
 import { useTrackerBilling } from './src/billing/useTrackerBilling';
 import { BottomNav, Brand, Toast } from './src/components';
@@ -24,7 +24,6 @@ import {
   recordTrackerOpened,
   removeTracker,
   selectBillingDeviceIds,
-  selectRecentTrackers,
   setTrackerIconOverride,
   updateTracker,
 } from './src/model';
@@ -48,7 +47,6 @@ import { PairingModal } from './src/screens/PairingModal';
 import { PasswordResetScreen } from './src/screens/PasswordResetScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { SubscriptionScreen } from './src/screens/SubscriptionScreen';
-import { SubscriptionsScreen } from './src/screens/SubscriptionsScreen';
 import { TrackerDetailScreen } from './src/screens/TrackerDetailScreen';
 import { TrackersScreen } from './src/screens/TrackersScreen';
 import { colors } from './src/theme';
@@ -181,7 +179,6 @@ function AppContent() {
   const trackerPreferencesHydrated =
     auth.ready && trackerPreferencesOwnerId === userId;
   const accountName = getUserDisplayName(auth.user) ?? t('auth.accountFallbackName');
-  const firstName = getUserFirstName(auth.user) ?? t('auth.accountFallbackName');
 
   useEffect(() => {
     if (!auth.ready) return undefined;
@@ -243,7 +240,7 @@ function AppContent() {
     (deviceId: string) => {
       void notificationInbox.refresh();
       void billing.refreshDevice(deviceId);
-      setActiveTab('subscriptions');
+      setActiveTab('trackers');
       setRoute({ name: 'subscription', trackerId: deviceId });
     },
     [billing.refreshDevice, notificationInbox.refresh],
@@ -258,10 +255,6 @@ function AppContent() {
   const mainTracker = useMemo(
     () => displayTrackers.find((tracker) => tracker.id === trackerPreferences.mainTrackerId),
     [displayTrackers, trackerPreferences.mainTrackerId],
-  );
-  const recentTrackers = useMemo(
-    () => selectRecentTrackers(displayTrackers, trackerPreferences.recentTrackerIds),
-    [displayTrackers, trackerPreferences.recentTrackerIds],
   );
   const selectedTracker = useMemo(() => {
     if (
@@ -288,6 +281,9 @@ function AppContent() {
       return [selectedTracker.id];
     }
     if (route.name === 'main' && activeTab === 'trackers') {
+      return displayTrackers.map((tracker) => tracker.id);
+    }
+    if (route.name === 'main' && activeTab === 'map') {
       return displayTrackers.map((tracker) => tracker.id);
     }
     if (route.name === 'main' && activeTab === 'home') {
@@ -397,10 +393,6 @@ function AppContent() {
       return true;
     }
     if (route.name === 'interval' || route.name === 'firmware' || route.name === 'subscription') {
-      if (route.name === 'subscription' && activeTab === 'subscriptions') {
-        setRoute({ name: 'main' });
-        return true;
-      }
       setRoute({ name: 'tracker', trackerId: route.trackerId });
       return true;
     }
@@ -414,7 +406,7 @@ function AppContent() {
       return true;
     }
     return false;
-  }, [activeTab, pairingPhase, route, tagSetup.close, tagSetup.state.phase]);
+  }, [pairingPhase, route, tagSetup.close, tagSetup.state.phase]);
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', back);
@@ -489,11 +481,15 @@ function AppContent() {
   };
 
   const renderAuthenticatedScreen = () => {
-    if (route.name === 'map') {
+    if ((route.name === 'map' || activeTab === 'map') && displayTrackers.length) {
       return (
         <MapScreen
           trackers={displayTrackers}
-          onOpenTracker={openTracker}
+          requestedHistoryTrackerId={
+            route.name === 'map' ? route.historyTrackerId : undefined
+          }
+          onHistoryRequestHandled={() => setRoute({ name: 'main' })}
+          onRequestTrackerLocation={locationReports.refreshTracker}
           onRequestTrackerHistory={requestTrackerHistory}
           onShowTrackers={() => changeTab('trackers')}
           onNotice={showNotice}
@@ -554,13 +550,7 @@ function AppContent() {
           error={billing.errors[selectedTracker.id]}
           mode={billing.mode}
           purchasesEnabled={billing.purchasesEnabled}
-          onBack={() => {
-            if (activeTab === 'subscriptions') {
-              setRoute({ name: 'main' });
-            } else {
-              setRoute({ name: 'tracker', trackerId: selectedTracker.id });
-            }
-          }}
+          onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
           onRetry={() => billing.refreshDevice(selectedTracker.id)}
           onCheckout={(planCode) => billing.startCheckout(selectedTracker.id, planCode)}
           onPortal={(action) => billing.openPortal(selectedTracker.id, action)}
@@ -677,21 +667,6 @@ function AppContent() {
       );
     }
 
-    if (activeTab === 'subscriptions') {
-      return (
-        <SubscriptionsScreen
-          trackers={displayTrackers}
-          subscriptions={billing.subscriptions}
-          subscriptionLoadingIds={billing.loadingIds}
-          onOpenSubscription={(trackerId) => {
-            setActiveTab('subscriptions');
-            setRoute({ name: 'subscription', trackerId });
-          }}
-          onAddTracker={openPairing}
-        />
-      );
-    }
-
     if (activeTab === 'settings') {
       return (
         <SettingsScreen
@@ -709,14 +684,14 @@ function AppContent() {
 
     return (
       <HomeScreen
-        displayName={firstName}
         trackers={displayTrackers}
         mainTracker={mainTracker}
-        recentTrackers={recentTrackers}
-        onOpenMap={() => setRoute({ name: 'map' })}
         onOpenTracker={openTracker}
-        onShowTrackers={() => changeTab('trackers')}
         onAddTracker={openPairing}
+        onOpenHistory={(trackerId) => {
+          setActiveTab('map');
+          setRoute({ name: 'map', historyTrackerId: trackerId });
+        }}
         onToggleLost={(trackerId) => {
           const tracker = trackers.find((item) => item.id === trackerId);
           setTrackers((current) => updateTracker(current, trackerId, { isLost: !tracker?.isLost }));

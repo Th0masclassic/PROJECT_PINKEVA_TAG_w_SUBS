@@ -13,6 +13,8 @@ export function GoogleTrackerMap({
   focusTrackerId,
   showsUserLocation: _showsUserLocation = false,
   pathCoordinates: _pathCoordinates = EMPTY_PATH,
+  onPressInTracker,
+  onPressOutTracker,
   onLongPressTracker,
   onOpenTracker,
 }: {
@@ -22,6 +24,8 @@ export function GoogleTrackerMap({
   focusTrackerId?: string;
   showsUserLocation?: boolean;
   pathCoordinates?: { latitude: number; longitude: number }[];
+  onPressInTracker?: (trackerId: string) => void;
+  onPressOutTracker?: () => void;
   onLongPressTracker?: (trackerId: string) => void;
   onOpenTracker: (trackerId: string) => void;
 }) {
@@ -37,6 +41,8 @@ export function GoogleTrackerMap({
             accessibilityRole="button"
             accessibilityLabel={`${tracker.name} map marker`}
             delayLongPress={3000}
+            onPressIn={() => onPressInTracker?.(tracker.id)}
+            onPressOut={onPressOutTracker}
             onLongPress={() => onLongPressTracker?.(tracker.id)}
             onPress={() => onOpenTracker(tracker.id)}
             style={[styles.marker, { left: `${left}%`, top: `${top}%` }]}
