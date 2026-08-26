@@ -43,6 +43,12 @@ GRANT SELECT, INSERT, UPDATE
   ON TABLE public.billing_checkout_session TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE
   ON TABLE public.subscription_cancellation_outbox TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE
+  ON TABLE public.device_entitlement_sync TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE
+  ON TABLE public.mobile_push_token TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE
+  ON TABLE public.user_notification TO pinqeva_backend;
 
 ALTER ROLE pinqeva_backend SET search_path = public, pg_catalog;
 ALTER ROLE pinqeva_backend SET statement_timeout = '15s';

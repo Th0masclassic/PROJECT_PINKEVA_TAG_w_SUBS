@@ -276,6 +276,9 @@ class Settings:
     admin_allowed_origins: tuple[str, ...] = ()
     admin_require_aal2: bool = True
     dev_bypass_bootstrap_auth: bool = False
+    notification_worker_enabled: bool = False
+    notification_poll_interval_seconds: int = 60
+    expo_push_access_token: str = ""
 
     def __post_init__(self) -> None:
         if len(
@@ -321,6 +324,19 @@ def get_settings() -> Settings:
     if not session_ttl <= claim_ttl <= 172800:
         raise ConfigurationError(
             "PINQEVA_CLAIM_TTL_SECONDS must be >= the session TTL and <= 172800"
+        )
+
+    try:
+        notification_poll_interval = int(
+            os.getenv("PINQEVA_NOTIFICATION_POLL_INTERVAL_SECONDS", "60")
+        )
+    except ValueError:
+        raise ConfigurationError(
+            "PINQEVA_NOTIFICATION_POLL_INTERVAL_SECONDS must be an integer"
+        ) from None
+    if not 15 <= notification_poll_interval <= 3600:
+        raise ConfigurationError(
+            "PINQEVA_NOTIFICATION_POLL_INTERVAL_SECONDS must be between 15 and 3600"
         )
 
     try:
@@ -488,4 +504,10 @@ def get_settings() -> Settings:
             "PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH",
             os.getenv("PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH", "false"),
         ),
+        notification_worker_enabled=parse_boolean(
+            "PINQEVA_NOTIFICATION_WORKER_ENABLED",
+            os.getenv("PINQEVA_NOTIFICATION_WORKER_ENABLED", "true"),
+        ),
+        notification_poll_interval_seconds=notification_poll_interval,
+        expo_push_access_token=os.getenv("EXPO_PUSH_ACCESS_TOKEN", "").strip(),
     )

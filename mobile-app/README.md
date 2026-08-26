@@ -16,10 +16,19 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
 - Per-tag advertising interval and software-update flows.
 - A visible subscription state on every tracker plus a dedicated per-tag plan,
   renewal, cancellation-at-period-end, checkout, and management screen.
+- Native renewal notifications and a durable per-tag update state that remains
+  pending until the app reads the exact signed entitlement back from the tag.
 
 ## Connection model
 
-Pinkeva tags are not shown as permanently connected. During normal use a tag is shown as `Nearby`, `Away`, or with its last-reported time. A temporary `Connecting` / `Connected` state appears only while adding a tag, changing its advertising interval, or installing tag software.
+Pinkeva tags are not shown as permanently connected. During normal use a tag is shown as `Nearby`, `Away`, or with its last-reported time. A temporary `Connecting` / `Connected` state appears only while adding a tag, changing its advertising interval, installing tag software, or installing a renewed entitlement.
+
+BLE connections cannot be resumed after they have disconnected. For a renewal,
+hold the configured tag button continuously for five seconds. Firmware then
+opens a connectable maintenance advertisement for two minutes, and the app
+scans and creates a fresh connection. Normal finder advertising is
+non-connectable and resumes after the exact signed packet is persisted and
+verified.
 
 ## Configure tag setup
 
@@ -38,9 +47,9 @@ included in the native build.
 
 Bluetooth setup needs a native development or release build on a physical
 iPhone or Android phone. It is unavailable in Expo Go, the web build, and the
-iOS Simulator. The current firmware deliberately finishes in suspended
-maintenance mode after a successful claim; finder advertising remains disabled
-until signed per-tag subscription entitlements are implemented.
+iOS Simulator. The current firmware installs the first signed per-tag
+entitlement in the claim session. Finder advertising starts only after the
+entitlement is persisted and verified by the tag.
 
 The mobile client uses a temporary, non-bonding BLE session for setup. It does
 not call a platform bond/pair API, does not enable automatic reconnect, and
@@ -91,6 +100,14 @@ Each subscription is displayed and managed for one tag. No Stripe secret,
 publishable key, or card form belongs in the mobile app; checkout and portal
 URLs are validated and opened in the system's secure browser.
 
+Stripe renews a recurring subscription and informs the backend without the app
+being open. The backend advances the paid period and records the physical tag
+as `pending`. The subscription screen then offers the tag-update action until
+the app writes the new signed expiry, reads all 135 bytes back over BLE,
+verifies the SHA-256 digest, and acknowledges that exact counter and period to
+the backend. A Stripe renewal is therefore app-independent, but updating an
+offline ESP32 necessarily requires the owner to bring the phone near the tag.
+
 Checkout buttons are enabled whenever the authenticated app has a valid HTTPS
 `EXPO_PUBLIC_API_URL`. Missing API/auth configuration still fails closed. The
 backend alone selects Stripe Price IDs and returns a validated Stripe-hosted
@@ -107,6 +124,21 @@ active ownership and safe device projection. Static pairing remains available
 only inside the explicit development demo; it is excluded from subscription
 requests. Local and demo IDs are deliberately rejected by the billing API
 client instead of being sent to Stripe.
+
+## Configure renewal notifications
+
+Set `EXPO_PUBLIC_EAS_PROJECT_ID` to the UUID of the EAS project used for the
+native build and configure APNs/FCM credentials for that project. On the first
+authenticated native session, the app asks for notification permission and
+registers an installation-scoped Expo push token with the backend. Web and
+Expo Go are not renewal-notification targets.
+
+The backend schedules one durable notification per subscription period at one
+week before renewal, one day before renewal, and expiry. A separate notice is
+created when a renewed entitlement remains absent from the tag for ten minutes.
+Notification permission can be denied without affecting billing or BLE tag
+updates; the backend inbox retains the event even when no push destination is
+available.
 
 ## Configure Google Maps
 

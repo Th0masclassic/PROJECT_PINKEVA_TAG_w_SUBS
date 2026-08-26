@@ -44,6 +44,7 @@
       ],
       "expo-system-ui",
       "expo-secure-store",
+      "expo-notifications",
       "expo-web-browser",
       "expo-font",
       "./plugins/withPersonalTeamDevelopment",

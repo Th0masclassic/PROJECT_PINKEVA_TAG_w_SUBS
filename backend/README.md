@@ -1,6 +1,6 @@
 # Pinqeva provisioning backend
 
-This service implements the payment-gated key-lifecycle portion of protocol v1.3:
+This service implements the payment-gated key-lifecycle portion of protocol v1.5:
 
 1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
 2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 45 minutes.
@@ -258,6 +258,22 @@ only then enables finder-network advertising. The backend signer is configured
 with `PINQEVA_ENTITLEMENT_PRIVATE_KEY`; the matching public key is embedded in
 the firmware.
 
+Issuance creates or updates a `device_entitlement_sync` row for the exact
+subscription period and packet digest. After writing, the mobile client reads
+the complete packet back from the ESP32 and acknowledges it with:
+
+```http
+POST /v1/devices/{device_id}/entitlements/acknowledge
+Authorization: Bearer <Supabase access token>
+Content-Type: application/json
+
+{"counter":12,"expires_at":"2026-09-26T12:00:00Z","packet_sha256_base64url":"<SHA-256>"}
+```
+
+Only an exact current counter, period, digest, owner, and device transition the
+row from `issued` to `installed`. This lets operators distinguish “Stripe paid”
+from “the physical tag has the new date.”
+
 ## Per-tag Stripe subscriptions
 
 Billing is attached to a physical tag, not to an account-wide entitlement. A
@@ -320,6 +336,24 @@ ownership ended while Stripe created a subscription, local entitlement is
 stopped immediately in the webhook transaction and a durable outbox requests
 immediate cancellation without proration or a final invoice; only a later
 provider-terminal signed webhook confirms that cancellation.
+
+Recurring renewal does not depend on the mobile app. On `invoice.paid`, the
+handler retrieves both the authoritative invoice and subscription and applies
+the advanced period atomically before storing the invoice, even if
+`customer.subscription.updated` arrives later. The subscription trigger then
+queues a new pending physical-tag delivery period. No backend can update an
+offline BLE tag directly, so the owner still needs one fresh, button-opened BLE
+session to install that renewed date.
+
+The background notification worker creates idempotent inbox/outbox rows seven
+days before the period end, one day before it, at expiry, and when a new tag
+entitlement remains uninstalled for ten minutes. Native clients register Expo
+destinations at `POST /v1/notifications/push-token`; the worker leases due jobs,
+uses exponential retry for temporary failures, and disables destinations that
+Expo reports as unregistered. `GET /v1/notifications` exposes the durable inbox
+independently of push delivery. Set `PINQEVA_NOTIFICATION_WORKER_ENABLED=true`,
+configure the poll interval, and set `EXPO_PUSH_ACCESS_TOKEN` when enhanced Expo
+push security is enabled.
 
 Dashboard setup still requires an operator to:
 

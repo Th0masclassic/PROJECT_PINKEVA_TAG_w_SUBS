@@ -42,6 +42,7 @@ import {
   provisioningStatusIsReady,
   toBleBase64,
 } from './protocol.ts';
+import { sha256Digest } from './digest.ts';
 
 export type ProvisioningProgress =
   | 'connecting'
@@ -419,19 +420,33 @@ export class TagProvisioner {
       );
     }
     const entitlementPacket = decodeBase64Url(entitlement.entitlement_base64url);
+    const expectedPacketDigest = decodeBase64Url(
+      entitlement.packet_sha256_base64url,
+    );
     const authorizationProof = decodeBase64Url(
       entitlement.tag_authorization_proof_base64url,
     );
     if (entitlementPacket.length !== SUBSCRIPTION_ENTITLEMENT_LENGTH) {
       entitlementPacket.fill(0);
+      expectedPacketDigest.fill(0);
       authorizationProof.fill(0);
       throw new ProvisioningClientError(
         'INVALID_BACKEND_ENTITLEMENT',
         'Unexpected entitlement packet',
       );
     }
+    if (expectedPacketDigest.length !== 32) {
+      entitlementPacket.fill(0);
+      expectedPacketDigest.fill(0);
+      authorizationProof.fill(0);
+      throw new ProvisioningClientError(
+        'INVALID_BACKEND_ENTITLEMENT',
+        'Unexpected entitlement digest',
+      );
+    }
     if (authorizationProof.length !== TAG_AUTHORIZATION_PROOF_LENGTH) {
       entitlementPacket.fill(0);
+      expectedPacketDigest.fill(0);
       authorizationProof.fill(0);
       throw new ProvisioningClientError(
         'INVALID_BACKEND_AUTHORIZATION',
@@ -462,15 +477,11 @@ export class TagProvisioner {
         },
       );
       cancelReadyWait = readyWait.cancel;
-      try {
-        await input.device.writeCharacteristicWithResponseForService(
-          PINKEVA_SERVICE_UUID,
-          SUBSCRIPTION_ENTITLEMENT_UUID,
-          toBleBase64(entitlementPacket),
-        );
-      } finally {
-        entitlementPacket.fill(0);
-      }
+      await input.device.writeCharacteristicWithResponseForService(
+        PINKEVA_SERVICE_UUID,
+        SUBSCRIPTION_ENTITLEMENT_UUID,
+        toBleBase64(entitlementPacket),
+      );
 
       const currentStatus = await input.device
         .readCharacteristicForService(PINKEVA_SERVICE_UUID, PROVISIONING_STATUS_UUID)
@@ -481,8 +492,53 @@ export class TagProvisioner {
       ) {
         await readyWait.promise;
       }
+
+      const installedValue = await input.device.readCharacteristicForService(
+        PINKEVA_SERVICE_UUID,
+        SUBSCRIPTION_ENTITLEMENT_UUID,
+      );
+      const installedPacket = decodeBleBase64(installedValue.value);
+      if (!bytesEqual(installedPacket, entitlementPacket)) {
+        installedPacket.fill(0);
+        throw new ProvisioningClientError(
+          'ENTITLEMENT_READBACK_MISMATCH',
+          'The tag did not persist the exact signed entitlement',
+        );
+      }
+      let actualPacketDigest: Uint8Array;
+      try {
+        actualPacketDigest = await sha256Digest(installedPacket);
+      } finally {
+        installedPacket.fill(0);
+      }
+      if (!bytesEqual(actualPacketDigest, expectedPacketDigest)) {
+        actualPacketDigest.fill(0);
+        throw new ProvisioningClientError(
+          'ENTITLEMENT_DIGEST_MISMATCH',
+          'The installed entitlement digest does not match the backend',
+        );
+      }
+      const packetSha256Base64url = encodeBase64Url(actualPacketDigest);
+      actualPacketDigest.fill(0);
+      const acknowledgement = await this.backend.acknowledgeDeviceEntitlement({
+        deviceId: input.deviceId,
+        entitlement,
+        packetSha256Base64url,
+      });
+      if (
+        acknowledgement.device_id !== input.deviceId ||
+        acknowledgement.counter !== entitlement.counter ||
+        Date.parse(acknowledgement.expires_at) !== Date.parse(entitlement.expires_at)
+      ) {
+        throw new ProvisioningClientError(
+          'BACKEND_BINDING_MISMATCH',
+          'The entitlement acknowledgement is bound to a different update',
+        );
+      }
       return entitlement;
     } finally {
+      entitlementPacket.fill(0);
+      expectedPacketDigest.fill(0);
       cancelReadyWait?.();
       statusSubscription?.remove();
     }

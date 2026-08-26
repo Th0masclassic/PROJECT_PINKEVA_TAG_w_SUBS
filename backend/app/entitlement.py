@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import struct
 from datetime import UTC, datetime
 from uuid import UUID
@@ -11,7 +12,12 @@ from psycopg import AsyncConnection
 from .billing import BillingError
 from .config import Settings
 from .crypto import b64url_decode_exact, b64url_encode
-from .models import DeviceEntitlementRequest, DeviceEntitlementResponse
+from .models import (
+    DeviceEntitlementAcknowledge,
+    DeviceEntitlementAcknowledgeResponse,
+    DeviceEntitlementRequest,
+    DeviceEntitlementResponse,
+)
 from .service import ProvisioningService
 
 
@@ -165,6 +171,35 @@ class EntitlementService:
             counter=counter,
             private_key=self.settings.entitlement_private_key,
         )
+        packet_digest = hashlib.sha256(packet).digest()
+        await connection.execute(
+            """
+            INSERT INTO public.device_entitlement_sync (
+                user_id, device_id, subscription_id,
+                entitlement_expires_at, status, issued_counter,
+                packet_sha256, issued_at
+            ) VALUES (%s, %s, %s, %s, 'issued', %s, %s, %s)
+            ON CONFLICT (
+                subscription_id, device_id, entitlement_expires_at
+            ) DO UPDATE SET
+                user_id = EXCLUDED.user_id,
+                status = 'issued',
+                issued_counter = EXCLUDED.issued_counter,
+                packet_sha256 = EXCLUDED.packet_sha256,
+                issued_at = EXCLUDED.issued_at,
+                installed_at = NULL,
+                updated_at = now()
+            """,
+            (
+                user_id,
+                device_id,
+                subscription["id"],
+                period_end,
+                counter,
+                packet_digest.hex(),
+                now,
+            ),
+        )
         # Keep the challenge parser here as a defensive check if this service
         # is called directly outside Pydantic request validation.
         b64url_decode_exact(request.tag_challenge_base64url, 32)
@@ -173,6 +208,71 @@ class EntitlementService:
             serial_number=request.serial_number,
             entitlement_base64url=b64url_encode(packet),
             tag_authorization_proof_base64url=b64url_encode(authorization_proof),
+            packet_sha256_base64url=b64url_encode(packet_digest),
             expires_at=period_end,
             counter=counter,
+        )
+
+    async def acknowledge(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        request: DeviceEntitlementAcknowledge,
+    ) -> DeviceEntitlementAcknowledgeResponse:
+        """Record installation only after the app has read the packet back.
+
+        The BLE client compares the complete signed packet byte-for-byte before
+        sending this digest. The authenticated acknowledgement is idempotent,
+        but it cannot acknowledge an older issuance after a newer counter has
+        replaced it for the same billing period.
+        """
+
+        packet_digest = b64url_decode_exact(
+            request.packet_sha256_base64url, 32
+        ).hex()
+        query = await connection.execute(
+            """
+            SELECT sync.id, sync.entitlement_expires_at
+              FROM public.device_entitlement_sync sync
+              JOIN public.ownership ownership
+                ON ownership.device_id = sync.device_id
+               AND ownership.user_id = %s
+               AND ownership.ended_at IS NULL
+             WHERE sync.user_id = %s
+               AND sync.device_id = %s
+               AND sync.issued_counter = %s
+               AND sync.entitlement_expires_at = %s
+               AND sync.packet_sha256 = %s
+               AND sync.status IN ('issued', 'installed')
+             FOR UPDATE OF sync
+            """,
+            (
+                user_id,
+                user_id,
+                device_id,
+                request.counter,
+                request.expires_at,
+                packet_digest,
+            ),
+        )
+        row = await query.fetchone()
+        if row is None:
+            raise BillingError("ENTITLEMENT_ACK_REJECTED", 409)
+        await connection.execute(
+            """
+            UPDATE public.device_entitlement_sync
+               SET status = 'installed',
+                   installed_at = COALESCE(installed_at, now()),
+                   updated_at = now()
+             WHERE id = %s
+            """,
+            (row["id"],),
+        )
+        return DeviceEntitlementAcknowledgeResponse(
+            device_id=device_id,
+            counter=request.counter,
+            expires_at=row["entitlement_expires_at"],
+            status="installed",
         )

@@ -22,11 +22,11 @@
 #include "sdkconfig.h"
 
 #ifndef CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
-#define CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP 1
+#define CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP 0
 #endif
 
 #ifndef CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY
-#define CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY 1
+#define CONFIG_PINQEVA_LOG_ADVERTISEMENT_KEY 0
 #endif
 
 namespace {
@@ -46,12 +46,8 @@ constexpr size_t ENTITLEMENT_SIGNATURE_MAX_SIZE = 72;
 constexpr size_t ENTITLEMENT_SIGNATURE_MIN_SIZE = 70;
 constexpr uint8_t ENTITLEMENT_FINDER_CAPABILITY = 0x01;
 constexpr uint64_t AUTHORIZATION_TIMEOUT_MICROSECONDS = 30ULL * 1000ULL * 1000ULL;
-// Development fallback clock: 2026-08-25 18:00:00 in Portugal (WEST),
-// represented as 2026-08-25 17:00:00 UTC because entitlement timestamps are
-// encoded as Unix UTC seconds by the backend.
-constexpr uint64_t DEFAULT_TRUSTED_CLOCK_EPOCH = 1787677200ULL;
-constexpr uint64_t CLOCK_CHECKPOINT_INTERVAL_MICROSECONDS =
-    60ULL * 60ULL * 1000ULL * 1000ULL;
+constexpr uint64_t MAINTENANCE_WINDOW_MICROSECONDS =
+    2ULL * 60ULL * 1000ULL * 1000ULL;
 constexpr uint64_t CLOCK_SYNC_SKEW_TOLERANCE_SECONDS = 5ULL * 60ULL;
 constexpr size_t MAX_STAGED_VALUE_SIZE = SUBSCRIPTION_ENTITLEMENT_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
@@ -163,10 +159,12 @@ constexpr uint16_t CHARACTER_DECLARATION_UUID = ESP_GATT_UUID_CHAR_DECLARE;
 constexpr uint16_t CLIENT_CONFIG_UUID = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
 constexpr uint8_t READ_PROPERTY = ESP_GATT_CHAR_PROP_BIT_READ;
 constexpr uint8_t WRITE_PROPERTY = ESP_GATT_CHAR_PROP_BIT_WRITE;
+constexpr uint8_t READ_WRITE_PROPERTY =
+    ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_WRITE;
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-// Protocol 1.4, firmware 0.1. Capability bit 0x10 requires a backend-issued,
+// Protocol 1.5, firmware 0.2. Capability bit 0x10 requires a backend-issued,
 // nonce-bound authorization proof before any provisioning/reset write. The
 // checked-in development profile also advertises bit 0x20: setup deliberately
 // avoids OS pairing/bonding and therefore must never be shipped as the final
@@ -174,9 +172,9 @@ constexpr uint8_t READ_NOTIFY_PROPERTY =
 // Bit 0x40 asks an authorized phone to provide Unix UTC on each connection.
 uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
     1,
-    4,
+    5,
     0,
-    1,
+    2,
     static_cast<uint8_t>(
         0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
@@ -234,7 +232,7 @@ bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
 esp_timer_handle_t entitlement_expiry_timer = nullptr;
-esp_timer_handle_t clock_checkpoint_timer = nullptr;
+esp_timer_handle_t maintenance_window_timer = nullptr;
 uint64_t entitlement_issued_epoch = 0;
 uint64_t entitlement_expires_epoch = 0;
 uint64_t trusted_clock_epoch = 0;
@@ -243,6 +241,9 @@ uint64_t current_entitlement_counter = 0;
 bool entitlement_time_trusted = false;
 uint8_t pending_adv_configuration = 0;
 bool random_address_change_pending = false;
+bool advertising_active = false;
+bool advertising_refresh_pending = false;
+bool maintenance_window_open = false;
 
 uint8_t staged_value[MAX_STAGED_VALUE_SIZE] = {};
 bool staged_value_bytes[MAX_STAGED_VALUE_SIZE] = {};
@@ -282,10 +283,10 @@ esp_ble_adv_params_t setup_adv_params = {
 };
 
 esp_ble_adv_params_t suspended_adv_params = {
-    .adv_int_min = 0x0640,  // 1 second maintenance/renewal window.
-    .adv_int_max = 0x0C80,  // 2 seconds; never contains finder payload.
+    .adv_int_min = 0x0190,  // 250 ms during a user-requested maintenance window.
+    .adv_int_max = 0x0280,  // 400 ms.
     .adv_type = ADV_TYPE_IND,
-    .own_addr_type = BLE_ADDR_TYPE_PUBLIC,
+    .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .peer_addr = {0},
     .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
     .channel_map = ADV_CHNL_ALL,
@@ -293,9 +294,9 @@ esp_ble_adv_params_t suspended_adv_params = {
 };
 
 esp_ble_adv_params_t finder_adv_params = {
-    .adv_int_min = 0x01E0,  // 300 ms, matching the legacy ESP32 test script.
-    .adv_int_max = 0x01E0,
-    .adv_type = ADV_TYPE_IND,
+    .adv_int_min = 0x0C80,  // 2 seconds: low duty-cycle Find My broadcast.
+    .adv_int_max = 0x0C80,
+    .adv_type = ADV_TYPE_NONCONN_IND,
     .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .peer_addr = {0},
     .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
@@ -481,12 +482,12 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           ESP_GATT_PERM_READ,
           sizeof(uint8_t),
           sizeof(uint8_t),
-          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+          const_cast<uint8_t *>(&READ_WRITE_PROPERTY)}},
     [SUBSCRIPTION_ENTITLEMENT_VALUE] =
         {{ESP_GATT_RSP_BY_APP},
          {ESP_UUID_LEN_128,
           const_cast<uint8_t *>(SUBSCRIPTION_ENTITLEMENT_UUID),
-          SETUP_WRITE_PERMISSION,
+          static_cast<uint16_t>(SETUP_READ_PERMISSION | SETUP_WRITE_PERMISSION),
           SUBSCRIPTION_ENTITLEMENT_SIZE,
           0,
           subscription_entitlement_attribute}},
@@ -669,9 +670,20 @@ void configure_advertising_for_mode() {
     if (active_gatts_if == ESP_GATT_IF_NONE) {
         return;
     }
-    pending_adv_configuration = ADV_CONFIG_FLAG | SCAN_RSP_CONFIG_FLAG;
+    const bool maintenance_frame =
+        maintenance_window_open && ble_mode != BLEMode::SETUP;
+    const bool setup_frame = ble_mode == BLEMode::SETUP || maintenance_frame;
+    if (ble_mode == BLEMode::SUSPENDED && !maintenance_frame) {
+        pending_adv_configuration = 0;
+        advertising_configuration_failed = false;
+        random_address_change_pending = false;
+        return;
+    }
+
+    pending_adv_configuration =
+        ADV_CONFIG_FLAG | (setup_frame ? SCAN_RSP_CONFIG_FLAG : 0);
     advertising_configuration_failed = false;
-    if (ble_mode == BLEMode::TRACKER) {
+    if (ble_mode == BLEMode::TRACKER && !maintenance_frame) {
         random_address_change_pending = true;
         esp_err_t address_error = esp_ble_gap_set_rand_addr(finder_ble_address);
         if (address_error != ESP_OK) {
@@ -679,7 +691,7 @@ void configure_advertising_for_mode() {
             ESP_LOGE(LOG_TAG, "Could not activate finder BLE identity: %s",
                      esp_err_to_name(address_error));
         }
-    } else if (ble_mode == BLEMode::SETUP) {
+    } else {
         random_address_change_pending = true;
         esp_err_t address_error = esp_ble_gap_set_rand_addr(setup_ble_address);
         if (address_error != ESP_OK) {
@@ -687,15 +699,11 @@ void configure_advertising_for_mode() {
             ESP_LOGE(LOG_TAG, "Could not activate setup BLE identity: %s",
                      esp_err_to_name(address_error));
         }
-    } else {
-        random_address_change_pending = false;
     }
 
-    uint8_t *advertisement_data =
-        ble_mode == BLEMode::TRACKER ? finder_adv_data : setup_adv_data;
+    uint8_t *advertisement_data = setup_frame ? setup_adv_data : finder_adv_data;
     size_t advertisement_data_size =
-        ble_mode == BLEMode::TRACKER ? sizeof(finder_adv_data)
-                                     : sizeof(setup_adv_data);
+        setup_frame ? sizeof(setup_adv_data) : sizeof(finder_adv_data);
     esp_err_t error = esp_ble_gap_config_adv_data_raw(
         advertisement_data, advertisement_data_size);
     if (error != ESP_OK) {
@@ -704,24 +712,31 @@ void configure_advertising_for_mode() {
         ESP_LOGE(LOG_TAG, "Could not configure BLE advertisement: %s",
                  esp_err_to_name(error));
     }
-    error = esp_ble_gap_config_scan_rsp_data_raw(
-        setup_scan_response, sizeof(setup_scan_response));
-    if (error != ESP_OK) {
-        advertising_configuration_failed = true;
-        pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
-        ESP_LOGE(LOG_TAG, "Could not configure Pinkeva scan response: %s",
-                 esp_err_to_name(error));
+    if (setup_frame) {
+        error = esp_ble_gap_config_scan_rsp_data_raw(
+            setup_scan_response, sizeof(setup_scan_response));
+        if (error != ESP_OK) {
+            advertising_configuration_failed = true;
+            pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
+            ESP_LOGE(LOG_TAG, "Could not configure Pinkeva scan response: %s",
+                     esp_err_to_name(error));
+        }
     }
 }
 
-void try_start_maintenance_advertising() {
+void try_start_advertising() {
     if (!connected && service_started && pending_adv_configuration == 0 &&
         !advertising_configuration_failed && !random_address_change_pending) {
-        esp_ble_adv_params_t *parameters = &suspended_adv_params;
+        const bool maintenance_frame =
+            maintenance_window_open && ble_mode != BLEMode::SETUP;
+        if (ble_mode == BLEMode::SUSPENDED && !maintenance_frame) {
+            return;
+        }
+        esp_ble_adv_params_t *parameters = &finder_adv_params;
         if (ble_mode == BLEMode::SETUP) {
             parameters = &setup_adv_params;
-        } else if (ble_mode == BLEMode::TRACKER) {
-            parameters = &finder_adv_params;
+        } else if (maintenance_frame) {
+            parameters = &suspended_adv_params;
         }
         esp_err_t error = esp_ble_gap_start_advertising(parameters);
         if (error != ESP_OK) {
@@ -729,6 +744,23 @@ void try_start_maintenance_advertising() {
                      esp_err_to_name(error));
         }
     }
+}
+
+void request_advertising_refresh() {
+    if (connected) {
+        advertising_refresh_pending = true;
+        return;
+    }
+    if (advertising_active) {
+        advertising_refresh_pending = true;
+        const esp_err_t error = esp_ble_gap_stop_advertising();
+        if (error == ESP_OK) return;
+        ESP_LOGW(LOG_TAG, "Could not stop advertising for refresh: %s",
+                 esp_err_to_name(error));
+        advertising_active = false;
+    }
+    advertising_refresh_pending = false;
+    configure_advertising_for_mode();
 }
 
 uint64_t read_uint64_be(const uint8_t *value) {
@@ -818,15 +850,25 @@ uint64_t trusted_entitlement_now() {
     return trusted_clock_epoch + static_cast<uint64_t>(elapsed / 1000000LL);
 }
 
-void clock_checkpoint_callback(void *) {
+void schedule_entitlement_expiry() {
+    if (entitlement_expiry_timer == nullptr) return;
+    esp_timer_stop(entitlement_expiry_timer);
+    if (ble_mode != BLEMode::TRACKER || !entitlement_time_trusted ||
+        entitlement_expires_epoch == 0) {
+        return;
+    }
     const uint64_t current_epoch = trusted_entitlement_now();
-    if (current_epoch == 0) return;
-    const esp_err_t error = save_trusted_clock_epoch(current_epoch);
+    const uint64_t remaining_seconds =
+        current_epoch < entitlement_expires_epoch
+            ? entitlement_expires_epoch - current_epoch
+            : 0;
+    const uint64_t delay_microseconds =
+        std::max<uint64_t>(1, remaining_seconds * 1000ULL * 1000ULL);
+    const esp_err_t error = esp_timer_start_once(
+        entitlement_expiry_timer, delay_microseconds);
     if (error != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "UTC clock checkpoint failed: %s",
+        ESP_LOGE(LOG_TAG, "Could not schedule entitlement expiry: %s",
                  esp_err_to_name(error));
-    } else {
-        ESP_LOGI(LOG_TAG, "UTC clock checkpoint saved");
     }
 }
 
@@ -869,6 +911,7 @@ bool activate_stored_entitlement(uint64_t current_epoch) {
     entitlement_expires_epoch = stored_expires_epoch;
     ble_mode = BLEMode::TRACKER;
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
+    schedule_entitlement_expiry();
     return true;
 }
 
@@ -880,16 +923,18 @@ esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
     }
     const uint64_t requested_epoch = read_uint64_be(value);
     const uint64_t current_epoch = trusted_entitlement_now();
+    const uint64_t rollback_floor =
+        entitlement_time_trusted ? current_epoch : trusted_clock_epoch;
     if (requested_epoch == 0 ||
-        (current_epoch > requested_epoch &&
-         current_epoch - requested_epoch > CLOCK_SYNC_SKEW_TOLERANCE_SECONDS)) {
+        (rollback_floor > requested_epoch &&
+         rollback_floor - requested_epoch > CLOCK_SYNC_SKEW_TOLERANCE_SECONDS)) {
         ESP_LOGW(LOG_TAG, "Rejected UTC clock rollback");
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::INVALID_VALUE);
         return ESP_GATT_INVALID_PDU;
     }
 
-    const uint64_t accepted_epoch = std::max(requested_epoch, current_epoch);
+    const uint64_t accepted_epoch = std::max(requested_epoch, rollback_floor);
     const esp_err_t error = save_trusted_clock_epoch(accepted_epoch);
     if (error != ESP_OK) {
         ESP_LOGE(LOG_TAG, "UTC clock persistence failed: %s",
@@ -911,10 +956,11 @@ esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
     if (ble_mode != BLEMode::SETUP) {
         if (!activate_stored_entitlement(accepted_epoch)) {
             ble_mode = BLEMode::SUSPENDED;
+            schedule_entitlement_expiry();
             update_status(ProvisioningState::SUSPENDED,
                           ProvisioningResult::ENTITLEMENT_REJECTED);
         }
-        configure_advertising_for_mode();
+        request_advertising_refresh();
     }
     ESP_LOGI(LOG_TAG, "UTC clock synchronized and persisted");
     return ESP_GATT_OK;
@@ -922,14 +968,24 @@ esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
 
 void entitlement_expiry_callback(void *) {
     if (ble_mode != BLEMode::TRACKER || !entitlement_time_trusted) return;
-    if (trusted_entitlement_now() < entitlement_expires_epoch) return;
+    if (trusted_entitlement_now() < entitlement_expires_epoch) {
+        schedule_entitlement_expiry();
+        return;
+    }
 
     ble_mode = BLEMode::SUSPENDED;
-    esp_ble_gap_stop_advertising();
+    maintenance_window_open = false;
     update_status(ProvisioningState::SUSPENDED,
                   ProvisioningResult::ENTITLEMENT_REJECTED);
-    configure_advertising_for_mode();
+    request_advertising_refresh();
     ESP_LOGW(LOG_TAG, "Subscription entitlement expired; finder advertising stopped");
+}
+
+void maintenance_window_timeout_callback(void *) {
+    if (!maintenance_window_open) return;
+    maintenance_window_open = false;
+    ESP_LOGI(LOG_TAG, "Maintenance advertising window closed");
+    request_advertising_refresh();
 }
 
 esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
@@ -1036,8 +1092,13 @@ esp_gatt_status_t persist_entitlement(const uint8_t *entitlement, size_t length)
     entitlement_issued_epoch = issued_epoch;
     entitlement_expires_epoch = expires_epoch;
     ble_mode = BLEMode::TRACKER;
+    maintenance_window_open = false;
+    if (maintenance_window_timer != nullptr) {
+        esp_timer_stop(maintenance_window_timer);
+    }
+    schedule_entitlement_expiry();
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    configure_advertising_for_mode();
+    request_advertising_refresh();
     ESP_LOGI(LOG_TAG, "Signed subscription entitlement accepted; finder advertising enabled");
     return ESP_GATT_OK;
 }
@@ -1119,10 +1180,12 @@ esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
     entitlement_issued_epoch = 0;
     entitlement_expires_epoch = 0;
     ble_mode = BLEMode::SETUP;
+    maintenance_window_open = false;
+    schedule_entitlement_expiry();
     bond_cleanup_pending = true;
     update_status(ProvisioningState::UNPROVISIONED,
                   ProvisioningResult::SUCCESS);
-    configure_advertising_for_mode();
+    request_advertising_refresh();
     ESP_LOGI(LOG_TAG, "Authenticated reset completed; key material erased");
     return ESP_GATT_OK;
 }
@@ -1385,6 +1448,12 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             std::memcpy(attribute_handles, param->add_attr_tab.handles,
                         sizeof(attribute_handles));
+            if (current_entitlement_counter > 0) {
+                esp_ble_gatts_set_attr_value(
+                    attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE],
+                    SUBSCRIPTION_ENTITLEMENT_SIZE,
+                    subscription_entitlement_attribute);
+            }
             esp_err_t error = esp_ble_gatts_start_service(attribute_handles[SERVICE]);
             if (error != ESP_OK) {
                 ESP_LOGE(LOG_TAG, "Could not start Pinkeva GATT service %s: %s",
@@ -1397,11 +1466,12 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 service_started = true;
                 ESP_LOGI(LOG_TAG, "Pinkeva GATT service ready: %s",
                          PINKEVA_SERVICE_UUID_STRING);
-                try_start_maintenance_advertising();
+                try_start_advertising();
             }
             break;
         case ESP_GATTS_CONNECT_EVT:
             connected = true;
+            advertising_active = false;
             active_connection_id = param->connect.conn_id;
             notifications_enabled = false;
             ccc_value[0] = ccc_value[1] = 0;
@@ -1434,8 +1504,39 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 update_status(ProvisioningState::UNPROVISIONED,
                               ProvisioningResult::SUCCESS);
             }
-            try_start_maintenance_advertising();
+            if (advertising_refresh_pending) {
+                advertising_refresh_pending = false;
+                configure_advertising_for_mode();
+            } else {
+                try_start_advertising();
+            }
             break;
+        case ESP_GATTS_READ_EVT: {
+            esp_gatt_status_t read_status = ESP_GATT_READ_NOT_PERMIT;
+            esp_gatt_rsp_t response = {};
+            if (param->read.handle ==
+                    attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE] &&
+                connection_authorized) {
+                if (param->read.offset > SUBSCRIPTION_ENTITLEMENT_SIZE) {
+                    read_status = ESP_GATT_INVALID_OFFSET;
+                } else {
+                    const size_t remaining =
+                        SUBSCRIPTION_ENTITLEMENT_SIZE - param->read.offset;
+                    response.attr_value.handle = param->read.handle;
+                    response.attr_value.offset = param->read.offset;
+                    response.attr_value.len = static_cast<uint16_t>(remaining);
+                    std::memcpy(
+                        response.attr_value.value,
+                        subscription_entitlement_attribute + param->read.offset,
+                        remaining);
+                    read_status = ESP_GATT_OK;
+                }
+            }
+            esp_ble_gatts_send_response(
+                gatts_if, param->read.conn_id, param->read.trans_id,
+                read_status, read_status == ESP_GATT_OK ? &response : nullptr);
+            break;
+        }
         case ESP_GATTS_WRITE_EVT:
             if (param->write.is_prep) {
                 handle_prepared_secure_write(gatts_if, param);
@@ -1502,12 +1603,14 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                 break;
             }
             random_address_change_pending = false;
-            const uint8_t *active_address =
-                ble_mode == BLEMode::TRACKER ? finder_ble_address
-                                             : setup_ble_address;
+            const bool finder_identity =
+                ble_mode == BLEMode::TRACKER && !maintenance_window_open;
+            const uint8_t *active_address = finder_identity
+                                                ? finder_ble_address
+                                                : setup_ble_address;
             ESP_LOGI(LOG_TAG,
                      "%s BLE identity v%u ready: %02X:%02X:%02X:%02X:%02X:%02X",
-                     ble_mode == BLEMode::TRACKER ? "Finder" : "Setup",
+                     finder_identity ? "Finder" : "Setup",
                      SETUP_BLE_IDENTITY_VERSION,
                      active_address[0], active_address[1], active_address[2],
                      active_address[3], active_address[4], active_address[5]);
@@ -1516,7 +1619,7 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                     ESP_LOGE(LOG_TAG, "Could not register GATT application");
                 }
             } else {
-                try_start_maintenance_advertising();
+                try_start_advertising();
             }
             break;
         }
@@ -1527,7 +1630,7 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                          param->adv_data_raw_cmpl.status);
             }
             pending_adv_configuration &= ~ADV_CONFIG_FLAG;
-            try_start_maintenance_advertising();
+            try_start_advertising();
             break;
         case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
             if (param->scan_rsp_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
@@ -1536,15 +1639,26 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                          param->scan_rsp_data_raw_cmpl.status);
             }
             pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
-            try_start_maintenance_advertising();
+            try_start_advertising();
             break;
         case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
             if (param->adv_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                advertising_active = false;
                 ESP_LOGE(LOG_TAG, "Advertising failed to start: %d",
                          param->adv_start_cmpl.status);
             } else {
+                advertising_active = true;
+                const bool finder_frame =
+                    ble_mode == BLEMode::TRACKER && !maintenance_window_open;
                 ESP_LOGI(LOG_TAG, "%s advertising active",
-                         ble_mode == BLEMode::TRACKER ? "Finder" : "Maintenance");
+                         finder_frame ? "Finder" : "Maintenance");
+            }
+            break;
+        case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
+            advertising_active = false;
+            if (advertising_refresh_pending) {
+                advertising_refresh_pending = false;
+                configure_advertising_for_mode();
             }
             break;
         case ESP_GAP_BLE_SEC_REQ_EVT:
@@ -1662,43 +1776,32 @@ std::optional<ERROR_TAG> ble_init() {
     if (error != ESP_OK) {
         return ERROR_TAG("Entitlement timer initialization failed", LOG_TAG);
     }
-    const esp_timer_create_args_t clock_checkpoint_timer_arguments = {
-        .callback = &clock_checkpoint_callback,
+    const esp_timer_create_args_t maintenance_timer_arguments = {
+        .callback = &maintenance_window_timeout_callback,
         .arg = nullptr,
         .dispatch_method = ESP_TIMER_TASK,
-        .name = "clock_checkpoint",
-        .skip_unhandled_events = false,
+        .name = "ble_maintenance",
+        .skip_unhandled_events = true,
     };
-    error = esp_timer_create(&clock_checkpoint_timer_arguments,
-                             &clock_checkpoint_timer);
+    error = esp_timer_create(&maintenance_timer_arguments,
+                             &maintenance_window_timer);
     if (error != ESP_OK) {
-        return ERROR_TAG("Clock checkpoint timer initialization failed", LOG_TAG);
+        return ERROR_TAG("Maintenance timer initialization failed", LOG_TAG);
     }
-    error = esp_timer_start_periodic(entitlement_expiry_timer, 5ULL * 1000ULL * 1000ULL);
-    if (error != ESP_OK) {
-        return ERROR_TAG("Entitlement timer start failed", LOG_TAG);
-    }
-
     uint64_t stored_clock_epoch = 0;
     error = load_trusted_clock_epoch(&stored_clock_epoch);
     if (error != ESP_OK) {
-        stored_clock_epoch = DEFAULT_TRUSTED_CLOCK_EPOCH;
-        error = save_trusted_clock_epoch(stored_clock_epoch);
-        if (error != ESP_OK) {
-            return ERROR_TAG("Default UTC clock persistence failed", "NVS");
-        }
-        ESP_LOGW(LOG_TAG, "No UTC checkpoint found; using firmware default");
+        stored_clock_epoch = 0;
+        ESP_LOGI(LOG_TAG, "No UTC rollback floor found");
     } else {
-        ESP_LOGI(LOG_TAG, "Restored UTC clock from NVS checkpoint");
+        ESP_LOGI(LOG_TAG, "Restored UTC rollback floor from NVS");
     }
     trusted_clock_epoch = stored_clock_epoch;
     entitlement_time_started_microseconds = esp_timer_get_time();
-    entitlement_time_trusted = true;
-    error = esp_timer_start_periodic(clock_checkpoint_timer,
-                                     CLOCK_CHECKPOINT_INTERVAL_MICROSECONDS);
-    if (error != ESP_OK) {
-        return ERROR_TAG("Clock checkpoint timer start failed", LOG_TAG);
-    }
+    // The ESP32 has no battery-backed wall clock. Never infer elapsed wall
+    // time across a reset: an authorized phone must provide fresh UTC before
+    // a stored entitlement can resume advertising.
+    entitlement_time_trusted = false;
 
     error = initialize_device_id();
     if (error != ESP_OK) {
@@ -1708,15 +1811,10 @@ std::optional<ERROR_TAG> ble_init() {
     uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
     if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
         ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
-        if (activate_stored_entitlement(trusted_entitlement_now())) {
-            ESP_LOGI(LOG_TAG,
-                     "Stored entitlement active at restored UTC clock; "
-                     "finder advertising will resume");
-        } else {
-            ESP_LOGW(LOG_TAG,
-                     "No active signed entitlement at restored UTC clock; "
-                     "finder advertising disabled");
-        }
+        activate_stored_entitlement(0);
+        ESP_LOGW(LOG_TAG,
+                 "Finder advertising suspended after reset until authorized "
+                 "UTC synchronization");
         if (ble_mode != BLEMode::TRACKER) {
             ble_mode = BLEMode::SUSPENDED;
             status_value[0] = static_cast<uint8_t>(ProvisioningState::SUSPENDED);
@@ -1733,6 +1831,10 @@ std::optional<ERROR_TAG> ble_init() {
     }
     std::memset(existing_key, 0, sizeof(existing_key));
 
+    error = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Classic Bluetooth memory release failed", LOG_TAG);
+    }
     esp_bt_controller_config_t controller_config =
         BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     error = esp_bt_controller_init(&controller_config);
@@ -1742,6 +1844,10 @@ std::optional<ERROR_TAG> ble_init() {
     error = esp_bt_controller_enable(ESP_BT_MODE_BLE);
     if (error != ESP_OK) {
         return ERROR_TAG("BLE controller enable failed", LOG_TAG);
+    }
+    error = esp_bt_sleep_enable();
+    if (error != ESP_OK) {
+        return ERROR_TAG("BLE modem sleep enable failed", LOG_TAG);
     }
     error = esp_bluedroid_init();
     if (error != ESP_OK) {
@@ -1782,4 +1888,25 @@ std::optional<ERROR_TAG> ble_init() {
 
     ESP_LOGI(LOG_TAG, "Bluetooth initialized for %s", device_id);
     return std::nullopt;
+}
+
+esp_err_t ble_open_maintenance_window() {
+    if (ble_mode == BLEMode::SETUP) {
+        return ESP_OK;
+    }
+    maintenance_window_open = true;
+    if (maintenance_window_timer == nullptr) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    esp_timer_stop(maintenance_window_timer);
+    const esp_err_t timer_error = esp_timer_start_once(
+        maintenance_window_timer, MAINTENANCE_WINDOW_MICROSECONDS);
+    if (timer_error != ESP_OK) {
+        maintenance_window_open = false;
+        return timer_error;
+    }
+    ESP_LOGI(LOG_TAG,
+             "Maintenance advertising opened for 120 seconds after button hold");
+    request_advertising_refresh();
+    return ESP_OK;
 }

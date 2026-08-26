@@ -115,8 +115,28 @@ class DeviceEntitlementResponse(StrictModel):
     serial_number: str
     entitlement_base64url: str = Field(min_length=180, max_length=180)
     tag_authorization_proof_base64url: str = Field(min_length=43, max_length=43)
+    packet_sha256_base64url: str = Field(min_length=43, max_length=43)
     expires_at: datetime
     counter: int = Field(ge=1)
+
+
+class DeviceEntitlementAcknowledge(StrictModel):
+    counter: int = Field(ge=1)
+    expires_at: datetime
+    packet_sha256_base64url: str = Field(min_length=43, max_length=43)
+
+    @field_validator("packet_sha256_base64url")
+    @classmethod
+    def valid_packet_digest(cls, value: str) -> str:
+        b64url_decode_exact(value, 32)
+        return value
+
+
+class DeviceEntitlementAcknowledgeResponse(StrictModel):
+    device_id: UUID
+    counter: int = Field(ge=1)
+    expires_at: datetime
+    status: Literal["installed"]
 
 
 class DeviceProvisioningRequestStart(StrictModel):
@@ -301,6 +321,9 @@ class DeviceSubscriptionResponse(StrictModel):
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     cancel_at_period_end: bool = False
+    entitlement_sync_status: Literal["pending", "issued", "installed"] | None = None
+    tag_entitlement_expires_at: datetime | None = None
+    tag_entitlement_updated_at: datetime | None = None
     available_plans: list[PlanSummary]
 
 
@@ -323,6 +346,49 @@ class BillingUrlResponse(StrictModel):
 class StripeWebhookResponse(StrictModel):
     received: Literal[True] = True
     duplicate: bool = False
+
+
+class MobilePushTokenRegistration(StrictModel):
+    installation_id: UUID
+    expo_push_token: str = Field(
+        min_length=24,
+        max_length=256,
+        pattern=r"^(?:ExponentPushToken|ExpoPushToken)\[[A-Za-z0-9_-]+\]$",
+    )
+    platform: Literal["ios", "android"]
+
+
+class MobilePushTokenResponse(StrictModel):
+    installation_id: UUID
+    status: Literal["active", "removed"]
+
+
+NotificationKind = Literal[
+    "renewal_7_days",
+    "renewal_1_day",
+    "expired",
+    "tag_sync_required",
+]
+
+
+class UserNotificationSummary(StrictModel):
+    id: UUID
+    device_id: UUID
+    kind: NotificationKind
+    period_end: datetime
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=320)
+    created_at: datetime
+    read_at: datetime | None = None
+
+
+class UserNotificationListResponse(StrictModel):
+    notifications: list[UserNotificationSummary]
+
+
+class UserNotificationReadResponse(StrictModel):
+    id: UUID
+    status: Literal["read"]
 
 
 IdempotencyKey = Annotated[str, Field(min_length=16, max_length=128)]

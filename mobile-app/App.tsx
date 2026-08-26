@@ -53,6 +53,7 @@ import { colors } from './src/theme';
 import { TrackerCloudStateScreen } from './src/trackers/TrackerCloudStateScreen';
 import { useOwnedTrackers } from './src/trackers/useOwnedTrackers';
 import { useLocationReports } from './src/location/useLocationReports';
+import { useRenewalPushRegistration } from './src/notifications/push';
 import { requestLocationHistory24h } from './src/location/api';
 import { PROVISIONING_API_CONFIG, type DeviceClaim } from './src/provisioning/api';
 import { TagSetupModal } from './src/provisioning/TagSetupModal';
@@ -112,6 +113,13 @@ function AppContent() {
     demoPreviewActive && __DEV__,
   );
   const { trackers, setTrackers } = trackerCatalog;
+
+  useRenewalPushRegistration({
+    enabled: Boolean(auth.session),
+    userId: auth.user?.id ?? null,
+    apiConfig: PROVISIONING_API_CONFIG,
+    getAccessToken: auth.getAccessToken,
+  });
 
   const showNotice = useCallback((message: string) => {
     if (noticeTimer.current) clearTimeout(noticeTimer.current);

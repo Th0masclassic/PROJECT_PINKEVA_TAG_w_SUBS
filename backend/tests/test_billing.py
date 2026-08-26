@@ -1531,3 +1531,78 @@ async def test_checkout_webhook_never_calls_stripe_while_holding_database_locks(
 
     assert gateway.cancel_calls == []
     assert len(connection.executions) == 9
+
+
+@pytest.mark.asyncio
+async def test_paid_invoice_reconciles_authoritative_subscription_without_event_order(
+    settings: Settings,
+) -> None:
+    gateway = FakeGateway()
+    gateway.authoritative_invoice = {
+        "id": "in_12345678",
+        "parent": {
+            "type": "subscription_details",
+            "subscription_details": {"subscription": "sub_12345678"},
+        },
+    }
+    gateway.authoritative_subscription = {
+        "id": "sub_12345678",
+        "status": "active",
+    }
+
+    authoritative = await BillingService(
+        settings, gateway
+    )._authoritative_event_object(
+        "invoice.paid", {"id": "in_12345678"}
+    )
+
+    assert authoritative["id"] == "in_12345678"
+    assert authoritative["_pinqeva_authoritative_subscription"] == (
+        gateway.authoritative_subscription
+    )
+
+
+@pytest.mark.asyncio
+async def test_paid_invoice_without_subscription_is_left_unbound_for_ignore(
+    settings: Settings,
+) -> None:
+    gateway = FakeGateway()
+    gateway.authoritative_invoice = {"id": "in_12345678", "parent": None}
+
+    authoritative = await BillingService(
+        settings, gateway
+    )._authoritative_event_object("invoice.paid", {"id": "in_12345678"})
+
+    assert authoritative == gateway.authoritative_invoice
+
+
+@pytest.mark.asyncio
+async def test_paid_invoice_applies_subscription_before_invoice(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = BillingService(settings, FakeGateway())
+    applied: list[str] = []
+
+    async def apply_subscription(*args: Any, **kwargs: Any) -> None:
+        applied.append("subscription")
+
+    async def apply_invoice(*args: Any, **kwargs: Any) -> None:
+        applied.append("invoice")
+
+    monkeypatch.setattr(service, "_apply_subscription", apply_subscription)
+    monkeypatch.setattr(service, "_apply_invoice", apply_invoice)
+    processed = await service._apply_event(
+        ScriptedConnection([]),
+        event_id="evt_renewal123456",
+        event_type="invoice.paid",
+        event_created=1_800_000_000,
+        event_object={
+            "id": "in_12345678",
+            "_pinqeva_authoritative_subscription": {
+                "id": "sub_12345678"
+            },
+        },
+    )
+
+    assert processed is True
+    assert applied == ["subscription", "invoice"]

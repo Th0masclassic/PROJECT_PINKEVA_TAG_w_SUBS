@@ -164,6 +164,25 @@ def _identifier(value: Any, prefix: str) -> str:
     return object_id
 
 
+def _invoice_subscription_id(invoice: Mapping[str, Any]) -> str | None:
+    """Read both Stripe's legacy and current invoice subscription shapes."""
+
+    subscription_id = _object_id(invoice.get("subscription"))
+    if subscription_id is None:
+        parent = invoice.get("parent")
+        details = (
+            parent.get("subscription_details")
+            if isinstance(parent, Mapping)
+            and parent.get("type") == "subscription_details"
+            else None
+        )
+        if isinstance(details, Mapping):
+            subscription_id = _object_id(details.get("subscription"))
+    if subscription_id is None or not subscription_id.startswith("sub_"):
+        return None
+    return subscription_id
+
+
 def _binding(metadata_value: Any) -> tuple[UUID, UUID, str, UUID]:
     if not isinstance(metadata_value, Mapping):
         raise BillingEventIgnored("missing binding")
@@ -577,6 +596,12 @@ class BillingService:
                 """
                 SELECT s.status, s.plan_code, s.starts_at,
                        s.current_period_end, s.cancel_at_period_end,
+                       sync.status AS entitlement_sync_status,
+                       sync.entitlement_expires_at
+                         AS tag_entitlement_expires_at,
+                       COALESCE(
+                         sync.installed_at, sync.issued_at, sync.created_at
+                       ) AS tag_entitlement_updated_at,
                        p.name AS plan_name,
                        COALESCE(history.duration_months, p.duration_months)
                          AS duration_months,
@@ -598,6 +623,20 @@ class BillingService:
                   LEFT JOIN public.plan_price_history history
                     ON history.plan_code = s.plan_code
                    AND history.provider_price_id = s.provider_price_id
+                  LEFT JOIN LATERAL (
+                    SELECT entitlement.status,
+                           entitlement.entitlement_expires_at,
+                           entitlement.installed_at,
+                           entitlement.issued_at,
+                           entitlement.created_at
+                      FROM public.device_entitlement_sync entitlement
+                     WHERE entitlement.subscription_id = s.id
+                       AND entitlement.device_id = s.device_id
+                       AND entitlement.entitlement_expires_at =
+                           s.current_period_end
+                     ORDER BY entitlement.created_at DESC
+                     LIMIT 1
+                  ) sync ON true
                  WHERE s.device_id = %s
                    AND s.user_id = %s
                    AND s.status NOT IN ('cancelled', 'ended')
@@ -669,6 +708,15 @@ class BillingService:
             current_period_end=subscription["current_period_end"],
             cancel_at_period_end=bool(
                 subscription["cancel_at_period_end"]
+            ),
+            entitlement_sync_status=subscription.get(
+                "entitlement_sync_status"
+            ),
+            tag_entitlement_expires_at=subscription.get(
+                "tag_entitlement_expires_at"
+            ),
+            tag_entitlement_updated_at=subscription.get(
+                "tag_entitlement_updated_at"
             ),
             available_plans=available_plans,
         )
@@ -1471,7 +1519,26 @@ class BillingService:
                 return await self.gateway.retrieve_subscription(subscription_id)
             if event_type in SUPPORTED_INVOICE_EVENTS:
                 invoice_id = _identifier(event_object.get("id"), "in_")
-                return await self.gateway.retrieve_invoice(invoice_id)
+                invoice = await self.gateway.retrieve_invoice(invoice_id)
+                if event_type != "invoice.paid":
+                    return invoice
+                subscription_id = _invoice_subscription_id(invoice)
+                if subscription_id is None:
+                    # Stripe can deliver paid one-off invoices to the same
+                    # endpoint. They are unrelated to a tag subscription and
+                    # should be recorded as ignored rather than retried.
+                    return invoice
+                subscription = await self.gateway.retrieve_subscription(
+                    subscription_id
+                )
+                if _object_id(subscription.get("id")) != subscription_id:
+                    raise BillingEventDeferred(
+                        "provider subscription reconciliation mismatch"
+                    )
+                return {
+                    **invoice,
+                    "_pinqeva_authoritative_subscription": subscription,
+                }
             return event_object
         except BillingEventIgnored:
             raise BillingEventDeferred("provider object identifier invalid") from None
@@ -1986,6 +2053,21 @@ class BillingService:
             )
             return True
         if event_type in SUPPORTED_INVOICE_EVENTS:
+            authoritative_subscription = event_object.get(
+                "_pinqeva_authoritative_subscription"
+            )
+            if isinstance(authoritative_subscription, Mapping):
+                # Stripe does not guarantee event ordering. A paid renewal
+                # invoice can arrive before customer.subscription.updated, so
+                # reconcile the authoritative subscription in the same atomic
+                # transaction before persisting the invoice.
+                await self._apply_subscription(
+                    connection,
+                    event_id,
+                    "customer.subscription.updated",
+                    event_created,
+                    authoritative_subscription,
+                )
             await self._apply_invoice(
                 connection, event_id, event_created, event_object
             )
@@ -2564,21 +2646,8 @@ class BillingService:
         invoice: Mapping[str, Any],
     ) -> None:
         provider_invoice_id = _identifier(invoice.get("id"), "in_")
-        provider_subscription_id = _object_id(invoice.get("subscription"))
+        provider_subscription_id = _invoice_subscription_id(invoice)
         if provider_subscription_id is None:
-            parent = invoice.get("parent")
-            details = (
-                parent.get("subscription_details")
-                if isinstance(parent, Mapping)
-                and parent.get("type") == "subscription_details"
-                else None
-            )
-            if isinstance(details, Mapping):
-                provider_subscription_id = _object_id(details.get("subscription"))
-        if (
-            provider_subscription_id is None
-            or not provider_subscription_id.startswith("sub_")
-        ):
             raise BillingEventIgnored("invoice has no subscription")
 
         subscription_query = await connection.execute(

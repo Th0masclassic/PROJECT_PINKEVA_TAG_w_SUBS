@@ -29,8 +29,16 @@ export type DeviceEntitlement = {
   serial_number: string;
   entitlement_base64url: string;
   tag_authorization_proof_base64url: string;
+  packet_sha256_base64url: string;
   expires_at: string;
   counter: number;
+};
+
+export type DeviceEntitlementAcknowledgement = {
+  device_id: string;
+  counter: number;
+  expires_at: string;
+  status: 'installed';
 };
 
 export type ProvisioningPlan = {
@@ -144,10 +152,27 @@ function isDeviceEntitlement(value: unknown): value is DeviceEntitlement {
     hasString(value, 'serial_number') &&
     hasString(value, 'entitlement_base64url') &&
     hasString(value, 'tag_authorization_proof_base64url') &&
+    hasString(value, 'packet_sha256_base64url') &&
     hasString(value, 'expires_at') &&
     typeof value.counter === 'number' &&
     Number.isSafeInteger(value.counter) &&
     value.counter > 0
+  );
+}
+
+function isDeviceEntitlementAcknowledgement(
+  value: unknown,
+): value is DeviceEntitlementAcknowledgement {
+  if (!isRecord(value)) return false;
+  const expiresAt = value.expires_at;
+  return (
+    hasString(value, 'device_id') &&
+    typeof value.counter === 'number' &&
+    Number.isSafeInteger(value.counter) &&
+    value.counter > 0 &&
+    typeof expiresAt === 'string' &&
+    Number.isFinite(Date.parse(expiresAt)) &&
+    value.status === 'installed'
   );
 }
 
@@ -339,6 +364,25 @@ export class PinqevaProvisioningClient {
         }),
       },
       isDeviceEntitlement,
+    );
+  }
+
+  acknowledgeDeviceEntitlement(input: {
+    deviceId: string;
+    entitlement: DeviceEntitlement;
+    packetSha256Base64url: string;
+  }): Promise<DeviceEntitlementAcknowledgement> {
+    return this.request(
+      `/v1/devices/${input.deviceId}/entitlements/acknowledge`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          counter: input.entitlement.counter,
+          expires_at: input.entitlement.expires_at,
+          packet_sha256_base64url: input.packetSha256Base64url,
+        }),
+      },
+      isDeviceEntitlementAcknowledgement,
     );
   }
 

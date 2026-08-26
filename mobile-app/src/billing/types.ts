@@ -36,6 +36,9 @@ export type DeviceSubscription = {
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
+  entitlementSyncStatus: 'pending' | 'issued' | 'installed' | null;
+  tagEntitlementExpiresAt: string | null;
+  tagEntitlementUpdatedAt: string | null;
   availablePlans: BillingPlan[];
 };
 
@@ -84,5 +87,9 @@ export function canInstallEntitlement(subscription: DeviceSubscription): boolean
   const expiresAt = subscription.currentPeriodEnd
     ? Date.parse(subscription.currentPeriodEnd)
     : Number.NaN;
-  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+  return (
+    Number.isFinite(expiresAt) &&
+    expiresAt > Date.now() &&
+    subscription.entitlementSyncStatus !== 'installed'
+  );
 }

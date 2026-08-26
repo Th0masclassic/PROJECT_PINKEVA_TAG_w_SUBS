@@ -40,14 +40,14 @@ The complete architecture and proposed communication contract are documented in 
 | Firmware mode selection | Implemented provisioning slice | A missing key enters setup; a valid committed key without an entitlement fails closed into suspended maintenance mode. |
 | Setup mode | Implemented prototype | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`. The checked-in development profile bypasses bootstrap authentication and OS pairing/bonding; production still needs an authenticated application-layer confidential channel. |
 | Tracker mode | Implemented subscription gate | Finder advertising starts only after the backend-issued entitlement is verified; reboot and expiry fail closed into suspended maintenance mode. |
-| GATT event handling | Implemented provisioning slice | Protocol v1.3 adds QR-free per-connection challenge/proof authorization plus an explicit no-bond development capability before one-time control/key writes and HMAC-authenticated reset. |
+| GATT event handling | Implemented provisioning slice | Protocol v1.5 adds QR-free per-connection challenge/proof authorization, signed entitlement read-back, UTC synchronization, and a five-second physical maintenance gesture before renewal connections. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
-| Supabase database | Partial | Adds encrypted key custody, permanent device allocation, one-active-owner enforcement, per-tag subscriptions, stored last locations, admin RBAC/audit, and provider outbox rows. |
+| Supabase database | Partial | Adds encrypted key custody, permanent device allocation, one-active-owner enforcement, per-tag subscriptions, desired/issued/installed entitlement delivery state, durable renewal notifications, stored last locations, admin RBAC/audit, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
 | Mobile client | Provisioning UI implemented | The authenticated iOS/Android product UI scans for canonical `PKV-XXXXXXXXXXXX` tags, shows nearby candidates, performs the backend-authorized BLE challenge-response, verifies the committed fingerprint, and refreshes the claimed ownership. Physical-device validation is still required. |
-| Backend API and worker | Provisioning, billing, entitlement, and admin modules | Key custody, claims/releases, signed entitlement issuance, server-side Stripe Checkout/webhooks, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
+| Backend API and worker | Provisioning, billing, entitlement, notification, and admin modules | Key custody, claims/releases, app-independent Stripe renewal reconciliation, signed entitlement issuance/read-back acknowledgement, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
 | Pinqeva map and vehicle UI | Map UI implemented | iOS/Android use native Google Maps when restricted SDK keys are configured and render only stored tracker coordinates. Location ingestion/history and the vehicle profile remain. |
 | Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
 | Subscription enforcement | Implemented prototype | Active/trialing subscriptions receive signed device-bound entitlements; the firmware fails closed on missing, expired, invalid, or replayed leases. |
@@ -60,27 +60,28 @@ At startup, the provisioning firmware follows this decision:
 stateDiagram-v2
     [*] --> Boot
     Boot --> Setup: public key cannot be loaded
-    Boot --> Suspended: valid key but no entitlement verifier
+    Boot --> Suspended: valid key; trusted UTC required after reboot
     Setup --> Setup: client disconnects
-    Setup --> Suspended: key persisted and read back
+    Setup --> Tracker: key and first entitlement installed
+    Tracker --> Suspended: entitlement expires or device reboots
+    Suspended --> Tracker: authorized UTC + valid entitlement
     Suspended --> Setup: authenticated owner release erases key/control data
 ```
 
 - **Setup mode:** the LED indicates setup mode and the tag advertises `PKV-XXXXXXXXXXXX`. A phone can discover and connect to it.
 - **Provisioning:** the app requires the non-bonding capability, reads the stored-key fingerprint, installs a 32-byte control key followed by exactly 28 advertisement-key bytes only when empty, and waits for explicit flash read-back confirmation. The checked-in development transport is not confidential and must be replaced by a reviewed application-layer secure channel for production.
-- **Suspended mode:** the public advertisement key remains stored and the maintenance service stays available, but no finder payload is emitted without a signed entitlement.
+- **Suspended mode:** the public advertisement key remains stored, but no finder payload or continuously connectable service is emitted. Holding the physical button for five seconds opens maintenance advertising for two minutes.
 - **Release/transfer:** the active owner obtains a backend-authenticated reset command. The tag erases key/control data, the backend ends the single ownership and cancels device subscriptions, and the next owner receives a newly generated keypair.
 
-The target behavior adds subscription verification:
+The implemented entitlement state machine is:
 
 ```mermaid
 stateDiagram-v2
     [*] --> Boot
     Boot --> Setup: no valid public key
-    Boot --> Tracker: valid key + active entitlement
-    Boot --> Suspended: valid key + missing/expired entitlement
+    Boot --> Suspended: stored key; fail closed until fresh UTC
     Tracker --> Suspended: entitlement expires
-    Suspended --> Tracker: renewed entitlement
+    Suspended --> Tracker: authorized UTC + valid stored or renewed entitlement
 ```
 
 ## Mandatory subscription model
@@ -94,7 +95,7 @@ An active subscription is required to use the tag as a finder-network tracker.
 - Firmware verifies the backend signature, device binding, anti-rollback value, and expiry.
 - A tag transmits finder-network advertising data only while its entitlement is valid.
 - When the subscription expires, the finder payload stops.
-- The public key remains stored and the tag exposes only a low-duty-cycle maintenance channel so the owner can renew the subscription.
+- The public key remains stored and a five-second physical gesture exposes a bounded maintenance channel so the owner can renew the subscription.
 
 Fail-closed suspension, signed issuance, BLE installation, signature verification, anti-rollback, trusted time, renewal, and activation are implemented in the current prototype. Physical-device validation and production-grade transport confidentiality remain.
 
@@ -134,17 +135,17 @@ The tag does not currently provide speed, fuel level, engine state, mileage, or 
 
 ## Building the firmware
 
-The provisioning firmware has an ESP32-C3 baseline and is built with ESP-IDF 5.4 for `esp32c3`. The checked-in application image contains the Pinkeva setup service `a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01`. The exact ESP32-C3-MINI board, flash size, GPIO mapping, RF design, and hardware behavior still require on-device validation.
+The provisioning firmware targets the classic ESP32 and is built with ESP-IDF 5.4 for `esp32`. The checked-in application image contains the Pinkeva setup service `a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01`. The exact production module, flash size, GPIO mapping, RF design, and hardware behavior still require on-device validation.
 
 Install and activate ESP-IDF, then build from the firmware directory:
 
 ```sh
 cd Test/Apple_FindMy_test/ESP32
-idf.py set-target esp32c3
+idf.py set-target esp32
 idf.py build
 ```
 
-To flash the checked-in C3 images without erasing the per-device NVS/bootstrap key:
+To flash the checked-in classic ESP32 images without erasing the per-device NVS/bootstrap key:
 
 ```sh
 ./flash_esp32.sh --port /dev/tty.usbmodemXXXX

@@ -19,4 +19,26 @@ config PINQEVA_LOG_ADVERTISEMENT_KEY
         keys are public protocol material, but logging them can expose device
         identity material. Keep this disabled for production hardware.
 
+config PINQEVA_MAINTENANCE_BUTTON_GPIO
+    int "Maintenance button GPIO"
+    range 0 39
+    default 0
+    help
+        GPIO connected to the physical renewal/maintenance button. GPIO0 is
+        the BOOT button on common classic ESP32 development boards.
+
+config PINQEVA_MAINTENANCE_BUTTON_ACTIVE_LOW
+    bool "Maintenance button is active-low"
+    default y
+    help
+        Enable the internal pull-up and treat a low level as pressed.
+
+config PINQEVA_MAINTENANCE_BUTTON_HOLD_MS
+    int "Maintenance button hold time (milliseconds)"
+    range 3000 10000
+    default 5000
+    help
+        Continuous physical hold required before connectable BLE maintenance
+        advertising is opened.
+
 endmenu

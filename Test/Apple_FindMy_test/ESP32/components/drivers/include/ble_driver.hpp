@@ -39,3 +39,6 @@ enum class ProvisioningResult : uint8_t {
 };
 
 std::optional<ERROR_TAG> ble_init();
+
+/** Open a time-bounded connectable BLE window after the physical button hold. */
+esp_err_t ble_open_maintenance_window();

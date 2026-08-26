@@ -9,6 +9,7 @@ import {
   parseDeviceSubscription,
   safeBillingErrorCode,
 } from './api.ts';
+import { canInstallEntitlement } from './types.ts';
 
 const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -25,6 +26,9 @@ const subscriptionPayload = {
   current_period_start: '2026-08-01T00:00:00Z',
   current_period_end: '2026-09-01T00:00:00Z',
   cancel_at_period_end: false,
+  entitlement_sync_status: 'pending',
+  tag_entitlement_expires_at: '2026-09-01T00:00:00Z',
+  tag_entitlement_updated_at: '2026-08-25T00:00:00Z',
   available_plans: [
     {
       code: 'monthly_basic',
@@ -52,6 +56,9 @@ test('parses the per-device subscription contract', () => {
     currentPeriodStart: '2026-08-01T00:00:00Z',
     currentPeriodEnd: '2026-09-01T00:00:00Z',
     cancelAtPeriodEnd: false,
+    entitlementSyncStatus: 'pending',
+    tagEntitlementExpiresAt: '2026-09-01T00:00:00Z',
+    tagEntitlementUpdatedAt: '2026-08-25T00:00:00Z',
     availablePlans: [
       {
         code: 'monthly_basic',
@@ -64,6 +71,22 @@ test('parses the per-device subscription contract', () => {
       },
     ],
   });
+});
+
+test('offers a tag update until the renewed entitlement is installed', () => {
+  const pending = parseDeviceSubscription(
+    {
+      ...subscriptionPayload,
+      current_period_end: '2099-09-01T00:00:00Z',
+      entitlement_sync_status: 'pending',
+    },
+    DEVICE_ID,
+  );
+  assert.equal(canInstallEntitlement(pending), true);
+  assert.equal(
+    canInstallEntitlement({ ...pending, entitlementSyncStatus: 'installed' }),
+    false,
+  );
 });
 
 test('rejects a subscription for a different device', () => {

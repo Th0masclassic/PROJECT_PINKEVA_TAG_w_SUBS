@@ -9,6 +9,13 @@ not the legacy OpenHaystack image. During setup the tag advertises its
 The service is present both in the GATT database and in the setup advertisement
 so iOS and Android can find the tag before it is claimed.
 
+After provisioning, normal finder advertising is non-connectable. A continuous
+five-second press on `CONFIG_PINQEVA_MAINTENANCE_BUTTON_GPIO` opens a
+connectable Pinkeva maintenance advertisement for 120 seconds. The phone must
+scan and create a fresh BLE connection; a disconnected BLE link cannot be
+resumed. GPIO0 is the development default and is a boot-strapping pin on common
+boards, so production hardware should select a dedicated non-strapping GPIO.
+
 ## Build
 
 Install ESP-IDF 5.4 or newer, then run from this directory:
@@ -44,6 +51,31 @@ confidentiality. Production tags must use a reviewed application-layer secure
 channel before retaining the no-bond UX, re-enable the factory bootstrap,
 inject a unique `boot_key`, and register the matching encrypted backend
 credential.
+
+## Entitlement and expiry behavior
+
+The firmware accepts only a backend-signed, serial-bound P-256 entitlement with
+a strictly increasing counter and a future UTC expiry. While continuously
+powered, an exact one-shot `esp_timer` stops the Apple-style manufacturer
+advertisement at expiry; no periodic expiry polling loop is used. A successful
+renewal replaces the stored packet, rearms the timer, and closes the temporary
+maintenance window.
+
+The classic ESP32 has no battery-backed wall clock. After any reboot, the
+firmware therefore fails closed and does not infer how much wall time elapsed:
+the owner must open maintenance mode and let an authorized phone provide fresh
+UTC before a stored entitlement can resume. The saved timestamp is retained
+only as an anti-rollback floor. A product that must resume unattended after
+complete power loss needs a protected external RTC or another trusted time
+source.
+
+Normal finder frames use a two-second interval and are non-connectable. Setup
+and maintenance advertisements are connectable only for their bounded setup
+window. The build uses BLE-only mode, one controller connection, Bluetooth
+modem sleep, automatic light sleep, tickless idle, and 40–80 MHz dynamic
+frequency scaling. These settings reduce radio and CPU duty cycle, but final
+battery life still requires current measurements on the production PCB,
+battery, antenna, and chosen advertising interval.
 
 ## Flash
 

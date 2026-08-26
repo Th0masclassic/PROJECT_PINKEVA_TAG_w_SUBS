@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, AsyncIterator
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
@@ -20,6 +20,12 @@ from .config import get_settings
 from .database import Database
 from .entitlement import EntitlementService
 from .location import LocationError, LocationService
+from .notifications import (
+    ExpoPushGateway,
+    NotificationError,
+    NotificationService,
+    NotificationWorker,
+)
 from .models import (
     DeviceClaimComplete,
     DeviceClaimResponse,
@@ -27,6 +33,8 @@ from .models import (
     DeviceClaimStartResponse,
     DeviceEntitlementRequest,
     DeviceEntitlementResponse,
+    DeviceEntitlementAcknowledge,
+    DeviceEntitlementAcknowledgeResponse,
     DeviceProvisioningRequestResponse,
     DeviceProvisioningRequestStart,
     DeviceReleaseComplete,
@@ -40,6 +48,10 @@ from .models import (
     StripeWebhookResponse,
     SubscriptionCheckoutRequest,
     SubscriptionPortalRequest,
+    MobilePushTokenRegistration,
+    MobilePushTokenResponse,
+    UserNotificationListResponse,
+    UserNotificationReadResponse,
     ProvisioningRequestCheckout,
     ProvisioningRequestCheckoutResponse,
     validate_idempotency_key,
@@ -98,6 +110,7 @@ SAFE_BILLING_MESSAGES = {
     "PROVISIONING_REQUEST_NOT_FOUND": "This setup request is no longer available.",
     "PROVISIONING_REQUEST_EXPIRED": "This setup request expired. Start again to continue.",
     "ENTITLEMENT_UNAVAILABLE": "Tag activation is temporarily unavailable. Please try again.",
+    "ENTITLEMENT_ACK_REJECTED": "The tag update could not be confirmed. Please try the update again.",
     "PLAN_UNAVAILABLE": "This subscription plan is unavailable.",
     "SUBSCRIPTION_EXISTS": "This tag already has a current subscription.",
     "CHECKOUT_IN_PROGRESS": "A checkout is already in progress for this tag.",
@@ -198,11 +211,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.location = LocationService(settings, auth_manager=findmy_auth)
     app.state.billing = BillingService(settings)
     app.state.admin = AdminService(settings)
+    app.state.notifications = NotificationService()
     app.state.settings = settings
     await app.state.billing.bootstrap_catalog(database)
+    notification_stop = asyncio.Event()
+    notification_task: asyncio.Task[None] | None = None
+    if settings.notification_worker_enabled:
+        notification_worker = NotificationWorker(
+            database,
+            ExpoPushGateway(settings.expo_push_access_token),
+            poll_interval_seconds=settings.notification_poll_interval_seconds,
+        )
+        app.state.notification_worker = notification_worker
+        notification_task = asyncio.create_task(
+            notification_worker.run(notification_stop),
+            name="renewal-notification-worker",
+        )
     try:
         yield
     finally:
+        notification_stop.set()
+        if notification_task is not None:
+            await notification_task
         await database.close()
 
 
@@ -347,6 +377,20 @@ async def location_error_handler(request: Request, exc: LocationError):
         code=exc.code,
         message=SAFE_LOCATION_MESSAGES.get(
             exc.code, "Location reports are temporarily unavailable. Please try again."
+        ),
+    )
+
+
+@app.exception_handler(NotificationError)
+async def notification_error_handler(request: Request, exc: NotificationError):
+    return _error_response(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        message=(
+            "The notification could not be found."
+            if exc.code == "NOTIFICATION_NOT_FOUND"
+            else "The notification request could not be completed."
         ),
     )
 
@@ -609,6 +653,88 @@ async def issue_device_entitlement(
             user_id=principal.user_id,
             device_id=device_id,
             request=request,
+        )
+
+
+@app.post(
+    "/v1/devices/{device_id}/entitlements/acknowledge",
+    response_model=DeviceEntitlementAcknowledgeResponse,
+)
+async def acknowledge_device_entitlement(
+    device_id: UUID,
+    request: DeviceEntitlementAcknowledge,
+    principal: AuthenticatedPrincipal,
+) -> DeviceEntitlementAcknowledgeResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.entitlement.acknowledge(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+            request=request,
+        )
+
+
+@app.post(
+    "/v1/notifications/push-token",
+    response_model=MobilePushTokenResponse,
+)
+async def register_mobile_push_token(
+    registration: MobilePushTokenRegistration,
+    principal: AuthenticatedPrincipal,
+) -> MobilePushTokenResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.notifications.register_push_token(
+            connection,
+            user_id=principal.user_id,
+            registration=registration,
+        )
+
+
+@app.delete(
+    "/v1/notifications/push-token/{installation_id}",
+    response_model=MobilePushTokenResponse,
+)
+async def remove_mobile_push_token(
+    installation_id: UUID,
+    principal: AuthenticatedPrincipal,
+) -> MobilePushTokenResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.notifications.remove_push_token(
+            connection,
+            user_id=principal.user_id,
+            installation_id=installation_id,
+        )
+
+
+@app.get(
+    "/v1/notifications",
+    response_model=UserNotificationListResponse,
+)
+async def list_user_notifications(
+    principal: AuthenticatedPrincipal,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> UserNotificationListResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.notifications.list_notifications(
+            connection,
+            user_id=principal.user_id,
+            limit=limit,
+        )
+
+
+@app.post(
+    "/v1/notifications/{notification_id}/read",
+    response_model=UserNotificationReadResponse,
+)
+async def mark_user_notification_read(
+    notification_id: UUID,
+    principal: AuthenticatedPrincipal,
+) -> UserNotificationReadResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.notifications.mark_read(
+            connection,
+            user_id=principal.user_id,
+            notification_id=notification_id,
         )
 
 

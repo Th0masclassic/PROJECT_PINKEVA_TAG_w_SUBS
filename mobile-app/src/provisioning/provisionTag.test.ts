@@ -42,6 +42,7 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     { length: 135 },
     (_, index) => (0xa0 + index) & 0xff,
   );
+  const entitlementPacketHash = sha256(entitlementPacket);
   const completionToken = Uint8Array.from({ length: 32 }, (_, index) => 0x80 + index);
   const events: string[] = [];
   const phoneTime = new Date('2026-08-25T20:00:00Z');
@@ -97,8 +98,26 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
         tag_authorization_proof_base64url: encodeBase64Url(
           entitlementAuthorizationProof,
         ),
+        packet_sha256_base64url: encodeBase64Url(entitlementPacketHash),
         expires_at: '2099-02-01T00:00:00.000Z',
         counter: 1,
+      };
+    },
+    acknowledgeDeviceEntitlement: async (
+      input: Parameters<PinqevaProvisioningClient['acknowledgeDeviceEntitlement']>[0],
+    ) => {
+      events.push('api:entitlement:acknowledge');
+      assert.equal(input.deviceId, completed.device_id);
+      assert.equal(input.entitlement.counter, 1);
+      assert.equal(
+        input.packetSha256Base64url,
+        encodeBase64Url(entitlementPacketHash),
+      );
+      return {
+        device_id: completed.device_id,
+        counter: 1,
+        expires_at: '2099-02-01T00:00:00.000Z',
+        status: 'installed' as const,
       };
     },
   } as unknown as PinqevaProvisioningClient;
@@ -130,6 +149,10 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
       if (characteristic === PROVISIONING_STATUS_UUID) {
         events.push('ble:read:status');
         return { value: toBleBase64(Uint8Array.of(0x04, 0x00)) };
+      }
+      if (characteristic === SUBSCRIPTION_ENTITLEMENT_UUID) {
+        events.push('ble:read:entitlement');
+        return { value: toBleBase64(entitlementPacket) };
       }
       throw new Error(`Unexpected read ${characteristic}`);
     },
@@ -206,6 +229,8 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     'ble:write:utc',
     'ble:write:entitlement',
     'ble:read:status',
+    'ble:read:entitlement',
+    'api:entitlement:acknowledge',
     'ble:disconnect',
   ]);
   assert.deepEqual(authorizationProofs, []);
