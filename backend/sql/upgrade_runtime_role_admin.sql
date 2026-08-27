@@ -10,6 +10,8 @@ GRANT SELECT (id, display_name, email, stripe_customer_id, created_at, updated_a
 GRANT SELECT, INSERT, UPDATE ON TABLE public.plan TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.plan_price_history
   TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.provisioning_request
+  TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.device TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.device_bootstrap_credential
   TO pinqeva_backend;

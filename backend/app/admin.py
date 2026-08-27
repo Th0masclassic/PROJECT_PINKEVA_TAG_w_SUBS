@@ -165,6 +165,44 @@ class AdminService:
             ),
         )
 
+    async def deactivate_price_if_unbound(
+        self, database: Database, price_id: str
+    ) -> None:
+        """Deactivate a failed Stripe price only when no plan adopted it.
+
+        Identical concurrent updates intentionally share a Stripe idempotency
+        key. The losing database transaction can therefore receive the same
+        Price object as the winner and must not deactivate the winner's price.
+        """
+
+        try:
+            async with database.transaction() as connection:
+                cursor = await connection.execute(
+                    """
+                    SELECT EXISTS (
+                      SELECT 1 FROM public.plan WHERE provider_price_id = %s
+                    ) AS is_bound
+                    """,
+                    (price_id,),
+                )
+                row = await cursor.fetchone()
+        except Exception:
+            # Leaving an unreachable Price active is safer than disabling a
+            # potentially current price when the database cannot confirm it.
+            return
+        if row is None or bool(row["is_bound"]):
+            return
+        try:
+            await asyncio.to_thread(
+                stripe.Price.modify,
+                price_id,
+                api_key=self.settings.stripe_secret_key,
+                stripe_version=self.settings.stripe_api_version,
+                active=False,
+            )
+        except Exception:
+            return
+
     async def me(self, database: Database, principal: Principal) -> dict[str, Any]:
         role = await self.role_for(database, principal, require_mfa=False)
         return {
@@ -197,6 +235,140 @@ class AdminService:
             )
             return dict(await cursor.fetchone())
 
+    async def integrity(
+        self, database: Database, principal: Principal
+    ) -> dict[str, Any]:
+        """Return non-sensitive operational invariants for administrator review."""
+
+        await self.role_for(database, principal)
+        async with database.transaction() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT now() AS checked_at,
+                  (
+                    SELECT count(*)
+                      FROM public.device device
+                      LEFT JOIN public.device_bootstrap_credential credential
+                        ON credential.device_id = device.id
+                     WHERE credential.device_id IS NULL
+                  ) AS devices_missing_bootstrap_credentials,
+                  (
+                    SELECT count(*)
+                      FROM public.device device
+                     WHERE device.status = 'claimed'
+                       AND NOT EXISTS (
+                         SELECT 1 FROM public.ownership ownership
+                          WHERE ownership.device_id = device.id
+                            AND ownership.ended_at IS NULL
+                       )
+                  ) AS claimed_devices_without_active_owner,
+                  (
+                    SELECT count(*)
+                      FROM public.ownership ownership
+                      JOIN public.device device ON device.id = ownership.device_id
+                     WHERE ownership.ended_at IS NULL
+                       AND device.status NOT IN ('claimed', 'suspended')
+                  ) AS active_ownership_device_state_mismatches,
+                  (
+                    SELECT count(*)
+                      FROM public.subscription subscription
+                     WHERE subscription.status NOT IN ('cancelled', 'ended')
+                       AND NOT EXISTS (
+                         SELECT 1 FROM public.ownership ownership
+                          WHERE ownership.user_id = subscription.user_id
+                            AND ownership.device_id = subscription.device_id
+                            AND ownership.ended_at IS NULL
+                       )
+                  ) AS current_subscriptions_without_active_ownership,
+                  (
+                    SELECT count(*)
+                      FROM public.subscription_cancellation_outbox cancellation
+                     WHERE cancellation.status = 'failed'
+                  ) AS failed_cancellation_jobs,
+                  (
+                    SELECT count(*)
+                      FROM public.provisioning_request request
+                     WHERE (
+                       request.status IN ('pending', 'creating', 'open')
+                       AND request.expires_at < now()
+                     ) OR (
+                       request.status IN ('paid', 'claiming')
+                       AND COALESCE(request.claim_deadline, request.expires_at) < now()
+                     )
+                  ) AS overdue_provisioning_requests,
+                  (
+                    SELECT count(*) FROM public.admin_role_assignment assignment
+                     WHERE assignment.revoked_at IS NULL
+                  ) AS active_database_admins,
+                  (
+                    SELECT audit.created_at FROM public.admin_audit_log audit
+                     ORDER BY audit.created_at DESC, audit.id DESC
+                     LIMIT 1
+                  ) AS last_audit_at
+                """
+            )
+            result = dict(await cursor.fetchone())
+
+            configured_owners = self.settings.admin_owner_user_ids
+            configured_owner_profiles = 0
+            if configured_owners:
+                owner_cursor = await connection.execute(
+                    """
+                    SELECT count(*) AS owner_profiles FROM public.profiles
+                     WHERE id = ANY(%s::uuid[])
+                    """,
+                    (list(configured_owners),),
+                )
+                configured_owner_profiles = int(
+                    (await owner_cursor.fetchone())["owner_profiles"]
+                )
+
+        checks = {
+            "configured_owners_missing_profiles": max(
+                0, len(configured_owners) - configured_owner_profiles
+            ),
+            "devices_missing_bootstrap_credentials": int(
+                result["devices_missing_bootstrap_credentials"]
+            ),
+            "claimed_devices_without_active_owner": int(
+                result["claimed_devices_without_active_owner"]
+            ),
+            "active_ownership_device_state_mismatches": int(
+                result["active_ownership_device_state_mismatches"]
+            ),
+            "current_subscriptions_without_active_ownership": int(
+                result["current_subscriptions_without_active_ownership"]
+            ),
+            "failed_cancellation_jobs": int(result["failed_cancellation_jobs"]),
+            "overdue_provisioning_requests": int(
+                result["overdue_provisioning_requests"]
+            ),
+        }
+        critical_names = {
+            "configured_owners_missing_profiles",
+            "claimed_devices_without_active_owner",
+            "active_ownership_device_state_mismatches",
+            "current_subscriptions_without_active_ownership",
+        }
+        critical_issues = sum(checks[name] for name in critical_names)
+        warnings = sum(
+            count for name, count in checks.items() if name not in critical_names
+        )
+        return {
+            "status": (
+                "healthy" if critical_issues == 0 and warnings == 0 else "degraded"
+            ),
+            "checked_at": result["checked_at"],
+            "critical_issues": critical_issues,
+            "warnings": warnings,
+            "checks": checks,
+            "metrics": {
+                "configured_owners": len(configured_owners),
+                "active_database_admins": int(result["active_database_admins"]),
+                "last_audit_at": result["last_audit_at"],
+            },
+        }
+
     async def users(
         self,
         database: Database,
@@ -210,33 +382,44 @@ class AdminService:
         async with database.transaction() as connection:
             cursor = await connection.execute(
                 """
+                WITH selected_profile AS (
+                  SELECT profile.id, profile.display_name, profile.email,
+                         profile.created_at
+                    FROM public.profiles profile
+                   WHERE %s = ''
+                      OR position(%s in lower(COALESCE(profile.email, ''))) > 0
+                      OR position(%s in lower(COALESCE(profile.display_name, ''))) > 0
+                      OR profile.id::text = %s
+                   ORDER BY profile.created_at DESC, profile.id
+                   LIMIT %s
+                )
                 SELECT profile.id, profile.display_name, profile.email,
                        profile.created_at,
-                       count(DISTINCT ownership.device_id)
-                         FILTER (WHERE ownership.ended_at IS NULL) AS tracker_count,
-                       count(DISTINCT subscription.id)
-                         FILTER (WHERE subscription.status NOT IN ('cancelled', 'ended'))
-                         AS subscription_count,
+                       (
+                         SELECT count(*) FROM public.ownership ownership
+                          WHERE ownership.user_id = profile.id
+                            AND ownership.ended_at IS NULL
+                       ) AS tracker_count,
+                       (
+                         SELECT count(*) FROM public.subscription subscription
+                          WHERE subscription.user_id = profile.id
+                            AND subscription.status NOT IN ('cancelled', 'ended')
+                       ) AS subscription_count,
                        EXISTS (
                          SELECT 1 FROM public.admin_role_assignment role
-                          WHERE role.user_id = profile.id AND role.revoked_at IS NULL
+                           WHERE role.user_id = profile.id AND role.revoked_at IS NULL
                        ) AS is_admin
-                  FROM public.profiles profile
-                  LEFT JOIN public.ownership ownership
-                    ON ownership.user_id = profile.id
-                  LEFT JOIN public.subscription subscription
-                    ON subscription.user_id = profile.id
-                 WHERE %s = ''
-                    OR position(%s in lower(COALESCE(profile.email, ''))) > 0
-                    OR position(%s in lower(COALESCE(profile.display_name, ''))) > 0
-                    OR profile.id::text = %s
-                 GROUP BY profile.id
+                  FROM selected_profile profile
                  ORDER BY profile.created_at DESC, profile.id
-                 LIMIT %s
                 """,
                 (needle, needle, needle, needle, limit),
             )
-            return [dict(row) for row in await cursor.fetchall()]
+            rows = [dict(row) for row in await cursor.fetchall()]
+            for row in rows:
+                row["is_admin"] = bool(row["is_admin"]) or (
+                    row["id"] in self.settings.admin_owner_user_ids
+                )
+            return rows
 
     async def user_trackers(
         self, database: Database, principal: Principal, user_id: UUID
@@ -425,18 +608,9 @@ class AdminService:
             return dict(result)
         except Exception:
             # A Stripe Price is immutable. If the optimistic database update
-            # loses a race (or the transaction fails), make the orphaned Price
-            # unavailable for new purchases before surfacing the safe error.
-            try:
-                await asyncio.to_thread(
-                    stripe.Price.modify,
-                    price_id,
-                    api_key=self.settings.stripe_secret_key,
-                    stripe_version=self.settings.stripe_api_version,
-                    active=False,
-                )
-            except Exception:
-                pass
+            # loses a race (or the transaction fails), disable it only if no
+            # concurrent winner adopted the same idempotent Price object.
+            await self.deactivate_price_if_unbound(database, price_id)
             raise
 
     async def grant_subscription(
@@ -835,6 +1009,13 @@ async def admin_me(request: Request, principal: AuthenticatedPrincipal):
 @router.get("/overview")
 async def admin_overview(request: Request, principal: AuthenticatedPrincipal):
     return await _service(request).overview(_database(request), principal)
+
+
+@router.get("/system/integrity")
+async def admin_system_integrity(
+    request: Request, principal: AuthenticatedPrincipal
+):
+    return await _service(request).integrity(_database(request), principal)
 
 
 @router.get("/users")

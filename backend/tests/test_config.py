@@ -2,6 +2,7 @@ import pytest
 
 from app.config import (
     ConfigurationError,
+    parse_admin_owner_user_ids,
     parse_firmware_release,
     parse_stripe_price_map,
     parse_findmy_second_factor,
@@ -9,6 +10,16 @@ from app.config import (
     validate_https_url,
     validate_stripe_secret,
 )
+
+
+def test_admin_owner_rejects_example_uuid() -> None:
+    with pytest.raises(ConfigurationError):
+        parse_admin_owner_user_ids("00000000-0000-4000-8000-000000000000")
+
+
+def test_admin_owner_accepts_real_uuid() -> None:
+    value = "32c55047-60d0-46c5-8b05-a6f2fee9dde7"
+    assert {str(owner) for owner in parse_admin_owner_user_ids(value)} == {value}
 
 
 def test_firmware_release_requires_path_and_exact_version_together() -> None:

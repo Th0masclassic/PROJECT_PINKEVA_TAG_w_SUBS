@@ -56,6 +56,39 @@ correlation ID. Validation input, access tokens, keys, database errors, and
 stack traces are never returned to the client. Server logs record only the
 correlation ID and exception type for unexpected failures.
 
+## Administrator bootstrap and integrity
+
+The administrator API is backend-only under `/v1/admin`. Authentication uses a
+normal Supabase email/password account and public JWT verification; authorization
+uses the environment-owned recovery UUID or an active database role assignment.
+Privileged data requires TOTP/AAL2 by default, and mutations are written to the
+append-only `admin_audit_log`.
+
+Create the first account once from an operator shell with a temporary Supabase
+server secret. Never place that secret in the backend `.env` or application
+runtime:
+
+```powershell
+$env:SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+$env:SUPABASE_SECRET_KEY = "sb_secret_REPLACE"
+$env:DATABASE_URL = "postgresql://ADMIN_CONNECTION_WITH_TLS"
+python backend/tools/bootstrap_admin.py `
+  --email admin-pinkeva@pinkeva.com `
+  --username admin-pinkeva
+Remove-Item Env:SUPABASE_SECRET_KEY
+```
+
+The tool generates and displays the temporary password exactly once, confirms
+the email through the supported Supabase Auth Admin API, verifies the profile
+trigger, and prints the UUID for `PINQEVA_ADMIN_OWNER_USER_IDS`. Put that UUID in
+the backend secret manager, enroll TOTP on first sign-in, then rotate the
+temporary password. The server rejects the all-zero example owner UUID.
+
+`GET /v1/admin/system/integrity` provides a non-sensitive, AAL2-protected view of
+cross-table invariants: owner profiles, factory credentials, ownership/device
+state, active subscriptions, cancellation failures, and overdue provisioning.
+It returns `healthy` only when every checked count is zero.
+
 ## Location reports
 
 The checked-in `Test/Apple_FindMy_test/request_reports.py` is the vendored

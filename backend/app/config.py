@@ -240,6 +240,15 @@ def parse_uuid_set(name: str, value: str) -> frozenset[UUID]:
     return frozenset(result)
 
 
+def parse_admin_owner_user_ids(value: str) -> frozenset[UUID]:
+    owners = parse_uuid_set("PINQEVA_ADMIN_OWNER_USER_IDS", value)
+    if UUID("00000000-0000-4000-8000-000000000000") in owners:
+        raise ConfigurationError(
+            "PINQEVA_ADMIN_OWNER_USER_IDS still contains the example UUID"
+        )
+    return owners
+
+
 def parse_allowed_origins(value: str) -> tuple[str, ...]:
     result: set[str] = set()
     for item in value.split(","):
@@ -516,9 +525,8 @@ def get_settings() -> Settings:
             else portal_configuration or None
         ),
         stripe_api_version=stripe_api_version,
-        admin_owner_user_ids=parse_uuid_set(
-            "PINQEVA_ADMIN_OWNER_USER_IDS",
-            os.getenv("PINQEVA_ADMIN_OWNER_USER_IDS", ""),
+        admin_owner_user_ids=parse_admin_owner_user_ids(
+            os.getenv("PINQEVA_ADMIN_OWNER_USER_IDS", "")
         ),
         admin_allowed_origins=parse_allowed_origins(
             os.getenv("PINQEVA_ADMIN_ALLOWED_ORIGINS", "")

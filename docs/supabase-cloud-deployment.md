@@ -110,8 +110,9 @@ Copy `backend/.env.example` into the deployment secret manager. Set:
   bootstrap-key encryption, and claim capabilities.
 
 Never generate new encryption roots during a normal restart. Losing them makes
-existing encrypted device material unreadable. The service-role key is neither
-required nor accepted by the backend design.
+existing encrypted device material unreadable. A Supabase server secret is
+neither required nor accepted by the backend runtime; it is used only as a
+short-lived operator input to the one-time administrator bootstrap utility.
 
 Create the dedicated runtime login with
 `backend/sql/create_runtime_role.sql`, supplying
@@ -135,13 +136,26 @@ store its signing secret in `STRIPE_WEBHOOK_SECRET`. The app never receives a
 Stripe secret or chooses a Price ID or amount; it sends a validated plan code
 and the backend resolves the current database binding.
 
-Set `PINQEVA_ADMIN_OWNER_USER_IDS` to the first trusted Supabase user UUID. This
+Create the first trusted account with `backend/tools/bootstrap_admin.py` from a
+controlled operator shell. Supply `SUPABASE_URL`, `DATABASE_URL`, and a temporary
+`SUPABASE_SECRET_KEY` process variable; remove the server secret immediately
+after the command. The utility creates a confirmed Supabase Auth user, verifies
+the profile trigger, generates a one-time temporary password, and prints the
+owner UUID. It never writes either secret to the repository or backend runtime.
+
+Set `PINQEVA_ADMIN_OWNER_USER_IDS` in the deployment secret manager to that UUID.
+The all-zero example UUID fails startup configuration validation. This
 environment-owned role is the recovery root and is the only role allowed to
 grant or revoke database administrators. Set `PINQEVA_ADMIN_ALLOWED_ORIGINS` to
 the exact HTTPS admin-console origins and keep
 `PINQEVA_ADMIN_REQUIRE_AAL2=true`. Every privileged operation then requires a
 fresh Supabase bearer token, an active role, verified TOTP/AAL2, and produces an
-append-only audit record. Never use a service-role key in the browser console.
+append-only audit record. Enroll TOTP and rotate the generated temporary password
+on first sign-in. Never use a server/service-role key in the browser console.
+
+After deployment, call `GET /v1/admin/system/integrity` with an AAL2 owner token.
+Treat any non-zero critical count as a release blocker and reconcile warnings
+before they accumulate.
 
 ## Mobile and map runtime values
 

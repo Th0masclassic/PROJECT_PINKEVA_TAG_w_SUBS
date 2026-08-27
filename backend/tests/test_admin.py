@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
@@ -36,6 +37,23 @@ class Connection:
 class Database:
     def __init__(self, role_row=None):
         self.connection = Connection(role_row)
+
+    @asynccontextmanager
+    async def transaction(self):
+        yield self.connection
+
+
+class SequenceConnection:
+    def __init__(self, rows):
+        self.rows = iter(rows)
+
+    async def execute(self, _query, _parameters=()):
+        return Cursor(next(self.rows))
+
+
+class SequenceDatabase:
+    def __init__(self, rows):
+        self.connection = SequenceConnection(rows)
 
     @asynccontextmanager
     async def transaction(self):
@@ -96,6 +114,74 @@ async def test_unassigned_user_is_denied_without_role_detail() -> None:
             Database(None), Principal(user_id=uuid4(), assurance_level="aal2")
         )
     assert error.value.code == "ADMIN_ACCESS_DENIED"
+
+
+@pytest.mark.asyncio
+async def test_integrity_summary_reports_operational_warnings() -> None:
+    owner_id = uuid4()
+    service = AdminService(settings(owner_id))
+    database = SequenceDatabase(
+        [
+            {
+                "checked_at": datetime.now(UTC),
+                "devices_missing_bootstrap_credentials": 1,
+                "claimed_devices_without_active_owner": 0,
+                "active_ownership_device_state_mismatches": 0,
+                "current_subscriptions_without_active_ownership": 0,
+                "failed_cancellation_jobs": 2,
+                "overdue_provisioning_requests": 0,
+                "active_database_admins": 3,
+                "last_audit_at": None,
+            },
+            {"owner_profiles": 1},
+        ]
+    )
+
+    result = await service.integrity(
+        database, Principal(user_id=owner_id, assurance_level="aal2")
+    )
+
+    assert result["status"] == "degraded"
+    assert result["critical_issues"] == 0
+    assert result["warnings"] == 3
+    assert result["metrics"] == {
+        "configured_owners": 1,
+        "active_database_admins": 3,
+        "last_audit_at": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_bound_concurrent_stripe_price_is_not_deactivated(monkeypatch) -> None:
+    service = AdminService(settings(uuid4()))
+    calls = []
+    monkeypatch.setattr(
+        "app.admin.stripe.Price.modify",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    await service.deactivate_price_if_unbound(
+        Database({"is_bound": True}), "price_CONCURRENT123"
+    )
+
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_unbound_stripe_price_is_deactivated(monkeypatch) -> None:
+    service = AdminService(settings(uuid4()))
+    calls = []
+    monkeypatch.setattr(
+        "app.admin.stripe.Price.modify",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    await service.deactivate_price_if_unbound(
+        Database({"is_bound": False}), "price_ORPHANED12345"
+    )
+
+    assert calls[0][0] == ("price_ORPHANED12345",)
+    assert calls[0][1]["active"] is False
 
 
 def test_admin_mutation_models_reject_unsafe_input() -> None:

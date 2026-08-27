@@ -28,14 +28,20 @@ GRANT USAGE ON SCHEMA public TO pinqeva_backend;
 
 REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM pinqeva_backend;
 
-GRANT SELECT, UPDATE ON TABLE public.device TO pinqeva_backend;
-GRANT SELECT ON TABLE public.device_bootstrap_credential TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.device TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.device_bootstrap_credential
+  TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.provisioning_request
+  TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.provisioning_session TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.ownership TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.device_release TO pinqeva_backend;
-GRANT SELECT (id, stripe_customer_id), UPDATE (stripe_customer_id)
+GRANT SELECT (id, display_name, email, stripe_customer_id, created_at, updated_at),
+  UPDATE (stripe_customer_id)
   ON TABLE public.profiles TO pinqeva_backend;
-GRANT SELECT ON TABLE public.plan TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.plan TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.plan_price_history
+  TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.subscription TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.invoice TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.payment_event TO pinqeva_backend;
@@ -49,6 +55,14 @@ GRANT SELECT, INSERT, UPDATE
   ON TABLE public.mobile_push_token TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE
   ON TABLE public.user_notification TO pinqeva_backend;
+GRANT SELECT, INSERT, UPDATE ON TABLE public.admin_role_assignment
+  TO pinqeva_backend;
+GRANT SELECT, INSERT ON TABLE public.admin_audit_log TO pinqeva_backend;
+
+REVOKE DELETE ON TABLE
+  public.admin_role_assignment,
+  public.admin_audit_log
+FROM pinqeva_backend;
 
 ALTER ROLE pinqeva_backend SET search_path = public, pg_catalog;
 ALTER ROLE pinqeva_backend SET statement_timeout = '15s';
