@@ -3,6 +3,7 @@ import pytest
 from app.config import (
     ConfigurationError,
     parse_admin_owner_user_ids,
+    parse_findmy_anisette_provider,
     parse_firmware_release,
     parse_stripe_price_map,
     parse_findmy_second_factor,
@@ -113,3 +114,13 @@ def test_findmy_second_factor_accepts_supported_modes(value: str) -> None:
 def test_findmy_second_factor_rejects_unknown_modes() -> None:
     with pytest.raises(ConfigurationError):
         parse_findmy_second_factor("email")
+
+
+@pytest.mark.parametrize("value", ["http", "native", " NATIVE "])
+def test_findmy_anisette_provider_accepts_supported_modes(value: str) -> None:
+    assert parse_findmy_anisette_provider(value) in {"http", "native"}
+
+
+def test_findmy_anisette_provider_rejects_unknown_modes() -> None:
+    with pytest.raises(ConfigurationError):
+        parse_findmy_anisette_provider("docker")

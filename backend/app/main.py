@@ -13,6 +13,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from .admin import AdminError, AdminService, router as admin_router
+from .anisette_provider import NativeAnisetteError, NativeAnisetteService
 from .apple_auth import AppleAuthManager, AppleAuthenticationError
 from .auth import AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
@@ -194,63 +195,85 @@ def _error_response(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _configure_application_logging()
     settings = get_settings()
-    findmy_auth: AppleAuthManager | None = None
-    if settings.findmy_apple_id or settings.findmy_auth_file:
-        findmy_auth = AppleAuthManager(
-            apple_id=settings.findmy_apple_id,
-            apple_password=settings.findmy_apple_password,
-            second_factor=settings.findmy_second_factor,
-            anisette_url=settings.findmy_anisette_url,
-            timeout_seconds=settings.findmy_request_timeout_seconds,
-            auth_file=settings.findmy_auth_file,
-            login_on_startup=settings.findmy_login_on_startup,
-        )
-    if findmy_auth is not None and findmy_auth.should_login_on_startup:
-        logger.info("findmy_authentication_starting")
-        try:
-            await asyncio.to_thread(findmy_auth.initialize)
-            logger.info("findmy_authenticated")
-        except AppleAuthenticationError as exc:
-            logger.error(
-                "findmy_authentication_failed error_type=%s error=%s",
-                type(exc).__name__,
-                str(exc),
-            )
-            raise RuntimeError("Find My authentication failed") from None
-
-    database = Database(settings)
-    await database.open()
-    app.state.database = database
-    app.state.service = ProvisioningService(settings)
-    app.state.entitlement = EntitlementService(settings)
-    app.state.firmware = FirmwareService(settings)
-    app.state.findmy_auth = findmy_auth
-    app.state.location = LocationService(settings, auth_manager=findmy_auth)
-    app.state.billing = BillingService(settings)
-    app.state.admin = AdminService(settings)
-    app.state.notifications = NotificationService()
-    app.state.settings = settings
-    await app.state.billing.bootstrap_catalog(database)
+    native_anisette: NativeAnisetteService | None = None
+    opened_database: Database | None = None
     notification_stop = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
-    if settings.notification_worker_enabled:
-        notification_worker = NotificationWorker(
-            database,
-            ExpoPushGateway(settings.expo_push_access_token),
-            poll_interval_seconds=settings.notification_poll_interval_seconds,
-        )
-        app.state.notification_worker = notification_worker
-        notification_task = asyncio.create_task(
-            notification_worker.run(notification_stop),
-            name="renewal-notification-worker",
-        )
     try:
+        if settings.findmy_anisette_provider == "native":
+            native_anisette = NativeAnisetteService(
+                settings.findmy_anisette_url,
+                settings.findmy_anisette_state_path,
+            )
+            logger.info("native_anisette_starting")
+            try:
+                await asyncio.to_thread(native_anisette.start)
+            except NativeAnisetteError as exc:
+                logger.error(
+                    "native_anisette_start_failed error_type=%s",
+                    type(exc).__name__,
+                )
+                raise RuntimeError("Native Anisette startup failed") from None
+
+        findmy_auth: AppleAuthManager | None = None
+        if settings.findmy_apple_id or settings.findmy_auth_file:
+            findmy_auth = AppleAuthManager(
+                apple_id=settings.findmy_apple_id,
+                apple_password=settings.findmy_apple_password,
+                second_factor=settings.findmy_second_factor,
+                anisette_url=settings.findmy_anisette_url,
+                timeout_seconds=settings.findmy_request_timeout_seconds,
+                auth_file=settings.findmy_auth_file,
+                login_on_startup=settings.findmy_login_on_startup,
+            )
+        if findmy_auth is not None and findmy_auth.should_login_on_startup:
+            logger.info("findmy_authentication_starting")
+            try:
+                await asyncio.to_thread(findmy_auth.initialize)
+                logger.info("findmy_authenticated")
+            except AppleAuthenticationError as exc:
+                logger.error(
+                    "findmy_authentication_failed error_type=%s error=%s",
+                    type(exc).__name__,
+                    str(exc),
+                )
+                raise RuntimeError("Find My authentication failed") from None
+
+        database = Database(settings)
+        await database.open()
+        opened_database = database
+        app.state.database = database
+        app.state.service = ProvisioningService(settings)
+        app.state.entitlement = EntitlementService(settings)
+        app.state.firmware = FirmwareService(settings)
+        app.state.findmy_auth = findmy_auth
+        app.state.location = LocationService(settings, auth_manager=findmy_auth)
+        app.state.billing = BillingService(settings)
+        app.state.admin = AdminService(settings)
+        app.state.notifications = NotificationService()
+        app.state.settings = settings
+        app.state.native_anisette = native_anisette
+        await app.state.billing.bootstrap_catalog(database)
+        if settings.notification_worker_enabled:
+            notification_worker = NotificationWorker(
+                database,
+                ExpoPushGateway(settings.expo_push_access_token),
+                poll_interval_seconds=settings.notification_poll_interval_seconds,
+            )
+            app.state.notification_worker = notification_worker
+            notification_task = asyncio.create_task(
+                notification_worker.run(notification_stop),
+                name="renewal-notification-worker",
+            )
         yield
     finally:
         notification_stop.set()
         if notification_task is not None:
             await notification_task
-        await database.close()
+        if opened_database is not None:
+            await opened_database.close()
+        if native_anisette is not None:
+            await asyncio.to_thread(native_anisette.stop)
 
 
 app = FastAPI(

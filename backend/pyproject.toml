@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Authenticated Pinqeva App-to-Tag provisioning API"
 requires-python = ">=3.12"
 dependencies = [
+    "Anisette>=1.2.4,<2",
     "certifi>=2024.2.2,<2027",
     "cryptography>=44,<47",
     "fastapi>=0.115,<1",

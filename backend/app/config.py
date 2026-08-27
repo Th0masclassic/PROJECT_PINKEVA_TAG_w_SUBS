@@ -210,6 +210,15 @@ def parse_findmy_second_factor(value: str) -> str:
     )
 
 
+def parse_findmy_anisette_provider(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"http", "native"}:
+        return normalized
+    raise ConfigurationError(
+        "PINQEVA_FINDMY_ANISETTE_PROVIDER must be http or native"
+    )
+
+
 def parse_firmware_release(image_path: str, version: str) -> tuple[str, str]:
     normalized_path = image_path.strip()
     normalized_version = version.strip()
@@ -290,6 +299,8 @@ class Settings:
     findmy_login_on_startup: bool = True
     findmy_dsid: str = ""
     findmy_search_party_token: str = ""
+    findmy_anisette_provider: str = "http"
+    findmy_anisette_state_path: str = ""
     findmy_anisette_url: str = "http://127.0.0.1:6969"
     findmy_request_timeout_seconds: float = 15.0
     findmy_lookback_hours: int = 24
@@ -386,6 +397,16 @@ def get_settings() -> Settings:
             "PINQEVA_FINDMY_LOOKBACK_HOURS must be between 1 and 168"
         )
 
+    findmy_anisette_provider = parse_findmy_anisette_provider(
+        os.getenv("PINQEVA_FINDMY_ANISETTE_PROVIDER", "http")
+    )
+    findmy_anisette_state_path = os.getenv(
+        "PINQEVA_FINDMY_ANISETTE_STATE_PATH", ""
+    ).strip()
+    if findmy_anisette_provider == "native" and not findmy_anisette_state_path:
+        raise ConfigurationError(
+            "PINQEVA_FINDMY_ANISETTE_STATE_PATH is required for native Anisette"
+        )
     findmy_anisette_url = validate_https_url(
         "PINQEVA_FINDMY_ANISETTE_URL",
         os.getenv("PINQEVA_FINDMY_ANISETTE_URL", "http://127.0.0.1:6969").strip(),
@@ -483,6 +504,8 @@ def get_settings() -> Settings:
         findmy_search_party_token=os.getenv(
             "PINQEVA_FINDMY_SEARCH_PARTY_TOKEN", ""
         ).strip(),
+        findmy_anisette_provider=findmy_anisette_provider,
+        findmy_anisette_state_path=findmy_anisette_state_path,
         findmy_anisette_url=findmy_anisette_url,
         findmy_request_timeout_seconds=findmy_timeout,
         findmy_lookback_hours=findmy_lookback,

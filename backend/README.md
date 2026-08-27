@@ -25,14 +25,27 @@ The launcher uses Uvicorn's normal event loop on Unix and a Selector event loop
 on Windows so Psycopg's async pool works on Python 3.14.
 
 On Windows, `./run_local.ps1` starts the pinned local Supabase CLI stack when
-`.env` points to port 54322, starts or reuses the
-`dadoum/anisette-v3-server` Docker container, verifies its v1 headers, and then
-starts Uvicorn with `.env`:
+`.env` points to port 54322 and then starts Uvicorn with `.env`. The recommended
+Windows Anisette mode is the embedded native provider because it does not
+require Docker or virtualization. Configure a durable absolute state path; the
+first start downloads Apple's Android Apple Music package to obtain the native
+libraries, provisions one virtual device, and persists that device for later
+starts:
 
 ```powershell
 cd C:\Users\tomas\Documents\PINKEVA\backend
+# Add these deployment-specific values to the ignored backend/.env:
+# PINQEVA_FINDMY_ANISETTE_PROVIDER=native
+# PINQEVA_FINDMY_ANISETTE_STATE_PATH=C:\ProgramData\PINKEVA\anisette-state.bin
+# PINQEVA_FINDMY_ANISETTE_URL=http://127.0.0.1:6970
 .\run_local.ps1
 ```
+
+Keep the generated state file private and backed up; replacing it creates a new
+Anisette device that must be provisioned again. `http` mode remains available
+for Linux/Docker deployments. In that mode the launcher starts or reuses the
+`dadoum/anisette-v3-server` container and verifies its v1 headers; pass
+`-SkipAnisette` only when the external HTTP service is managed separately.
 
 On the configured development Mac, `./run_local_secure.sh` loads application
 settings from the ignored `backend/.env`, keeps the hosted database password in
@@ -162,11 +175,13 @@ retries that report request. A future automated SMS provider can replace the
 `{"dsid":"...","searchPartyToken":"..."}` session when Apple ID login is
 not enabled. Direct `PINQEVA_FINDMY_DSID` and
 `PINQEVA_FINDMY_SEARCH_PARTY_TOKEN` values are also supported for controlled
-non-interactive testing, but they cannot be refreshed automatically. The local
-Anisette service must be running at `PINQEVA_FINDMY_ANISETTE_URL` (default
-`http://127.0.0.1:6969`) before login or report retrieval. If no Find My
-credentials are configured, provisioning still starts and location requests
-fail safely without fabricated coordinates.
+non-interactive testing, but they cannot be refreshed automatically. Set
+`PINQEVA_FINDMY_ANISETTE_PROVIDER=native` with a durable
+`PINQEVA_FINDMY_ANISETTE_STATE_PATH` to provision an embedded provider before
+Apple login begins. Set the provider to `http` to use a separately managed
+service at `PINQEVA_FINDMY_ANISETTE_URL` (default
+`http://127.0.0.1:6969`). If no Find My credentials are configured, the API
+still starts and location requests fail safely without fabricated coordinates.
 
 The upstream utility disables certificate verification for Apple's legacy GSA
 endpoint. The backend keeps verification enabled and trusts Apple's published
