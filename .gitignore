@@ -29,3 +29,7 @@ mobile-app/build-location/
 # Supabase CLI link metadata and local runtime state
 supabase/.temp/
 *.zip
+
+# Local storefront dependencies and build output
+website/node_modules/
+website/dist/
