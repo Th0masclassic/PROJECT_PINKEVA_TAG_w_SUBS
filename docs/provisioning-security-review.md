@@ -1,6 +1,6 @@
 # Pinqeva provisioning security and scenario review
 
-**Review scope:** protocol-v1.2 QR-free connection authorization, key generation, claim/resume, authenticated mobile discovery/setup, App-to-Tag BLE transfer, ESP32-C3 storage, one-owner enforcement, authenticated release, and subscription cancellation.
+**Review scope:** protocol-v1.6 QR-free connection authorization, key generation, claim/resume, authenticated mobile discovery/setup, App-to-Tag BLE transfer, ESP32 storage, one-owner enforcement, authenticated release, cloud subscription boundaries, and subscription cancellation.
 
 ## Security outcome
 
@@ -37,8 +37,8 @@ An advertisement key is public material, but an attacker who replaces it can den
 | Another account claims an owned tracker | Rejected by the permanent key allocation, active ownership check, row locks, and unique active-owner index. |
 | Owner removes/transfers tracker | Two-phase release verifies the stored fingerprint and tag-control HMAC, erases key material, ends one ownership row, revokes the old allocation, and permits a new keypair only after empty confirmation. |
 | Subscription during removal | All local nonterminal subscriptions for that user/device become cancelled in the completion transaction; external provider IDs are queued in an idempotent cancellation outbox. |
-| Reboot after key receipt | Tag fails closed into subscription-suspended maintenance mode. |
-| Missing signed entitlement | Finder payload remains disabled. |
+| Reboot after key receipt | A valid stored 28-byte advertisement public key immediately restores finder advertising. |
+| Missing or expired legacy signed entitlement | Does not gate finder advertising; subscription access is enforced by authenticated cloud APIs. |
 | Secret logging | New backend/app/firmware paths do not log bootstrap keys, authorization proofs, bearer tokens, advertisement bytes, private scalars, or ciphertext. |
 | Mobile error display | BLE and API failures are reduced to localized, fixed categories; backend bodies, tokens, cryptographic values, and low-level radio details are not shown to the user. |
 
@@ -46,7 +46,7 @@ An advertisement key is public material, but an attacker who replaces it can den
 
 1. **The current no-bond/no-bootstrap development transport is neither authenticated nor confidential at the tag.** Protocol v1.3 capability `0x20` avoids iOS/Android pairing so the physical workflow can be tested, but the checked-in bypass accepts the connection without verifying the backend proof. Production must restore per-device bootstrap verification and add an audited authenticated application-layer encrypted channel plus physical presence/OOB before this profile can ship.
 2. **Claim completion is still app-relayed, not hardware-attested.** The app now reads and matches a tag fingerprint, and destructive reset is HMAC-authenticated, but a modified app could falsely report a fingerprint. Add a manufacturing attestation key protected by secure boot/flash encryption (ideally a secure element) and have the tag sign the session ID, backend nonce, serial, firmware measurement, and advertisement-key hash.
-3. **Subscription entitlement is deliberately not implemented here.** The tag stays suspended. Before finder advertising is enabled, implement the signed device-bound lease, anti-rollback counter, trusted-time rules, renewal channel, and backend signing-key rotation described in the architecture report.
+3. **Cloud subscription enforcement must remain server-side.** Firmware versions that still gate finder advertising on the legacy entitlement must be upgraded. Keep tests proving that subscription expiry pauses premium cloud features without stopping the tag's public-key advertisement, and retain legacy BLE/API compatibility only while older tags remain in the field.
 4. **Development envelope encryption is not a production KMS.** Replace the static AES key with per-record data keys wrapped by a managed KMS/HSM, record key IDs, restrict decrypt permission to the location worker, and test rotation/recovery.
 5. **Hardware testing is partial.** Scan, connection, service discovery, protocol read, and identity read were reproduced against `PKV-140808A9AF68`; the former encryption-required fingerprint read timed out and motivated protocol v1.3 no-bond mode. Full claim, long write, key/control power loss, reset-command verification, reboot, and notification ordering still need testing on the exact ESP32-C3-MINI module and both mobile platforms after flashing the v1.3 image.
 6. **Repository credential artifacts require incident handling.** The upstream tree tracks `Test/Apple_FindMy_test/auth.json`, a `.keys` file, `tmp.key`, and `reports.db`. Their contents were not used or printed during this work. Treat them as exposed: revoke/rotate any real credentials, remove the files from the repository, and purge them from Git history before another push.

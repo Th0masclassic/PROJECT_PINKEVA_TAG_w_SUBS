@@ -46,9 +46,9 @@ test('sends the authenticated two-phase claim contract', async () => {
       JSON.stringify({
         device_id: '22222222-2222-4222-8222-222222222222',
         serial_number: 'PKV-AABBCCDDEEFF',
-        status: 'suspended',
+        status: 'claimed',
         claimed_at: '2026-08-24T00:00:00Z',
-        next_action: 'install_signed_entitlement',
+        next_action: 'ready',
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
@@ -71,7 +71,7 @@ test('sends the authenticated two-phase claim contract', async () => {
       tagAdvertisementKeySha256Base64url: 'fingerprint',
     });
 
-    assert.equal(completed.status, 'suspended');
+    assert.equal(completed.status, 'claimed');
     assert.equal(requests.length, 2);
     assert.equal(
       new Headers(requests[0]?.init?.headers).get('Authorization'),

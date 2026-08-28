@@ -1,13 +1,15 @@
 # Pinqeva System Architecture and Communication Protocol
 
-> **Document version:** 0.4 — Payment-gated provisioning and subscription entitlement implementation<br>
-> **Date:** 25 August 2026<br>
+> **Document version:** 0.5 — Key-based advertising and premium cloud services<br>
+> **Date:** 28 August 2026<br>
 > **Repository:** [PROJECT_PINKEVA_TAG_w_SUBS](https://github.com/Th0masclassic/PROJECT_PINKEVA_TAG_w_SUBS)<br>
 > **Purpose:** Architecture baseline before client and server development
 
 *Always know what is near.*
 
 This is a living architecture document. It explicitly separates behavior already implemented in the test project from behavior proposed for the complete Pinqeva product.
+
+> **Current subscription boundary:** a provisioned tag advertises whenever its valid 28-byte public key is present. Subscription state is enforced by the backend for cloud location, retained history, alerts, safe zones, lost mode, recovery sharing/reporting, and vehicle protection. Sections describing signed tag entitlements are retained only as a legacy protocol compatibility reference; entitlement delivery is not part of current provisioning or renewal.
 
 ## Motivation
 
@@ -17,7 +19,7 @@ A particularly useful Pinqeva scenario is leaving a tracker inside a car. The ap
 
 This is a crowd-sourced location mechanism, not a covert, continuous GPS system. Reports depend on nearby compatible devices, network availability, and the finder service. They can be delayed or absent, and platform anti-stalking protections may notify a person travelling with an unknown tracker. Pinqeva must display each report's timestamp and must not promise an exact, real-time, or guaranteed stolen-vehicle recovery service.
 
-Pinqeva combines this tracking capability with a dedicated mobile experience, clear device ownership, an in-application map, and subscription-controlled tracker operation and cloud services. An active subscription is required for the tag to transmit its finder-network advertising payload. Pinqeva is therefore an end-to-end system composed of physical hardware, firmware, a mobile client, a backend service, a database, subscription management, an administration interface, and a map where an authenticated owner can view the latest available position and location history.
+Pinqeva combines this tracking capability with a dedicated mobile experience, clear device ownership, an in-application map, and subscription-controlled cloud services. The public-key BLE payload remains independent of billing; an active subscription unlocks Pinqeva location retrieval and premium safety features. Pinqeva is therefore an end-to-end system composed of physical hardware, firmware, a mobile client, a backend service, a database, subscription management, an administration interface, and a map where an authenticated owner can view the latest available position and location history.
 
 Defining the architecture and protocol before implementing the client and server reduces ambiguity between components. The firmware and mobile application must agree on Bluetooth services, key sizes, message formats, state transitions, result codes, and recovery behavior. The mobile application and backend must also agree on authentication, device ownership, subscription state, and location-report APIs.
 
@@ -43,7 +45,7 @@ This document defines the hardware architecture, software architecture, and comm
 The complete system contains:
 
 - A battery-powered Bluetooth tracker controlled by an ESP32-family microcontroller.
-- Embedded firmware with setup, tracker, and subscription-suspended modes.
+- Embedded firmware with setup, tracker, and bounded maintenance modes.
 - An iOS/Android client application for provisioning, management, and location display.
 - A backend API responsible for authentication, device ownership, key lifecycle, subscriptions, and location access.
 - A PostgreSQL database currently managed through Supabase.
@@ -69,11 +71,11 @@ When the tracker is placed in a car, Pinqeva retrieves the latest location repor
 - **BLE first:** the tracker communicates locally with the mobile application through Bluetooth Low Energy.
 - **Least privilege:** users access only devices they actively own; administrative functions require separate authorization.
 - **Private-key isolation:** the private key used to decrypt location reports never enters the tracker and remains in protected server-side storage.
-- **Explicit device states:** firmware distinguishes unprovisioned, provisioning, active, subscription-suspended, and error states.
+- **Explicit device states:** firmware distinguishes unprovisioned, provisioning, active tracker, bounded maintenance, and error states.
 - **Server authority:** identity, ownership, payments, subscription state, and location access are enforced by the backend.
 - **No invented precision:** the UI shows the timestamp and freshness of crowd-sourced reports instead of presenting them as real-time GPS.
-- **Subscription enforcement:** an active, cryptographically signed entitlement is required before firmware transmits the finder-network advertising payload.
-- **Recoverable suspension:** an expired tag stops finder advertising but retains a minimal maintenance channel so the owner can renew and reactivate it.
+- **Cloud subscription enforcement:** the backend requires an active/trialing per-device period for location retrieval and premium safety services.
+- **Radio independence:** subscription changes never require physical BLE synchronization and never disable a provisioned tag's public-key advertisement.
 
 ## 2. Hardware Architecture
 
@@ -109,23 +111,21 @@ The microcontroller is responsible for:
 - Initializing non-volatile storage and Bluetooth.
 - Deriving a stable device identifier from the factory MAC address.
 - Determining whether a valid 28-byte advertisement public key exists.
-- Validating a signed subscription entitlement and its expiry time.
 - Starting connectable setup advertising when the key is absent.
 - Exposing the provisioning GATT service to the mobile application.
 - Validating and persistently storing the advertisement key.
-- Starting non-connectable tracker advertising only when provisioning is complete and the subscription entitlement is active.
-- Stopping the finder-network payload when the entitlement expires.
+- Starting non-connectable tracker advertising whenever provisioning is complete and a valid public key is present.
 - Controlling the status LED and reporting initialization errors.
 
-The microcontroller does not process payments or decide whether a subscription is paid. The backend is authoritative for billing; the microcontroller only enforces a signed entitlement issued by that backend. It is also not responsible for user authentication, private-key storage, map rendering, or global report retrieval.
+The microcontroller does not process payments, receive renewals, or decide whether a subscription is paid. The backend is authoritative for billing and cloud feature access. The microcontroller is also not responsible for user authentication, private-key storage, map rendering, or global report retrieval.
 
 ### 2.4 Bluetooth operating modes
 
 | Mode | Advertising | Address | Interval | Connectable | Purpose |
 |---|---|---|---|---|---|
 | Setup | BLE setup advertisement | Public | 100–250 ms | Yes | Allow the mobile client to discover and provision a new tracker. |
-| Tracker | Finder-network advertisement | Random, derived from public key | 1–2 s in prototype | No | Broadcast the tracker payload while the signed entitlement is active. |
-| Suspended | Maintenance/renewal only; no finder payload | Public or dedicated maintenance address | Low duty cycle | Yes | Allow renewal without transmitting tracker advertising data. |
+| Tracker | Finder-network advertisement | Random, derived from public key | 1–2 s in prototype | No | Broadcast whenever a valid public key is stored. |
+| Maintenance | Provisioning service plus continuing tracker identity | Dedicated setup address during window | 120-second physical window | Yes | Allow authorized reset, diagnostics, and firmware updates. |
 
 During setup, the current firmware advertises the name `PKV-XXXXXXXXXXXX`, where the final twelve hexadecimal characters are derived from the factory MAC address. This identifier supports discovery and technical support, but it is not proof of ownership.
 
@@ -187,7 +187,7 @@ The firmware is divided into these responsibilities:
 - **Storage driver:** initializes NVS and will provide validated key save, load, and erase operations.
 - **Utility and LED module:** controls GPIO output and provides visible error feedback.
 - **Provisioning service:** owns the GATT database, characteristic handles, protocol validation, and transition to tracker mode.
-- **Entitlement verifier:** validates signed subscription leases, tracks expiry, and suspends finder advertising when authorization is no longer valid.
+- **Legacy entitlement verifier:** accepts old signed packets for migration compatibility but never controls finder advertising.
 
 ### 3.3 Firmware state model
 
@@ -195,14 +195,12 @@ The firmware is divided into these responsibilities:
 stateDiagram-v2
     [*] --> Boot
     Boot --> Setup: no valid key
-    Boot --> Tracker: key + active entitlement
-    Boot --> Suspended: key + expired/missing entitlement
+    Boot --> Tracker: valid public key
     Boot --> Error: initialization failure
     Setup --> Provisioning: client writes key
-    Provisioning --> Tracker: key + entitlement verified
+    Provisioning --> Tracker: key committed and read back
     Provisioning --> Setup: validation/storage failure
-    Tracker --> Suspended: entitlement expires
-    Suspended --> Tracker: renewed entitlement
+    Tracker --> Tracker: reboot or subscription change
     Tracker --> Setup: authorized reset
     Error --> Boot: reboot/recovery
 ```
@@ -217,9 +215,7 @@ The mobile client acts as the BLE central and GATT client. It is responsible for
 - Reading device identifier, firmware version, protocol version, and a fresh connection challenge.
 - Relaying that challenge to the authenticated backend and writing the returned one-time authorization proof before sensitive operations.
 - Requesting a provisioning public key from the backend.
-- Requesting a signed subscription entitlement for the selected device.
 - Writing only the 28-byte advertisement public key to the tracker.
-- Writing or refreshing the signed entitlement through BLE.
 - Waiting for explicit success before displaying completion.
 - Registering the device and ownership relationship with the backend.
 - Displaying owned devices, subscription status, latest location, and location history.
@@ -241,7 +237,9 @@ The backend is the authority for identity, ownership, subscriptions, and locatio
 - Generating or securely importing finder-network key pairs.
 - Keeping private keys in protected server-side storage.
 - Returning only the advertisement public key to the authorized client.
-- Issuing a device-bound, signed entitlement whose expiry matches the paid subscription period.
+- Enforcing active/trialing subscription access for cloud location and premium services without contacting the tag.
+- Retaining accepted reports for at most 30 days and evaluating safe-zone, lost-mode, and movement alerts idempotently.
+- Issuing hashed, expiring, revocable recovery shares and owner recovery reports.
 - Binding a device identifier to its owner after successful provisioning.
 - Enforcing ownership checks on every device and location request.
 - Exposing device, map, vehicle, plan, subscription, invoice, and account APIs.
@@ -291,7 +289,11 @@ The existing Supabase migrations define these entities:
 | `device` | Tracker identity, name, status, and firmware version. |
 | `ownership` | Time-bounded relationship between a user and a device. |
 | `plan` | Available subscription plan, duration, and price. |
-| `subscription` | Per-device entitlement and billing period; `user_id` records the payer/owner account. |
+| `subscription` | Per-device cloud-service billing period; `user_id` records the payer/owner account. |
+| `device_location_report` | Owner/session-bound premium report retained for at most 30 days. |
+| `device_safe_zone` | Premium geofence definition and last evaluated transition state. |
+| `device_protection_profile` | Lost mode, recovery message, and movement/vehicle settings. |
+| `device_recovery_share` | Hashed, expiring, revocable scoped recovery link. |
 | `invoice` | Financial record associated with a subscription. |
 | `payment_event` | Idempotent record of payment-provider webhook events. |
 
@@ -299,17 +301,13 @@ Row Level Security currently limits profile, ownership, and device reads to the 
 
 ### 3.8 Subscription architecture
 
-A subscription belongs to one physical tag, not to the account as a whole. `subscription.device_id` is the subscribed resource; `subscription.user_id` records the account paying for or currently owning it. One account may therefore hold several current subscriptions, but only one current/nonterminal subscription may exist for any one tag. Terminal `cancelled` and `ended` rows remain as billing history and do not prevent a later subscription for that tag. An active subscription is required to use a Pinqeva tag as a finder-network tracker.
+A subscription belongs to one physical tag, not to the account as a whole. `subscription.device_id` is the subscribed resource; `subscription.user_id` records the account paying for or currently owning it. One account may therefore hold several current subscriptions, but only one current/nonterminal subscription may exist for any one tag. Terminal `cancelled` and `ended` rows remain as billing history and do not prevent a later subscription for that tag.
 
-The backend is authoritative for billing and issues a cryptographically signed, device-bound entitlement after confirming payment. The mobile application transfers this entitlement to the tag through BLE. Firmware verifies the signature using an embedded backend public key and transmits finder advertising data only until the entitlement expires.
+The backend is authoritative for billing. An active or trialing period unlocks cloud location requests, up to 30 days of retained history, safe-zone alerts, lost mode, movement alerts, vehicle protection, recovery links/reports, and tracker freshness/health information. Expired or absent periods receive HTTP 402 from premium endpoints. Existing configurations remain stored so they can resume after renewal, while expiring share links stop resolving immediately.
 
-When the entitlement expires, firmware enters **Subscription Suspended** mode and stops transmitting the finder-network payload. The stored advertisement key is retained. The tag exposes only a low-duty-cycle maintenance/renewal advertisement that does not include the finder payload, allowing the authenticated owner to reconnect after payment and install a new entitlement.
+The tag has no permanent Internet connection and does not need one for this model. Its finder payload is derived only from the stored public key. A signed Stripe webhook advances or ends cloud access immediately, without a BLE maintenance session. Legacy signed entitlement packets and issue/acknowledgement routes remain temporarily for old deployed builds, but no current feature depends on their delivery state.
 
-The tag has no permanent Internet connection and therefore cannot query the backend at the instant a subscription changes. Local enforcement uses the signed expiry time. An entitlement can remain valid until the paid `current_period_end`; cancellation at period end does not stop an already-paid period. Immediate revocation requires a later BLE synchronization unless future hardware provides an independent secure network and time source.
-
-Secure expiry enforcement also requires trustworthy time. Firmware combines the last authenticated phone UTC value with a monotonic timer, saves a monotonic checkpoint to NVS immediately after synchronization and once per hour, and resumes counting from that checkpoint after reboot. The phone refreshes UTC after every backend-authorized BLE connection. Firmware never moves the checkpoint backwards; a small stale-phone tolerance keeps the later device value rather than applying a rollback.
-
-Payment webhooks must be signature-verified and idempotent before changing subscription state or issuing an entitlement. Reset, renewal, safety behavior, anti-stalking behavior, and critical firmware recovery remain available in suspended mode even though finder advertising is disabled.
+Payment webhooks must be signature-verified and idempotent before changing subscription state. Reset, safety behavior, anti-stalking behavior, and critical firmware recovery remain available regardless of subscription state.
 
 ### 3.9 Administration and operator interface
 
@@ -413,7 +411,7 @@ Provisioning Status contains two bytes: one state byte followed by one result by
 | Validating | `0x02` | Completed value is being validated. |
 | Persisting | `0x03` | Key is being written and read back. |
 | Ready | `0x04` | Provisioning succeeded. |
-| Suspended | `0x05` | Finder advertising is disabled because no active entitlement exists. |
+| Suspended | `0x05` | Legacy compatibility state emitted only by older entitlement-gated firmware. Current firmware does not enter it for billing. |
 | Error | `0x7F` | Result byte identifies the failure. |
 
 | Result | Value | Meaning |
@@ -441,22 +439,20 @@ The finder key pair contains a private key and a 28-byte advertisement public ke
 7. The mobile client installs the control key followed by the public key over protected BLE.
 8. The tracker validates, stores, reads back, and exposes only the SHA-256 public-key fingerprint.
 9. Backend ownership is created only after that fingerprint is relayed and matched.
-8. The tracker derives its random BLE address and advertising payload from that public key only after a valid signed entitlement is installed.
-9. The backend later uses the private key to decrypt reports associated with the public-key identifier.
+10. The tracker immediately derives its random BLE address and advertising payload from that valid public key.
+11. The backend later uses the private key to decrypt reports associated with the public-key identifier, subject to cloud subscription access.
 
 The private key must never be written to the tracker, displayed in the administration interface, logged, or stored in ordinary mobile application storage.
 
-### 4.7 Subscription entitlement protocol
+### 4.7 Legacy subscription entitlement protocol
 
-The subscription entitlement is a signed lease rather than a Boolean value sent by the application. The implemented version-1 packet is 135 bytes:
+This packet is retained only for compatibility with older deployed clients and firmware. Current provisioning, renewal, advertising, and premium feature access do not depend on it. The historical version-1 packet is 135 bytes:
 
 - Bytes `0..61`: version, capability flags, 16-byte ASCII device serial, 16-byte subscription UUID, UTC issuance epoch, UTC expiry epoch, uint64 anti-rollback counter, and uint32 capability flags, all integer fields big-endian.
 - Byte `62`: DER-encoded ECDSA signature length.
 - Bytes `63..134`: P-256 ECDSA/SHA-256 signature over bytes `0..61`, padded with zero bytes to the fixed 72-byte field.
 
-Firmware contains only the backend's public verification key. It verifies the signature, device binding, anti-rollback counter, and expiry before storing the entitlement. The backend signing key never enters the mobile application or tracker. A successfully verified renewal atomically replaces the previous entitlement and allows tracker advertising to restart.
-
-The active tag needs a defined maintenance mechanism so the app can install renewals before expiry. The production design may use short periodic connectable maintenance windows or a physical action that temporarily enables the GATT service. Suspended mode always provides a low-duty-cycle renewal window, but never includes the finder-network advertisement key.
+Firmware contains only the backend's public verification key and can still verify/store a legacy packet. Its expiry timer is inert: acceptance or expiry never changes tracker mode. The backend signing key never enters the mobile application or tracker. These routes and characteristics can be removed in a future protocol-major migration after old builds are retired.
 
 ### 4.8 Signed firmware-update protocol
 
@@ -520,11 +516,8 @@ sequenceDiagram
     App->>Tag: Read key fingerprint after persistence
     App->>API: Complete claim (fingerprint + completion capability)
     API->>Store: Create ownership
-    API-->>App: Registered device (suspended)
-    App->>API: Request signed entitlement (same fresh challenge)
-    API-->>App: Entitlement + authorization proof
-    App->>Tag: Write proof, UTC time, then signed entitlement
-    Tag-->>App: READY; finder advertising enabled
+    API-->>App: Registered device (claimed; next action ready)
+    Tag-->>App: Finder advertising already enabled from public key
 ```
 
 The unpaid request expires after a bounded short-lived window. A paid request receives the
@@ -539,7 +532,7 @@ Transfer is another two-phase operation: the current owner requests a reset comm
 
 ### 4.10 Tracker advertising protocol
 
-**Legacy experiment:** the earlier firmware constructed a 31-byte manufacturer-specific BLE advertisement using Apple company identifier `0x004C`, offline-finding type `0x12`, and length `0x19`. The secure provisioning firmware no longer activates that path from a stored key alone. It remains suspended until signed entitlement verification succeeds.
+The firmware constructs a 31-byte manufacturer-specific BLE advertisement using Apple company identifier `0x004C`, offline-finding type `0x12`, and length `0x19`. A valid stored 28-byte public key is the only mode-selection input. Subscription state remains in the backend and never changes this frame.
 
 Tracker advertising is non-connectable in the prototype. Future nearby commands require a controlled connectable window, maintenance mode, or alternative scheduling strategy. That choice affects both battery life and security.
 
@@ -561,9 +554,18 @@ Tracker advertising is non-connectable in the prototype. Future nearby commands 
 | Create/update vehicle profile | `PUT /v1/devices/{deviceId}/vehicle` | Active owner |
 | Latest location report | `POST /v1/devices/{deviceId}/location/report` | Active owner; safe latest projection only |
 | 24-hour location reports | `POST /v1/devices/{deviceId}/location/report_24h` | Active owner; decrypted coordinates/timestamps only |
+| 1–30 day premium history | `POST /v1/devices/{deviceId}/location/history?days=30` | Active subscribed owner |
+| Delete retained history | `DELETE /v1/devices/{deviceId}/location/history` | Active owner, even after expiry |
+| Read premium capability flags | `GET /v1/devices/{deviceId}/premium/features` | Active owner |
+| Read tracker protection overview | `GET /v1/devices/{deviceId}/premium/overview` | Active subscribed owner |
+| Manage safe zones | `GET/POST/PATCH/DELETE /v1/devices/{deviceId}/safe-zones` | Active subscribed owner |
+| Manage lost/vehicle protection | `GET/PATCH /v1/devices/{deviceId}/protection` | Active subscribed owner |
+| Create/list/revoke recovery shares | `/v1/devices/{deviceId}/recovery-shares` | Active subscribed owner |
+| Resolve scoped recovery share | `POST /v1/recovery-shares/resolve` | Valid hashed-token capability in the non-logged request body |
+| Generate recovery report | `GET /v1/devices/{deviceId}/recovery-report` | Active subscribed owner |
 | List plans | `GET /v1/plans` | Public or authenticated according to policy |
 | Manage subscription | `POST /v1/subscriptions` | Authenticated owner |
-| Issue/refresh entitlement | `POST /v1/devices/{deviceId}/entitlements` | Active owner with paid subscription |
+| Issue/refresh legacy entitlement | `POST /v1/devices/{deviceId}/entitlements` | Compatibility only; active subscribed owner |
 | Check firmware release | `GET /v1/devices/{deviceId}/firmware` | Active owner |
 | Start/reconcile firmware update | `POST /v1/devices/{deviceId}/firmware/session` | Active owner + fresh tag challenge |
 | Download firmware image | `GET /v1/devices/{deviceId}/firmware/image` | Active owner + exact release version |
@@ -580,10 +582,10 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - A storage failure keeps the device in setup mode and activates an error indication.
 - An unexpected disconnect restarts setup advertising.
 - A provisioned device rejects key replacement unless an authorized reset flow is active.
-- A missing, invalid, or expired entitlement prevents finder-network advertising even when a valid public key is stored.
-- Suspended mode retains the public key and exposes only the renewal channel.
-- A renewed signed entitlement atomically reactivates tracker advertising after verification.
-- A reboot resumes from the last monotonic UTC checkpoint in NVS; the next authorized phone connection refreshes it without permitting rollback.
+- A missing, invalid, or expired legacy entitlement does not affect finder-network advertising.
+- A valid stored public key resumes tracker advertising directly after reboot.
+- Cloud premium APIs reject expired/absent subscriptions without changing the tag.
+- Renewal advances cloud access immediately after the authoritative Stripe event and requires no BLE session.
 - An interrupted OTA transfer leaves the current boot partition selected; an invalid new image rolls back, and an interrupted final acknowledgement can be reconciled without reflashing.
 - Success is reported only after persistent read-back verification.
 - Backend claim completion is idempotent so retries cannot create duplicate ownership records.
@@ -596,12 +598,13 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - ESP32 application startup and FreeRTOS Bluetooth initialization task.
 - GPIO LED initialization and blink/error utility.
 - Device identifier derived from the factory MAC address.
-- Setup and subscription-suspended firmware modes for the provisioning slice.
+- Setup, key-based tracker, and bounded physical maintenance modes for the provisioning slice.
 - Connectable advertisement containing the provisioning service UUID, with the `PKV-` name in scan response data.
 - Protocol-v1.4 GATT service with a per-connection challenge/proof gate, explicit no-bond development capability, authenticated phone UTC synchronization, hourly NVS clock checkpoints, 30-second unauthorized-client timeout, key fingerprint reads, one-time control-key writes, advertisement-key writes, authenticated reset, status notifications, and prepared writes.
 - Validated factory-bootstrap plus one-time NVS key/control persistence, commit/read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
-- React Native claim/release service that automatically obtains and writes backend authorization proofs, verifies fingerprints, avoids rewrites, installs key material in safe order, and confirms reset before backend release.
-- Backend entitlement issuance, mobile BLE entitlement installation, firmware signature verification, anti-rollback, trusted-time activation, and expiry suspension for active/trialing per-tag subscriptions.
+- React Native claim/release service that automatically obtains and writes backend authorization proofs, verifies fingerprints, avoids rewrites, installs key material in safe order, completes without an entitlement write, and confirms reset before backend release.
+- Key-based firmware advertising that survives reboot and subscription changes; legacy entitlement parsing remains compatibility-only.
+- Cloud-side premium feature access, 30-day owner/session-bound history, safe-zone/lost/movement alerts, vehicle protection, recovery shares/reports, and privacy deletion.
 - Authenticated API that decrypts device bootstrap credentials to issue nonce-bound proofs, conditionally generates P-224 material once, binds allocations atomically, encrypts private scalars, completes one ownership, and performs two-phase release.
 - Supabase migrations for backend-only bootstrap credentials, encrypted key custody, permanent allocation markers, one active owner, release audit, subscription cancellation, and provider outbox delivery.
 - ESP32-C3 build baseline verified with ESP-IDF 5.4.
@@ -614,28 +617,28 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Physical-presence gating, MITM-resistant BLE association, and tag-signed provisioning receipts beyond the implemented backend-authentication proof.
 - Product mobile UI around the checked-in provisioning service.
 - Production KMS/HSM private-key wrapping and report-worker integration.
-- Location-report schema and Pinqeva map implementation.
-- Vehicle profile schema, API, and vehicle-focused map experience.
-- Physical entitlement integration testing and production-grade payment/provider operations.
+- Customer-facing UI for the newly implemented safe-zone, recovery, lost-mode, and vehicle-protection APIs.
+- Scheduled report polling beyond the existing authenticated on-demand report requests.
+- Physical key-based advertising integration testing and production-grade payment/provider operations.
 - Administrative roles, policies, audit events, and operator UI.
 - Production power, RF, security, anti-stalking, and certification tests.
 
 ### 5.3 Next milestone
 
-The next milestone validates authorization and the entitlement slice on physical hardware:
+The next milestone validates authorization and the key-based subscription boundary on physical hardware:
 
 1. Add an authenticated application-layer encrypted no-bond channel, physical presence/OOB, and a cryptographic provisioning receipt.
-2. Reboot the tracker and verify that it enters tracker mode only with both a stored key and a freshly installed active entitlement.
-3. Verify that an expired entitlement stops the finder payload while the renewal channel remains available.
-4. Validate scan, no-bond connection, fragmented entitlement write, persistence, reboot, expiry, and renewal on the target ESP32 from iOS and Android.
+2. Reboot the tracker and verify that a valid stored public key immediately resumes finder advertising without UTC or entitlement synchronization.
+3. Expire and renew the cloud subscription and verify that premium APIs stop/resume while the BLE finder payload remains unchanged.
+4. Validate scan, no-bond connection, key persistence, reboot, maintenance, reset, and OTA on the target ESP32 from iOS and Android.
 5. Replace the development envelope key with KMS/HSM-backed per-record data keys.
 
-The milestone is complete when a blank tracker can be provisioned from the mobile client, receives a signed entitlement, survives a reboot, broadcasts the expected tracker payload only during the paid period, enters suspended mode after expiry, can be renewed, and appears under the correct authenticated account.
+The milestone is complete when a blank tracker can be provisioned from the mobile client, survives a reboot, broadcasts from its public key regardless of billing state, and exposes premium cloud features only during an active/trialing period under the correct authenticated account.
 
 ## 6. Conclusion
 
 Pinqeva is an end-to-end Bluetooth tracking platform rather than only an embedded firmware project. The same tag can protect personal items or be assigned to a vehicle, allowing the application to combine owner-provided car information with the latest crowd-sourced location report. If a vehicle is stolen, compatible devices travelling with or passing near the car may help report the tag's changing location, although availability and timing are not guaranteed.
 
-The architecture separates low-power hardware from mobile onboarding, cloud location processing, subscriptions, vehicle and map presentation, and administration. The tracker stores the advertisement public key and a signed subscription entitlement, while the backend protects the private key and controls entitlement issuance.
+The architecture separates low-power hardware from mobile onboarding, cloud location processing, subscriptions, vehicle and map presentation, and administration. The tracker stores only the material needed to advertise and reset safely, while the backend protects the private key and controls paid cloud access.
 
-The current firmware distinguishes a device with a stored advertisement key from one that must enter setup mode and fails closed into suspended maintenance mode after provisioning or reboot. Signed entitlement issuance, BLE delivery, verification, anti-rollback, trusted time, expiry suspension, and renewal are implemented in the current prototype. The remaining work is an authenticated and confidential application-layer no-bond transport with physical presence/OOB and physical hardware testing. Only a valid key together with an active signed entitlement permits finder advertising.
+The current firmware distinguishes a device with a stored advertisement key from one that must enter setup mode. A valid key is sufficient for finder advertising after provisioning and reboot. Subscription expiry pauses location retrieval and premium safety services in the backend, not the radio. The remaining work is an authenticated and confidential application-layer no-bond transport with physical presence/OOB, customer UI wiring for the premium APIs, and physical hardware testing.

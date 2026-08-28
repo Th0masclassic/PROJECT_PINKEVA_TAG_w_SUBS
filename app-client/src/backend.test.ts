@@ -34,9 +34,9 @@ describe("backend error handling", () => {
   const validClaim = {
     device_id: "device-id",
     serial_number: "PKV-AABBCCDDEEFF",
-    status: "suspended",
+    status: "claimed",
     claimed_at: "2026-08-24T12:00:00Z",
-    next_action: "install_signed_entitlement",
+    next_action: "ready",
   };
   const validReleaseStart: DeviceReleaseStart = {
     release_id: "release-id",

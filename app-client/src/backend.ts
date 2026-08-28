@@ -15,9 +15,9 @@ export type DeviceClaimStart = {
 export type DeviceClaim = {
   device_id: string;
   serial_number: string;
-  status: "suspended";
+  status: "claimed";
   claimed_at: string;
-  next_action: "install_signed_entitlement";
+  next_action: "ready";
 };
 
 export type DeviceReleaseStart = {
@@ -87,9 +87,9 @@ function isDeviceClaim(value: unknown): value is DeviceClaim {
   return (
     hasString(value, "device_id") &&
     hasString(value, "serial_number") &&
-    value.status === "suspended" &&
+    value.status === "claimed" &&
     hasString(value, "claimed_at") &&
-    value.next_action === "install_signed_entitlement"
+    value.next_action === "ready"
   );
 }
 

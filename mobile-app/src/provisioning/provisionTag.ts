@@ -376,14 +376,10 @@ export class TagProvisioner {
       statusSubscription?.remove();
       cancelReadyWait = undefined;
       statusSubscription = undefined;
-      await this.installEntitlementOnConnectedDevice({
-        device,
-        deviceId: completedClaim.device_id,
-        serialNumber: completedClaim.serial_number,
-        tagChallenge,
-        timeoutMs: input.timeoutMs,
-        onProgress: input.onProgress,
-      });
+      // The persisted public advertisement key is sufficient for Finder BLE.
+      // Legacy entitlement installation remains available below only so an
+      // older deployed firmware can be recovered during the transition; it is
+      // not part of normal provisioning or subscription renewal.
       return completedClaim;
     } finally {
       cancelReadyWait?.();

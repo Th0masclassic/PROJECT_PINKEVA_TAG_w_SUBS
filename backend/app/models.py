@@ -86,9 +86,9 @@ class DeviceClaimComplete(StrictModel):
 class DeviceClaimResponse(StrictModel):
     device_id: UUID
     serial_number: str
-    status: Literal["suspended"]
+    status: Literal["claimed"]
     claimed_at: datetime
-    next_action: Literal["install_signed_entitlement"]
+    next_action: Literal["ready"]
 
 
 class DeviceEntitlementRequest(StrictModel):
@@ -350,6 +350,191 @@ class DeviceLocationHistoryResponse(StrictModel):
     locations: list[DeviceLocationHistoryPoint] = Field(max_length=20_000)
 
 
+class PremiumFeatureAccessResponse(StrictModel):
+    device_id: UUID
+    subscription_active: bool
+    tier: Literal["premium", "none"]
+    cloud_location_reports: bool
+    location_history_days: int = Field(ge=0, le=30)
+    smart_alerts: bool
+    safe_zones: bool
+    lost_mode: bool
+    trusted_sharing: bool
+    recovery_report: bool
+    vehicle_mode: bool
+
+
+class DeviceSafeZoneCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=80)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_meters: int = Field(ge=100, le=100_000)
+    notify_on_enter: bool = True
+    notify_on_exit: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def safe_name(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized or re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid safe-zone name")
+        return normalized
+
+
+class DeviceSafeZoneUpdate(StrictModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    radius_meters: int | None = Field(default=None, ge=100, le=100_000)
+    notify_on_enter: bool | None = None
+    notify_on_exit: bool | None = None
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def safe_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized or re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid safe-zone name")
+        return normalized
+
+
+class DeviceSafeZoneResponse(StrictModel):
+    id: UUID
+    device_id: UUID
+    name: str
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    radius_meters: int = Field(ge=100, le=100_000)
+    notify_on_enter: bool
+    notify_on_exit: bool
+    enabled: bool
+    last_inside: bool | None = None
+    last_evaluated_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class DeviceSafeZoneListResponse(StrictModel):
+    safe_zones: list[DeviceSafeZoneResponse] = Field(max_length=20)
+
+
+class DeviceProtectionProfileUpdate(StrictModel):
+    lost_mode: bool | None = None
+    recovery_message: str | None = Field(default=None, max_length=240)
+    vehicle_mode: bool | None = None
+    movement_alerts: bool | None = None
+    movement_threshold_meters: int | None = Field(
+        default=None, ge=100, le=10_000
+    )
+
+    @field_validator("recovery_message")
+    @classmethod
+    def safe_recovery_message(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            return None
+        if re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid recovery message")
+        return normalized
+
+
+class DeviceProtectionProfileResponse(StrictModel):
+    device_id: UUID
+    lost_mode: bool
+    lost_since: datetime | None = None
+    recovery_message: str | None = Field(default=None, max_length=240)
+    vehicle_mode: bool
+    movement_alerts: bool
+    movement_threshold_meters: int = Field(ge=100, le=10_000)
+    updated_at: datetime
+
+
+class DeviceRecoveryShareCreate(StrictModel):
+    label: str = Field(default="Recovery contact", min_length=1, max_length=80)
+    access_level: Literal["latest", "history"] = "latest"
+    expires_in_hours: int = Field(default=72, ge=1, le=720)
+
+    @field_validator("label")
+    @classmethod
+    def safe_label(cls, value: str) -> str:
+        normalized = " ".join(value.split())
+        if not normalized or re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid share label")
+        return normalized
+
+
+class DeviceRecoveryShareSummary(StrictModel):
+    id: UUID
+    device_id: UUID
+    label: str
+    access_level: Literal["latest", "history"]
+    expires_at: datetime
+    revoked_at: datetime | None = None
+    last_accessed_at: datetime | None = None
+    created_at: datetime
+
+
+class DeviceRecoveryShareCreateResponse(DeviceRecoveryShareSummary):
+    share_token: str = Field(min_length=43, max_length=43)
+    share_path: str = Field(min_length=1, max_length=160)
+
+
+class DeviceRecoveryShareListResponse(StrictModel):
+    shares: list[DeviceRecoveryShareSummary] = Field(max_length=100)
+
+
+class RecoveryShareResolveRequest(StrictModel):
+    token: str = Field(min_length=43, max_length=43)
+
+
+class SharedTrackerResponse(StrictModel):
+    tracker_name: str
+    lost_mode: bool
+    recovery_message: str | None = Field(default=None, max_length=240)
+    access_level: Literal["latest", "history"]
+    expires_at: datetime
+    latest_location: DeviceLocationHistoryPoint | None = None
+    locations: list[DeviceLocationHistoryPoint] = Field(max_length=20_000)
+
+
+class DeviceRecoveryReportResponse(StrictModel):
+    device_id: UUID
+    tracker_name: str
+    serial_number: str
+    generated_at: datetime
+    lost_mode: bool
+    lost_since: datetime | None = None
+    recovery_message: str | None = Field(default=None, max_length=240)
+    last_location: DeviceLocationHistoryPoint | None = None
+    location_count_30d: int = Field(ge=0)
+    safe_zone_count: int = Field(ge=0)
+    active_share_count: int = Field(ge=0)
+
+
+class PremiumTrackerOverviewResponse(StrictModel):
+    device_id: UUID
+    tracker_name: str
+    subscription_active: bool
+    location_status: Literal["current", "stale", "never"]
+    last_location_at: datetime | None = None
+    firmware_version: str | None = None
+    lost_mode: bool
+    vehicle_mode: bool
+    movement_alerts: bool
+    safe_zone_count: int = Field(ge=0)
+    active_share_count: int = Field(ge=0)
+
+
+class LocationHistoryDeleteResponse(StrictModel):
+    device_id: UUID
+    deleted_reports: int = Field(ge=0)
+
+
 class PlanSummary(StrictModel):
     code: str
     name: str
@@ -432,6 +617,10 @@ NotificationKind = Literal[
     "expired",
     "tag_sync_required",
     "admin_message",
+    "safe_zone_enter",
+    "safe_zone_exit",
+    "lost_mode_location",
+    "movement_detected",
 ]
 
 

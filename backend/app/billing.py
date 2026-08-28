@@ -709,15 +709,12 @@ class BillingService:
             cancel_at_period_end=bool(
                 subscription["cancel_at_period_end"]
             ),
-            entitlement_sync_status=subscription.get(
-                "entitlement_sync_status"
-            ),
-            tag_entitlement_expires_at=subscription.get(
-                "tag_entitlement_expires_at"
-            ),
-            tag_entitlement_updated_at=subscription.get(
-                "tag_entitlement_updated_at"
-            ),
+            # Kept as nullable response fields for older app builds. Current
+            # firmware advertises from its public key and does not need a paid
+            # period copied to the tag.
+            entitlement_sync_status=None,
+            tag_entitlement_expires_at=None,
+            tag_entitlement_updated_at=None,
             available_plans=available_plans,
         )
 
@@ -1902,7 +1899,7 @@ class BillingService:
         provider_subscription_id: str,
     ) -> None:
         # This queue is committed atomically with the fail-safe local terminal
-        # entitlement. A separately deployed worker performs the immediate,
+        # subscription state. A separately deployed worker performs the immediate,
         # no-proration Stripe cancellation after this transaction releases its
         # row locks; only a provider-terminal webhook confirms completion.
         await connection.execute(

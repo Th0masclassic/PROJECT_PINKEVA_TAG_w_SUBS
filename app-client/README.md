@@ -1,6 +1,6 @@
 # App-to-Tag provisioning bridge
 
-`TagProvisioner` is the protocol-v1.2 React Native service layer. The UI supplies the selected BLE peripheral, a Supabase access-token callback, and a stable idempotency key. No QR scan or user-entered setup secret is required.
+`TagProvisioner` is the protocol-v1.6 React Native service layer. The UI supplies the selected BLE peripheral, a Supabase access-token callback, and a stable idempotency key. No QR scan or user-entered setup secret is required.
 
 The flow is deliberately ordered:
 
@@ -16,4 +16,4 @@ The module never receives the finder private key or reusable factory bootstrap k
 
 `TagProvisioner.release()` performs the inverse two-phase flow. It verifies the connected owned tag, obtains an authenticated one-time reset command, erases the tag, checks that the fingerprint is empty, and only then completes backend release. Backend completion ends the sole active owner and locally cancels all nonterminal subscriptions for that user/device; provider cancellations are delivered through the database outbox.
 
-The tag remains subscription-suspended after provisioning. Installing and verifying the signed entitlement is a separate milestone and must complete before finder advertisements are enabled.
+After the public key is committed and read back, the tag starts finder advertising immediately and restores it from that key after reboot. Subscription state is enforced only by authenticated cloud APIs, so provisioning and renewal never require a signed entitlement write to the tag. The legacy entitlement method remains available only for older deployed firmware.

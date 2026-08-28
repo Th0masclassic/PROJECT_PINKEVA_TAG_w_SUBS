@@ -77,7 +77,7 @@
 
     \vspace{1.2cm}
     \begin{tabular}{rl}
-        \textbf{Document version:} & 0.1 --- Draft \\
+        \textbf{Document version:} & 0.1 --- Historical draft \\
         \textbf{Date:} & 23 August 2026 \\
         \textbf{Project repository:} &
         \href{https://github.com/Th0masclassic/PROJECT_PINKEVA_TAG_w_SUBS}
@@ -96,6 +96,19 @@
 
     \vspace{1cm}
 \end{titlepage}
+
+\begin{center}
+\fcolorbox{pinqevapink}{pinqevalight}{%
+\begin{minipage}{0.9\textwidth}
+\textbf{Superseded architecture notice (28 August 2026).}
+This historical draft describes an entitlement-gated radio design. The current
+implementation is defined by \code{system-architecture-and-protocol.md}
+version 0.5: a valid stored 28-byte public key is sufficient for finder
+advertising, while subscriptions protect backend location and premium safety
+services. No current provisioning or renewal flow sends a subscription to the
+tag.
+\end{minipage}}
+\end{center}
 
 \section*{Motivation}
 \addcontentsline{toc}{section}{Motivation}
@@ -1230,18 +1243,11 @@ vehicle theft, compatible devices travelling with or passing near the car may
 help report the tag's changing location, although availability and timing are
 not guaranteed.
 
-The architecture separates low-power hardware from mobile onboarding, cloud
-location processing, subscriptions, vehicle and map presentation, and
-administration. The tracker stores the advertisement public key and a signed
-subscription entitlement, while the backend protects the private key and
-controls entitlement issuance.
-
-The current firmware already distinguishes a device with a stored public key
-from one that must enter setup mode. The target state decision adds a mandatory
-subscription check: only a valid key together with an active signed entitlement
-permits finder advertising. The immediate engineering task is to complete the
-provisioning and entitlement protocol that bridges these states. After that
-contract is tested, the client and backend can be developed against a stable,
-documented interface.
+This document records the original entitlement-gated proposal. It has been
+superseded by the repository's version-0.5 Markdown architecture: the tracker
+stores and advertises from its public key, while the backend protects the
+private key and enforces subscriptions for location retrieval, retained
+history, alerts, safe zones, lost mode, recovery sharing, and vehicle
+protection.
 
 \end{document}

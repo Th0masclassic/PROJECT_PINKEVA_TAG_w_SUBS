@@ -132,6 +132,27 @@ class LocationService:
         user_id: UUID,
         device_id: UUID,
     ) -> DeviceLocationHistoryResponse:
+        return await self.request_report_history(
+            database,
+            user_id=user_id,
+            device_id=device_id,
+            days=1,
+        )
+
+    async def request_report_history(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        days: int,
+    ) -> DeviceLocationHistoryResponse:
+        if not 1 <= days <= 30:
+            raise LocationError(
+                "INVALID_HISTORY_WINDOW",
+                "Location history is available for one to thirty days",
+                422,
+            )
         binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
         current = datetime.now(UTC)
         try:
@@ -140,7 +161,7 @@ class LocationService:
                 advertisement_key_sha256=binding.advertisement_key_sha256,
                 private_key=binding.private_key,
                 now=current,
-                lookback_hours=24,
+                lookback_hours=days * 24,
             )
         except FindMyConfigurationError as exc:
             logger.warning(
@@ -176,6 +197,15 @@ class LocationService:
                 503,
             ) from None
 
+        async with database.transaction() as connection:
+            for report in reports:
+                await self._persist_report(
+                    connection,
+                    user_id=user_id,
+                    binding=binding,
+                    report=report,
+                )
+
         return DeviceLocationHistoryResponse(
             device_id=binding.device_id,
             locations=[
@@ -204,7 +234,16 @@ class LocationService:
                        ps.private_key_ciphertext,
                        ps.private_key_nonce,
                        ps.private_key_envelope_version,
-                       ps.advertisement_key_sha256
+                       ps.advertisement_key_sha256,
+                       EXISTS (
+                         SELECT 1
+                           FROM public.subscription subscription
+                          WHERE subscription.user_id = o.user_id
+                            AND subscription.device_id = d.id
+                            AND subscription.status IN ('active', 'trialing')
+                            AND subscription.starts_at <= now()
+                            AND subscription.current_period_end > now()
+                       ) AS subscription_active
                   FROM public.device d
                   JOIN public.ownership o
                     ON o.device_id = d.id
@@ -225,6 +264,12 @@ class LocationService:
                 "LOCATION_UNAVAILABLE",
                 "This tag is not available for location reports",
                 404,
+            )
+        if not bool(row.get("subscription_active", True)):
+            raise LocationError(
+                "PREMIUM_SUBSCRIPTION_REQUIRED",
+                "An active subscription is required for cloud location reports",
+                402,
             )
 
         try:
@@ -275,6 +320,12 @@ class LocationService:
         # decrypted key. A release or transfer racing this request therefore
         # cannot write a location into a future owner's device projection.
         place = f"{report.latitude:.5f}, {report.longitude:.5f}"
+        await self._persist_report(
+            connection,
+            user_id=user_id,
+            binding=binding,
+            report=report,
+        )
         query = await connection.execute(
             """
             UPDATE public.device d
@@ -327,6 +378,67 @@ class LocationService:
             user_id=user_id,
             device_id=binding.device_id,
             report_status="unchanged",
+        )
+
+    async def _persist_report(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        binding: _ReportBinding,
+        report: FinderReport,
+    ) -> None:
+        """Persist only while the owner/session binding used to decrypt is active.
+
+        The database trigger evaluates safe-zone, lost-mode, and movement alerts
+        only for a newly inserted report. The uniqueness key makes retries and
+        overlapping app requests idempotent.
+        """
+
+        place = f"{report.latitude:.5f}, {report.longitude:.5f}"
+        await connection.execute(
+            """
+            INSERT INTO public.device_location_report (
+                user_id, device_id, provisioning_session_id,
+                latitude, longitude, confidence, status_code,
+                place, recorded_at
+            )
+            SELECT %s, device.id, %s, %s, %s, %s, %s, %s, %s
+              FROM public.device device
+             WHERE device.id = %s
+               AND device.provisioning_session_id = %s
+               AND EXISTS (
+                 SELECT 1 FROM public.ownership ownership
+                  WHERE ownership.device_id = device.id
+                    AND ownership.user_id = %s
+                    AND ownership.ended_at IS NULL
+               )
+               AND EXISTS (
+                 SELECT 1 FROM public.subscription subscription
+                  WHERE subscription.device_id = device.id
+                    AND subscription.user_id = %s
+                    AND subscription.status IN ('active', 'trialing')
+                    AND subscription.starts_at <= now()
+                    AND subscription.current_period_end > now()
+               )
+            ON CONFLICT (
+                device_id, provisioning_session_id, recorded_at
+            ) DO NOTHING
+            """,
+            (
+                user_id,
+                binding.session_id,
+                report.latitude,
+                report.longitude,
+                report.confidence,
+                report.status,
+                place,
+                report.timestamp,
+                binding.device_id,
+                binding.session_id,
+                user_id,
+                user_id,
+            ),
         )
 
     async def _current_projection(

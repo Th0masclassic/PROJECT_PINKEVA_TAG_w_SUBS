@@ -433,6 +433,76 @@ async def test_report_history_24h_cannot_read_another_users_tag(
 
 
 @pytest.mark.asyncio
+async def test_cloud_location_requires_subscription_but_not_a_tag_entitlement() -> None:
+    settings = _settings()
+    user_id = uuid4()
+    device_id = uuid4()
+    binding, _ = _binding_row(
+        settings, user_id=user_id, device_id=device_id, session_id=uuid4()
+    )
+    binding["subscription_active"] = False
+    database = _Database(_Connection(binding_row=binding))
+
+    with pytest.raises(LocationError) as error:
+        await LocationService(settings).request_report(
+            database, user_id=user_id, device_id=device_id
+        )
+
+    assert error.value.code == "PREMIUM_SUBSCRIPTION_REQUIRED"
+    assert error.value.status_code == 402
+    binding_query = database.connection.executed[0][0]
+    assert "public.subscription" in binding_query
+    assert "device_entitlement_sync" not in binding_query
+
+
+@pytest.mark.asyncio
+async def test_premium_history_supports_thirty_days_and_persists_reports(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    user_id = uuid4()
+    device_id = uuid4()
+    binding, _ = _binding_row(
+        settings, user_id=user_id, device_id=device_id, session_id=uuid4()
+    )
+    recorded_at = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+
+    def fake_fetch_reports(*_args: object, **kwargs: object) -> list[FinderReport]:
+        assert kwargs["lookback_hours"] == 30 * 24
+        return [FinderReport(38.72, -9.14, 4, 1, recorded_at)]
+
+    monkeypatch.setattr(FindMyClient, "fetch_reports", fake_fetch_reports)
+    database = _Database(_Connection(binding_row=binding))
+
+    result = await LocationService(settings).request_report_history(
+        database,
+        user_id=user_id,
+        device_id=device_id,
+        days=30,
+    )
+
+    assert len(result.locations) == 1
+    assert result.locations[0].recorded_at == recorded_at
+    history_inserts = [
+        query
+        for query, _parameters in database.connection.executed
+        if "INSERT INTO public.device_location_report" in query
+    ]
+    assert len(history_inserts) == 1
+
+
+@pytest.mark.asyncio
+async def test_history_window_is_bounded_before_any_database_or_provider_call() -> None:
+    database = _Database(_Connection(binding_row=None))
+    with pytest.raises(LocationError) as error:
+        await LocationService(_settings()).request_report_history(
+            database, user_id=uuid4(), device_id=uuid4(), days=31
+        )
+    assert error.value.code == "INVALID_HISTORY_WINDOW"
+    assert database.connection.executed == []
+
+
+@pytest.mark.asyncio
 async def test_location_history_route_matches_mobile_contract_and_logs_without_coordinates(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

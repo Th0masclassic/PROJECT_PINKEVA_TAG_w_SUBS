@@ -72,9 +72,9 @@ included in the native build.
 
 Bluetooth setup needs a native development or release build on a physical
 iPhone or Android phone. It is unavailable in Expo Go, the web build, and the
-iOS Simulator. The current firmware installs the first signed per-tag
-entitlement in the claim session. Finder advertising starts only after the
-entitlement is persisted and verified by the tag.
+iOS Simulator. The current firmware starts finder advertising as soon as the
+28-byte public key is committed and restores it after reboot. Subscription
+checkout and renewal unlock cloud services without another Bluetooth session.
 
 The mobile client uses a temporary, non-bonding BLE session for setup. It does
 not call a platform bond/pair API, does not enable automatic reconnect, and

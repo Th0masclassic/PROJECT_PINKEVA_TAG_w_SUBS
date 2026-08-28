@@ -9,7 +9,7 @@ release portion of protocol v1.6:
 4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate one P-224 key pair with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
 5. The app writes the authorization proof before the one-time tag-control key and advertisement key. Firmware disconnects invalid clients and times out connections that never authorize.
 6. The app reads the tag's 32-byte key fingerprint. `POST /v1/devices/claim/complete` checks it plus a user/session/device-bound capability before creating the one active ownership row.
-7. For a new paid claim, the app immediately requests and installs the signed entitlement over the same BLE connection; existing owners use the same endpoint for renewals.
+7. Claim completion returns `status: claimed` and `next_action: ready`. The public advertisement key is sufficient for tracker operation; normal setup and renewal do not install a subscription packet over BLE.
 8. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
 
 ## Run locally
@@ -286,10 +286,15 @@ Subscriptions are also device-scoped: one account may pay for multiple tags, but
 
 The outbox is not the payment-provider API. A production worker must process it and the signed provider webhook must confirm that external billing stopped.
 
-## Signed tag activation
+## Legacy signed tag activation compatibility
 
-After a tag is claimed, the owner can request a signed entitlement only while
-that device has an active or trialing subscription:
+The entitlement routes remain temporarily available for an older mobile or
+firmware build. They are not called by current provisioning or renewal. Current
+firmware advertises whenever its stored 28-byte public key is valid, while the
+backend enforces subscription access for cloud services.
+
+An older client can still request a signed packet while the device has an
+active or trialing subscription:
 
 ```http
 POST /v1/devices/{device_id}/entitlements
@@ -299,13 +304,9 @@ Content-Type: application/json
 {"serial_number":"PKV-AABBCCDDEEFF","tag_challenge_base64url":"<fresh tag challenge>"}
 ```
 
-The response contains a 135-byte device-bound P-256 entitlement, the
-challenge-bound authorization proof, its expiry, and an anti-rollback counter.
-The mobile client writes the proof and entitlement to the suspended tag. The
-firmware rejects missing, invalid, mismatched, expired, or replayed leases and
-only then enables finder-network advertising. The backend signer is configured
-with `PINQEVA_ENTITLEMENT_PRIVATE_KEY`; the matching public key is embedded in
-the firmware.
+The compatibility response contains the historical 135-byte device-bound P-256
+packet, challenge-bound proof, expiry, and counter. New firmware may store a
+valid legacy packet but its expiry never starts or stops finder advertising.
 
 Issuance creates or updates a `device_entitlement_sync` row for the exact
 subscription period and packet digest. After writing, the mobile client reads
@@ -320,8 +321,39 @@ Content-Type: application/json
 ```
 
 Only an exact current counter, period, digest, owner, and device transition the
-row from `issued` to `installed`. This lets operators distinguish “Stripe paid”
-from “the physical tag has the new date.”
+legacy row from `issued` to `installed`. No product feature depends on that row.
+
+## Premium tracker services
+
+Active/trialing per-device subscriptions unlock backend-controlled features;
+the tag never needs to receive the subscription state:
+
+```text
+GET    /v1/devices/{device_id}/premium/features
+GET    /v1/devices/{device_id}/premium/overview
+POST   /v1/devices/{device_id}/location/history?days=30
+DELETE /v1/devices/{device_id}/location/history
+
+GET|POST   /v1/devices/{device_id}/safe-zones
+PATCH|DELETE /v1/devices/{device_id}/safe-zones/{safe_zone_id}
+
+GET|PATCH  /v1/devices/{device_id}/protection
+GET        /v1/devices/{device_id}/recovery-report
+GET|POST   /v1/devices/{device_id}/recovery-shares
+DELETE     /v1/devices/{device_id}/recovery-shares/{share_id}
+POST       /v1/recovery-shares/resolve
+```
+
+Accepted Finder reports are retained for at most 30 days and are bound to the
+active owner and provisioning session. A database trigger evaluates safe-zone
+transitions, lost-mode updates, and movement thresholds idempotently and places
+custom tracker alerts into the existing durable inbox/push outbox. Recovery
+share tokens contain 256 bits of randomness, are stored only as SHA-256 hashes,
+expire in at most 30 days, and stop resolving if revoked, ownership changes,
+the account is banned, or the subscription is no longer current. The web share
+keeps the plaintext capability in a URL fragment and resolves it in the POST
+body, preventing it from appearing in HTTP paths, access logs, or Referrer
+headers. Resolution responses are explicitly non-cacheable.
 
 ## Signed firmware releases
 
@@ -331,7 +363,7 @@ than a client-side version constant:
 ```http
 GET  /v1/devices/{device_id}/firmware
 POST /v1/devices/{device_id}/firmware/session
-GET  /v1/devices/{device_id}/firmware/image?version=0.3.0
+GET  /v1/devices/{device_id}/firmware/image?version=0.3.1
 POST /v1/devices/{device_id}/firmware/acknowledge
 ```
 
@@ -371,10 +403,9 @@ subscription or payable Checkout flow per tag.
 
 New-tag setup uses the separate `provisioning_request` gate described above.
 The mobile client never receives a public key, control key, completion token,
-or private key before the request is paid. Existing owned tags continue to use
-the per-tag subscription endpoints below; after a successful webhook, a new
-claim installs the signed entitlement during the same BLE session, while an
-existing owner reconnects to renew it.
+or private key before the request is paid. After a successful webhook, cloud
+access is active immediately. New claims finish after key fingerprint
+confirmation and existing owners never reconnect merely to renew.
 
 The authenticated mobile contract is:
 
@@ -420,7 +451,7 @@ mode and result), never Stripe's full event payload, address, card or customer
 details. Recognized events are reconciled against the current Stripe object, and
 provider timestamps plus event IDs make same-second updates deterministic. A
 webhook that races the local Checkout binding returns a retryable response. If
-ownership ended while Stripe created a subscription, local entitlement is
+ownership ended while Stripe created a subscription, local cloud access is
 stopped immediately in the webhook transaction and a durable outbox requests
 immediate cancellation without proration or a final invoice; only a later
 provider-terminal signed webhook confirms that cancellation.
@@ -428,14 +459,12 @@ provider-terminal signed webhook confirms that cancellation.
 Recurring renewal does not depend on the mobile app. On `invoice.paid`, the
 handler retrieves both the authoritative invoice and subscription and applies
 the advanced period atomically before storing the invoice, even if
-`customer.subscription.updated` arrives later. The subscription trigger then
-queues a new pending physical-tag delivery period. No backend can update an
-offline BLE tag directly, so the owner still needs one fresh, button-opened BLE
-session to install that renewed date.
+`customer.subscription.updated` arrives later. The new cloud period is usable
+immediately; there is no physical-tag delivery step.
 
 The background notification worker creates idempotent inbox/outbox rows seven
-days before the period end, one day before it, at expiry, and when a new tag
-entitlement remains uninstalled for ten minutes. Native clients register Expo
+days before the period end, one day before it, at expiry, and for premium
+safe-zone/lost/movement events. Native clients register Expo
 destinations at `POST /v1/notifications/push-token`; the worker leases due jobs,
 uses exponential retry for temporary failures, and disables destinations that
 Expo reports as unregistered. `GET /v1/notifications` exposes the durable inbox

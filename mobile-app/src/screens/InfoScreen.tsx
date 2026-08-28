@@ -93,7 +93,7 @@ function PrivacyContent() {
         <Surface style={styles.card}>
           <Bullet>Sign-in sessions are stored in the phone’s protected storage.</Bullet>
           <Bullet>Pinkeva services use encrypted connections, and privileged Admin actions require additional verification.</Bullet>
-          <Bullet>Firmware and tag access updates are verified before a tag accepts them.</Bullet>
+          <Bullet>Firmware packages and nearby control commands are verified before a tag accepts them.</Bullet>
         </Surface>
       </Section>
       <Section title="Your choices">
@@ -314,7 +314,7 @@ function AboutContent() {
         <Surface style={styles.card}>
           <Bullet>Helps you securely set up and manage your individual Pinkeva tags.</Bullet>
           <Bullet>Shows tracker, subscription, and accepted location information in one place.</Bullet>
-          <Bullet>Keeps firmware and access-period updates verified before a tag accepts them.</Bullet>
+          <Bullet>Keeps signed firmware and nearby tag-control operations verified before a tag accepts them.</Bullet>
         </Surface>
       </Section>
       <Section title="Made with care">

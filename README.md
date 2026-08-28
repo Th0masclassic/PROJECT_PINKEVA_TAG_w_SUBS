@@ -6,7 +6,7 @@ Pinqeva is a prototype Bluetooth item-tracking system built around an ESP32-base
 
 The same tag can be attached to personal belongings or left inside a vehicle. When used in a car, the application will associate the tag with owner-provided vehicle information and display the car's last reported location.
 
-> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, separate native Admin app, ESP32 GATT receiver, signed BLE firmware-update path, Stripe subscription workflow, signed tag-entitlement path, native map surface, and secured browser admin console exist; the finder-report worker and final production validation are not yet complete.
+> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, separate native Admin app, ESP32 GATT receiver, signed BLE firmware-update path, Stripe subscription workflow, premium tracker-service APIs, native map surface, and secured browser admin console exist; finder-network and final production validation are not yet complete.
 
 ## Project overview
 
@@ -37,22 +37,22 @@ The complete architecture and proposed communication contract are documented in 
 |---|---|---|
 | ESP32 application startup | Implemented | Initializes the status LED and starts BLE initialization in a FreeRTOS task. |
 | Device identity | Implemented | Derives a stable `PKV-XXXXXXXXXXXX` identifier from the factory MAC address. |
-| Firmware mode selection | Implemented provisioning slice | A missing key enters setup; a valid committed key without an entitlement fails closed into suspended maintenance mode. |
+| Firmware mode selection | Implemented provisioning slice | A missing key enters setup; any valid committed 28-byte public key enters tracker mode. Subscription state is not stored on the tag. |
 | Setup mode | Implemented prototype | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`. The checked-in development profile bypasses bootstrap authentication and OS pairing/bonding; production still needs an authenticated application-layer confidential channel. |
-| Tracker mode | Implemented subscription gate | Finder advertising starts only after the backend-issued entitlement is verified; reboot and expiry fail closed into suspended maintenance mode. |
-| GATT event handling | Implemented provisioning and OTA slice | Protocol v1.6 adds QR-free per-connection challenge/proof authorization, signed entitlement read-back, UTC synchronization, a five-second physical maintenance gesture, and signed dual-slot BLE firmware updates. |
+| Tracker mode | Implemented key gate | Finder advertising starts after the public key is committed and resumes from that key after reboot. A subscription expiry never disables the radio. |
+| GATT event handling | Implemented provisioning and OTA slice | Protocol v1.6 adds QR-free per-connection challenge/proof authorization, a five-second physical maintenance gesture, and signed dual-slot BLE firmware updates. Legacy entitlement characteristics remain temporarily for older builds but are not required. |
 | Firmware updates | Implemented, hardware validation pending | The backend publishes an owner-scoped signed release, the native app streams and verifies it over BLE, and the ESP32 boots the inactive slot with rollback protection. The first partition-layout migration is wired. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back the key/control pair, refuses replacement, authenticates destructive erasure, and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
 | Finder report experiments | Experimental | Contains key-generation and report-retrieval tests based on OpenHaystack/pypush, plus an anisette test server. |
-| Supabase database | Partial | Adds encrypted key custody, permanent device allocation, one-active-owner enforcement, per-tag subscriptions, desired/issued/installed entitlement delivery state, durable renewal notifications, stored last locations, admin RBAC/audit, and provider outbox rows. |
+| Supabase database | Premium backend implemented | Adds encrypted key custody, one-active-owner enforcement, per-tag subscriptions, 30-day location retention, safe zones, lost/vehicle protection, hashed recovery shares, smart alert delivery, admin RBAC/audit, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
 | Mobile client | Provisioning and firmware UI implemented | The authenticated iOS/Android product UI performs backend-authorized setup and now discovers published firmware, displays the real available version, streams actual BLE progress, verifies the rebooted version, and supports interrupted-acknowledgement retry. Physical-device validation is still required. |
-| Backend API and worker | Provisioning, firmware, billing, entitlement, notification, and admin modules | Key custody, claims/releases, owner-scoped signed firmware publication, app-independent Stripe renewal reconciliation, signed entitlement issuance/read-back acknowledgement, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
-| Pinqeva map and vehicle UI | Map UI implemented | iOS/Android use native Google Maps when restricted SDK keys are configured and render only stored tracker coordinates. Location ingestion/history and the vehicle profile remain. |
+| Backend API and worker | Provisioning, premium location, firmware, billing, notification, and admin modules | Key custody, claims/releases, 1–30 day report requests, retained history, safe-zone/lost/movement alerts, recovery sharing/reporting, signed firmware, Stripe reconciliation, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. |
+| Pinqeva map and vehicle UI | Map UI implemented; premium UI pending | iOS/Android use native Google Maps for stored tracker coordinates. Backend vehicle protection and movement alerts are implemented; the customer-facing controls still need to be wired to the new APIs. |
 | Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
 | Admin mobile app | Implemented baseline | Separate native iOS/Android app with its own bundle identity and encrypted session, Supabase TOTP MFA, role-gated operations, native tracker maps, subscriptions, pricing, device registration, administrator management, and audit views. |
-| Subscription enforcement | Implemented prototype | Active/trialing subscriptions receive signed device-bound entitlements; the firmware fails closed on missing, expired, invalid, or replayed leases. |
+| Subscription enforcement | Implemented cloud-side | Active/trialing periods unlock cloud location, 30-day history, alerts, safe zones, lost mode, recovery sharing/reporting, and vehicle protection. The ESP32 needs only its public key to advertise. |
 
 ## Current tag behavior
 
@@ -62,45 +62,42 @@ At startup, the provisioning firmware follows this decision:
 stateDiagram-v2
     [*] --> Boot
     Boot --> Setup: public key cannot be loaded
-    Boot --> Suspended: valid key; trusted UTC required after reboot
+    Boot --> Tracker: valid public key loaded
     Setup --> Setup: client disconnects
-    Setup --> Tracker: key and first entitlement installed
-    Tracker --> Suspended: entitlement expires or device reboots
-    Suspended --> Tracker: authorized UTC + valid entitlement
-    Suspended --> Setup: authenticated owner release erases key/control data
+    Setup --> Tracker: public key committed
+    Tracker --> Tracker: subscription changes or device reboots
+    Tracker --> Setup: authenticated owner release erases key/control data
 ```
 
 - **Setup mode:** the LED indicates setup mode and the tag advertises `PKV-XXXXXXXXXXXX`. A phone can discover and connect to it.
 - **Provisioning:** the app requires the non-bonding capability, reads the stored-key fingerprint, installs a 32-byte control key followed by exactly 28 advertisement-key bytes only when empty, and waits for explicit flash read-back confirmation. The checked-in development transport is not confidential and must be replaced by a reviewed application-layer secure channel for production.
-- **Suspended mode:** the public advertisement key remains stored, but no finder payload or continuously connectable service is emitted. Holding the physical button for five seconds opens maintenance advertising for two minutes.
+- **Tracker mode:** a valid stored public key continuously drives the non-connectable finder frame. Holding the physical button for five seconds opens maintenance advertising for two minutes without stopping the finder identity permanently.
 - **Firmware update:** during that physical maintenance window, an authorized owner can install a strictly newer backend-signed ESP32 image into the inactive OTA slot. The tag verifies the signature, size, digest, and version before rebooting, and rolls back if the new image cannot initialize BLE.
 - **Release/transfer:** the active owner obtains a backend-authenticated reset command. The tag erases key/control data, the backend ends the single ownership and cancels device subscriptions, and the next owner receives a newly generated keypair.
 
-The implemented entitlement state machine is:
+The implemented subscription boundary is:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Boot
-    Boot --> Setup: no valid public key
-    Boot --> Suspended: stored key; fail closed until fresh UTC
-    Tracker --> Suspended: entitlement expires
-    Suspended --> Tracker: authorized UTC + valid stored or renewed entitlement
+    TagKey --> FinderAdvertising: valid 28-byte public key
+    Subscription --> PremiumCloud: active or trialing paid period
+    Subscription --> NoPremiumCloud: expired or absent
+    NoPremiumCloud -. does not change .-> FinderAdvertising
 ```
 
-## Mandatory subscription model
+## Cloud subscription model
 
-An active subscription is required to use the tag as a finder-network tracker.
+The physical tag keeps advertising whenever it has a valid public key. An active per-tag subscription is required for Pinqeva's cloud service and premium safety tools.
 
 - Billing is per physical tag, not per account. An account with several tags needs one subscription for each tag.
 - A tag can have at most one current/nonterminal subscription; cancelled and ended rows remain as billing history.
-- The backend issues a signed, device-bound subscription entitlement after confirming payment.
-- The mobile application transfers that entitlement to the tag over BLE.
-- Firmware verifies the backend signature, device binding, anti-rollback value, and expiry.
-- A tag transmits finder-network advertising data only while its entitlement is valid.
-- When the subscription expires, the finder payload stops.
-- The public key remains stored and a five-second physical gesture exposes a bounded maintenance channel so the owner can renew the subscription.
+- Active/trialing periods unlock cloud location requests and up to 30 days of retained history.
+- Premium safety tools include safe-zone enter/exit alerts, lost mode, movement alerts, vehicle mode, expiring recovery links, recovery reports, and tracker health/freshness overview.
+- Recovery tokens are returned once, stored only as SHA-256 hashes, expire automatically, and can be revoked by the owner.
+- When payment expires, cloud endpoints return a subscription-required response and premium links stop resolving; the ESP32 finder payload continues.
+- Renewals are reconciled by signed Stripe webhooks and never require the phone to copy a new date to the tag.
 
-Fail-closed suspension, signed issuance, BLE installation, signature verification, anti-rollback, trusted time, renewal, and activation are implemented in the current prototype. Physical-device validation and production-grade transport confidentiality remain.
+Legacy entitlement issue/acknowledgement endpoints and the GATT characteristic remain temporarily for compatibility with old deployed builds, but normal provisioning and renewal do not call them. Physical-device validation and production-grade transport confidentiality remain.
 
 ## Vehicle use case
 
@@ -158,18 +155,18 @@ NVS/bootstrap key:
 
 Replace the port with the connected board's serial interface. This wired bundle
 installs the bootloader, dual-slot partition table, initial OTA metadata, and
-firmware `0.3.0`; it is required once for boards on the old single-app layout.
+firmware `0.3.1`; it is required once for boards on the old single-app layout.
 Later releases can be installed from the mobile firmware screen. Firmware
 behavior must still be validated on real hardware; a successful build and the
 UUID in the image are not a substitute for testing the exact board.
 
 ## Next milestone
 
-The next milestone validates subscription authorization on hardware and completes production hardening:
+The next milestone validates key-based advertising and premium cloud boundaries on hardware, then completes production hardening:
 
 1. Validate the implemented per-device challenge-response on hardware, then add a reviewed application-layer encrypted no-bond channel, physical presence/OOB, and a tag-signed provisioning receipt.
-2. Test scan, no-bond connection, fragmented entitlement and OTA writes, disconnect, power loss, digest/signature rejection, rollback, confirmation, reboot, expiry, and renewal on the target ESP32 hardware with iOS and Android.
-3. Validate the implemented product provisioning and entitlement UI on physical iOS and Android devices, including denial, timeout, retry, and interrupted-setup states.
+2. Test scan, no-bond connection, key persistence, reboot advertising without an entitlement, legacy-packet compatibility, OTA writes, disconnect, power loss, digest/signature rejection, rollback, and confirmation on the target ESP32 hardware with iOS and Android.
+3. Validate provisioning, billing, 30-day history, safe zones, lost mode, movement alerts, recovery sharing, and expiry/renewal behavior on physical iOS and Android devices.
 4. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
 
 After this contract is tested end to end, the rest of the client, backend, map, vehicle profile, and payment experience can be developed against a stable interface.
@@ -186,6 +183,6 @@ After this contract is tested end to end, the rest of the client, backend, map, 
 
 ## Documentation
 
-Start with the [System Architecture and Communication Protocol](docs/system-architecture-and-protocol.md). It records the current implementation, target design, protocol UUIDs, state transitions, security boundaries, subscription entitlement format, proposed API, and next milestone.
+Start with the [System Architecture and Communication Protocol](docs/system-architecture-and-protocol.md). It records the current implementation, target design, protocol UUIDs, state transitions, security boundaries, premium cloud APIs, legacy entitlement format, and next milestone.
 
 The report is a draft and should be updated whenever an architectural decision becomes implemented or changes.

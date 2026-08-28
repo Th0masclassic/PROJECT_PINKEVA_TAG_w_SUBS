@@ -54,7 +54,7 @@ credential.
 
 ## Signed BLE firmware updates
 
-Firmware `0.3.0` implements protocol `1.6` and advertises capability `0x0080`.
+Firmware `0.3.1` implements protocol `1.6` and advertises capability `0x0080`.
 During the physical two-minute maintenance window, an authorized phone can
 install a newer classic-ESP32 application into the inactive OTA slot. The
 tracker accepts a transfer only when its fixed 115-byte manifest:
@@ -80,22 +80,20 @@ versions can use BLE. The migration keeps the existing NVS range
 `0x9000`-`0xEFFF` unchanged, so tracker identity and provisioning data are
 preserved unless `--erase-nvs` is explicitly supplied.
 
-## Entitlement and expiry behavior
+## Public-key advertising and legacy entitlements
 
-The firmware accepts only a backend-signed, serial-bound P-256 entitlement with
-a strictly increasing counter and a future UTC expiry. While continuously
-powered, an exact one-shot `esp_timer` stops the Apple-style manufacturer
-advertisement at expiry; no periodic expiry polling loop is used. A successful
-renewal replaces the stored packet, rearms the timer, and closes the temporary
-maintenance window.
+A valid committed 28-byte advertisement public key is the complete on-device
+requirement for finder advertising. The firmware configures the finder identity
+immediately after the key is read back from NVS and restores it after every
+reboot. Subscription expiry never stops the BLE payload and a renewal never
+requires a phone-to-tag update.
 
-The classic ESP32 has no battery-backed wall clock. After any reboot, the
-firmware therefore fails closed and does not infer how much wall time elapsed:
-the owner must open maintenance mode and let an authorized phone provide fresh
-UTC before a stored entitlement can resume. The saved timestamp is retained
-only as an anti-rollback floor. A product that must resume unattended after
-complete power loss needs a protected external RTC or another trusted time
-source.
+The protocol-v1.6 entitlement characteristic, signature verifier, and NVS blob
+remain temporarily so older mobile/firmware deployments can be migrated
+without changing the GATT table. A valid legacy packet may still be stored, but
+its timer is deliberately inert and its dates do not select the advertising
+mode. UTC synchronization is retained for authorized maintenance operations,
+not subscription enforcement.
 
 Normal finder frames use a two-second interval and are non-connectable. Setup
 and maintenance advertisements are connectable only for their bounded setup

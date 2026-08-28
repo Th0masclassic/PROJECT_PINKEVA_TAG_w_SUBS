@@ -90,12 +90,12 @@ def notification_copy(
     if kind == "expired":
         return (
             "Subscription expired",
-            f"{name} has stopped its Find My broadcast. Renew and update the tag to resume tracking.",
+            f"Cloud location, history, sharing, and smart alerts for {name} are paused until you renew.",
         )
     if kind == "tag_sync_required":
         return (
-            "Renewal ready — update your tag",
-            f"Hold the button on {name} for 5 seconds, then open its subscription to install the new date.",
+            "Tag update no longer required",
+            f"{name} now keeps broadcasting its public key without a subscription update.",
         )
     raise ValueError("Unsupported notification kind")
 
@@ -212,7 +212,7 @@ class NotificationService:
         rows = await query.fetchall()
         notifications: list[UserNotificationSummary] = []
         for row in rows:
-            if row["kind"] == "admin_message":
+            if row["title"] is not None and row["body"] is not None:
                 title, body = row["title"], row["body"]
             else:
                 title, body = notification_copy(
@@ -356,16 +356,6 @@ class NotificationWorker:
                    AND notification.push_status IN (
                        'pending', 'retry', 'processing'
                    )
-                   AND EXISTS (
-                     SELECT 1
-                       FROM public.device_entitlement_sync sync
-                      WHERE sync.subscription_id =
-                            notification.subscription_id
-                        AND sync.device_id = notification.device_id
-                        AND sync.entitlement_expires_at =
-                            notification.period_end
-                        AND sync.status = 'installed'
-                   )
                 """
             )
             inserted = 0
@@ -415,29 +405,6 @@ class NotificationWorker:
                 )
                 inserted += len(await query.fetchall())
 
-            sync_query = await connection.execute(
-                """
-                INSERT INTO public.user_notification (
-                    user_id, device_id, subscription_id, kind,
-                    period_end, due_at
-                )
-                SELECT sync.user_id, sync.device_id, sync.subscription_id,
-                       'tag_sync_required', sync.entitlement_expires_at,
-                       sync.created_at + interval '10 minutes'
-                  FROM public.device_entitlement_sync sync
-                  JOIN public.subscription subscription
-                    ON subscription.id = sync.subscription_id
-                   AND subscription.device_id = sync.device_id
-                   AND subscription.current_period_end =
-                       sync.entitlement_expires_at
-                 WHERE sync.status <> 'installed'
-                   AND sync.created_at <= now() - interval '10 minutes'
-                   AND subscription.status IN ('active', 'trialing')
-                ON CONFLICT (subscription_id, kind, period_end) DO NOTHING
-                RETURNING id
-                """
-            )
-            inserted += len(await sync_query.fetchall())
             return inserted
 
     async def claim_due(self, batch_size: int = 25) -> list[NotificationJob]:
@@ -579,7 +546,7 @@ class NotificationWorker:
         if not tokens:
             await self._finish(job, status="no_tokens")
             return
-        if job.kind == "admin_message":
+        if job.title is not None and job.body is not None:
             title, body = job.title, job.body
         else:
             title, body = notification_copy(
@@ -591,7 +558,19 @@ class NotificationWorker:
             await self._finish(job, status="failed", error_code="PUSH_INVALID_MESSAGE")
             return
         data: dict[str, str] = {"kind": job.kind, "route": "notifications"}
-        if job.device_id is not None and job.period_end is not None:
+        if job.kind in {
+            "safe_zone_enter",
+            "safe_zone_exit",
+            "lost_mode_location",
+            "movement_detected",
+        } and job.device_id is not None:
+            data.update(
+                {
+                    "deviceId": str(job.device_id),
+                    "route": "tracker",
+                }
+            )
+        elif job.device_id is not None and job.period_end is not None:
             data.update(
                 {
                     "deviceId": str(job.device_id),

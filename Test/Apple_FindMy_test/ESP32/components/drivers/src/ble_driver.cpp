@@ -249,7 +249,7 @@ uint8_t firmware_manifest_attribute[FIRMWARE_MANIFEST_SIZE] = {};
 uint8_t firmware_data_attribute[512] = {};
 uint8_t firmware_control_attribute[1] = {};
 uint8_t firmware_status_attribute[FIRMWARE_STATUS_SIZE] = {};
-uint8_t firmware_version_attribute[3] = {0, 3, 0};
+uint8_t firmware_version_attribute[3] = {0, 3, 1};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
@@ -757,8 +757,9 @@ esp_err_t configure_finder_advertisement(const uint8_t *key, size_t length) {
 
     // The legacy Find My ESP32 test script uses the first six public-key bytes
     // as the static-random BLE address and puts the remaining 22 bytes in the
-    // Apple offline-finding manufacturer payload. This function is called only
-    // after a signed, device-bound entitlement has been verified.
+    // Apple offline-finding manufacturer payload. The public advertisement key
+    // is the complete on-device requirement; subscriptions protect cloud
+    // services and are intentionally not a radio kill switch.
     finder_ble_address[0] = static_cast<uint8_t>(key[0] | 0xC0U);
     std::memcpy(finder_ble_address + 1, key + 1, 5);
 
@@ -968,23 +969,8 @@ uint64_t trusted_entitlement_now() {
 void schedule_entitlement_expiry() {
     if (entitlement_expiry_timer == nullptr) return;
     esp_timer_stop(entitlement_expiry_timer);
-    if (ble_mode != BLEMode::TRACKER || !entitlement_time_trusted ||
-        entitlement_expires_epoch == 0) {
-        return;
-    }
-    const uint64_t current_epoch = trusted_entitlement_now();
-    const uint64_t remaining_seconds =
-        current_epoch < entitlement_expires_epoch
-            ? entitlement_expires_epoch - current_epoch
-            : 0;
-    const uint64_t delay_microseconds =
-        std::max<uint64_t>(1, remaining_seconds * 1000ULL * 1000ULL);
-    const esp_err_t error = esp_timer_start_once(
-        entitlement_expiry_timer, delay_microseconds);
-    if (error != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Could not schedule entitlement expiry: %s",
-                 esp_err_to_name(error));
-    }
+    // Legacy entitlement packets remain readable/writable for compatibility
+    // with older mobile builds, but their dates never control advertising.
 }
 
 bool activate_stored_entitlement(uint64_t current_epoch) {
@@ -1068,32 +1054,15 @@ esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
     entitlement_time_started_microseconds = esp_timer_get_time();
     entitlement_time_trusted = true;
 
-    if (ble_mode != BLEMode::SETUP) {
-        if (!activate_stored_entitlement(accepted_epoch)) {
-            ble_mode = BLEMode::SUSPENDED;
-            schedule_entitlement_expiry();
-            update_status(ProvisioningState::SUSPENDED,
-                          ProvisioningResult::ENTITLEMENT_REJECTED);
-        }
-        request_advertising_refresh();
-    }
     ESP_LOGI(LOG_TAG, "UTC clock synchronized and persisted");
     return ESP_GATT_OK;
 }
 
 void entitlement_expiry_callback(void *) {
-    if (ble_mode != BLEMode::TRACKER || !entitlement_time_trusted) return;
-    if (trusted_entitlement_now() < entitlement_expires_epoch) {
-        schedule_entitlement_expiry();
-        return;
-    }
-
-    ble_mode = BLEMode::SUSPENDED;
-    maintenance_window_open = false;
-    update_status(ProvisioningState::SUSPENDED,
-                  ProvisioningResult::ENTITLEMENT_REJECTED);
-    request_advertising_refresh();
-    ESP_LOGW(LOG_TAG, "Subscription entitlement expired; finder advertising stopped");
+    // Deliberately no-op. Kept so upgrades from builds that created this timer
+    // remain structurally simple and legacy packets can still be inspected.
+    ESP_LOGI(LOG_TAG,
+             "Legacy entitlement timer ignored; finder advertising continues");
 }
 
 void maintenance_window_timeout_callback(void *) {
@@ -1142,11 +1111,16 @@ esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
         return ESP_GATT_ERR_UNLIKELY;
     }
 
-    // The tag remains fail closed until a signed entitlement is received and
-    // verified by the firmware.
-    ble_mode = BLEMode::SUSPENDED;
+    if (configure_finder_advertisement(key, length) != ESP_OK) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INTERNAL_ERROR);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+    ble_mode = BLEMode::TRACKER;
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    ESP_LOGI(LOG_TAG, "Advertisement key committed; awaiting entitlement");
+    request_advertising_refresh();
+    ESP_LOGI(LOG_TAG,
+             "Advertisement key committed; finder advertising enabled");
     return ESP_GATT_OK;
 }
 
@@ -1214,7 +1188,8 @@ esp_gatt_status_t persist_entitlement(const uint8_t *entitlement, size_t length)
     schedule_entitlement_expiry();
     update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
     request_advertising_refresh();
-    ESP_LOGI(LOG_TAG, "Signed subscription entitlement accepted; finder advertising enabled");
+    ESP_LOGI(LOG_TAG,
+             "Legacy signed entitlement stored; advertising remains key-based");
     return ESP_GATT_OK;
 }
 
@@ -1990,8 +1965,8 @@ std::optional<ERROR_TAG> ble_init() {
     trusted_clock_epoch = stored_clock_epoch;
     entitlement_time_started_microseconds = esp_timer_get_time();
     // The ESP32 has no battery-backed wall clock. Never infer elapsed wall
-    // time across a reset: an authorized phone must provide fresh UTC before
-    // a stored entitlement can resume advertising.
+    // time across a reset. Fresh authorized UTC is used only to validate a
+    // legacy entitlement packet and never gates finder advertising.
     entitlement_time_trusted = false;
 
     error = initialize_firmware_version();
@@ -2006,16 +1981,17 @@ std::optional<ERROR_TAG> ble_init() {
     uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
     if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
         ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
-        activate_stored_entitlement(0);
-        ESP_LOGW(LOG_TAG,
-                 "Finder advertising suspended after reset until authorized "
-                 "UTC synchronization");
-        if (ble_mode != BLEMode::TRACKER) {
-            ble_mode = BLEMode::SUSPENDED;
-            status_value[0] = static_cast<uint8_t>(ProvisioningState::SUSPENDED);
-            status_value[1] =
-                static_cast<uint8_t>(ProvisioningResult::ENTITLEMENT_REJECTED);
+        if (configure_finder_advertisement(
+                existing_key, sizeof(existing_key)) != ESP_OK) {
+            std::memset(existing_key, 0, sizeof(existing_key));
+            return ERROR_TAG("Finder advertisement initialization failed",
+                             LOG_TAG);
         }
+        ble_mode = BLEMode::TRACKER;
+        status_value[0] = static_cast<uint8_t>(ProvisioningState::READY);
+        status_value[1] = static_cast<uint8_t>(ProvisioningResult::SUCCESS);
+        ESP_LOGI(LOG_TAG,
+                 "Finder advertising enabled from stored public key");
         if (update_key_fingerprint(existing_key) != ESP_OK) {
             std::memset(existing_key, 0, sizeof(existing_key));
             return ERROR_TAG("Key fingerprint initialization failed", "NVS");

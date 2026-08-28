@@ -546,9 +546,9 @@ class ProvisioningService:
             return DeviceClaimResponse(
                 device_id=session["device_id"],
                 serial_number=session["serial_number"],
-                status="suspended",
+                status="claimed",
                 claimed_at=session["completed_at"],
-                next_action="install_signed_entitlement",
+                next_action="ready",
             )
         if session["status"] != "pending" or session["claim_deadline"] <= datetime.now(UTC):
             raise ProvisioningError(
@@ -590,7 +590,7 @@ class ProvisioningService:
             """
             UPDATE public.device
                SET provisioning_session_id = %s,
-                   status = 'suspended',
+                   status = 'claimed',
                    updated_at = %s
              WHERE id = %s
             """,
@@ -622,9 +622,9 @@ class ProvisioningService:
         return DeviceClaimResponse(
             device_id=session["device_id"],
             serial_number=session["serial_number"],
-            status="suspended",
+            status="claimed",
             claimed_at=claimed_at,
-            next_action="install_signed_entitlement",
+            next_action="ready",
         )
 
     async def start_release(
@@ -958,7 +958,7 @@ class ProvisioningService:
                 UPDATE public.device
                    SET provisioning_session_id = %s,
                        status = CASE
-                           WHEN %s = 'claimed' THEN 'suspended'
+                           WHEN %s = 'claimed' THEN 'claimed'
                            ELSE 'provisioning'
                        END,
                        updated_at = now()

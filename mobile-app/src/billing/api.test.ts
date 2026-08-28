@@ -73,7 +73,7 @@ test('parses the per-device subscription contract', () => {
   });
 });
 
-test('offers a tag update until the renewed entitlement is installed', () => {
+test('never requires a tag entitlement update for subscription renewal', () => {
   const pending = parseDeviceSubscription(
     {
       ...subscriptionPayload,
@@ -82,7 +82,7 @@ test('offers a tag update until the renewed entitlement is installed', () => {
     },
     DEVICE_ID,
   );
-  assert.equal(canInstallEntitlement(pending), true);
+  assert.equal(canInstallEntitlement(pending), false);
   assert.equal(
     canInstallEntitlement({ ...pending, entitlementSyncStatus: 'installed' }),
     false,

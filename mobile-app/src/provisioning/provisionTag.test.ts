@@ -27,7 +27,7 @@ function sha256(value: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(value).digest());
 }
 
-test('bridges a tag challenge to the API, installs one key allocation, and completes ownership', async () => {
+test('installs one public key allocation and completes ownership without an entitlement write', async () => {
   const serialNumber = 'PKV-AABBCCDDEEFF';
   const challenge = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
   const advertisementKey = Uint8Array.from({ length: 28 }, (_, index) => 0xa0 + index);
@@ -64,11 +64,11 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
   const completed = {
     device_id: '22222222-2222-4222-8222-222222222222',
     serial_number: serialNumber,
-    status: 'suspended' as const,
+    status: 'claimed' as const,
     claimed_at: '2099-01-01T00:00:00.000Z',
-    next_action: 'install_signed_entitlement' as const,
+    next_action: 'ready' as const,
   };
-  const authorizationProofs = [authorizationProof, entitlementAuthorizationProof];
+  const authorizationProofs = [authorizationProof];
 
   const backend = {
     startDeviceClaim: async (input: Parameters<PinqevaProvisioningClient['startDeviceClaim']>[0]) => {
@@ -224,13 +224,6 @@ test('bridges a tag challenge to the API, installs one key allocation, and compl
     'ble:read:status',
     'ble:read:fingerprint',
     'api:complete',
-    'api:entitlement',
-    'ble:write:authorization',
-    'ble:write:utc',
-    'ble:write:entitlement',
-    'ble:read:status',
-    'ble:read:entitlement',
-    'api:entitlement:acknowledge',
     'ble:disconnect',
   ]);
   assert.deepEqual(authorizationProofs, []);

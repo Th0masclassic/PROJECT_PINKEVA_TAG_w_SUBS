@@ -68,10 +68,10 @@ def test_notification_copy_covers_renewal_end_expiry_and_tag_update() -> None:
         "Subscription ends tomorrow",
         "Keys will stop tracking tomorrow unless you resume its subscription.",
     )
-    assert "stopped" in notification_copy(
+    assert "Cloud location" in notification_copy(
         "expired", device_name="Keys", cancel_at_period_end=True
     )[1]
-    assert "5 seconds" in notification_copy(
+    assert "keeps broadcasting" in notification_copy(
         "tag_sync_required", device_name="Keys", cancel_at_period_end=False
     )[1]
 
@@ -205,3 +205,45 @@ async def test_worker_delivers_admin_message_to_the_notification_inbox_route() -
         "data": {"kind": "admin_message", "route": "notifications"},
     }
     assert worker.finishes == [{"status": "sent", "disabled_tokens": ()}]
+
+
+@pytest.mark.asyncio
+async def test_worker_routes_premium_tracker_alerts_to_the_tracker() -> None:
+    captured: dict[str, Any] = {}
+    device_id = uuid4()
+
+    class Gateway:
+        async def send(
+            self,
+            tokens: list[str],
+            *,
+            title: str,
+            body: str,
+            data: Mapping[str, str],
+        ) -> PushResult:
+            captured.update(tokens=tokens, title=title, body=body, data=dict(data))
+            return PushResult()
+
+    worker = CapturingWorker(["ExpoPushToken[token]"], Gateway())
+    await worker.process(
+        NotificationJob(
+            id=uuid4(),
+            user_id=uuid4(),
+            device_id=device_id,
+            kind="safe_zone_exit",
+            period_end=None,
+            cancel_at_period_end=False,
+            device_name="Keys",
+            title="Left Home",
+            body="Keys left Home.",
+            attempt_count=1,
+        )
+    )
+
+    assert captured["title"] == "Left Home"
+    assert captured["body"] == "Keys left Home."
+    assert captured["data"] == {
+        "kind": "safe_zone_exit",
+        "route": "tracker",
+        "deviceId": str(device_id),
+    }

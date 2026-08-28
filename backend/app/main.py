@@ -28,6 +28,12 @@ from .notifications import (
     NotificationService,
     NotificationWorker,
 )
+from .premium import (
+    PremiumError,
+    PremiumRetentionWorker,
+    PremiumService,
+    router as premium_router,
+)
 from .models import (
     DeviceClaimComplete,
     DeviceClaimResponse,
@@ -142,6 +148,18 @@ SAFE_ADMIN_MESSAGES = {
 
 SAFE_LOCATION_MESSAGES = {
     "LOCATION_UNAVAILABLE": "Location reports are temporarily unavailable. Please try again.",
+    "PREMIUM_SUBSCRIPTION_REQUIRED": "An active subscription is required for cloud location reports.",
+    "INVALID_HISTORY_WINDOW": "Choose a location-history period from 1 to 30 days.",
+}
+
+SAFE_PREMIUM_MESSAGES = {
+    "TRACKER_NOT_FOUND": "This tracker is unavailable.",
+    "PREMIUM_SUBSCRIPTION_REQUIRED": "An active subscription is required for this premium feature.",
+    "SAFE_ZONE_NOT_FOUND": "This safe zone could not be found.",
+    "SAFE_ZONE_LIMIT_REACHED": "This tracker already has the maximum number of safe zones.",
+    "RECOVERY_SHARE_NOT_FOUND": "This recovery link is unavailable or has expired.",
+    "RECOVERY_SHARE_LIMIT_REACHED": "This tracker already has the maximum number of active recovery links.",
+    "INVALID_PREMIUM_REQUEST": "Choose valid settings to update.",
 }
 
 SAFE_FIRMWARE_MESSAGES = {
@@ -199,8 +217,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     native_anisette: NativeAnisetteService | None = None
     opened_database: Database | None = None
-    notification_stop = asyncio.Event()
+    background_stop = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
+    premium_retention_task: asyncio.Task[None] | None = None
     try:
         if settings.findmy_anisette_provider == "native":
             native_anisette = NativeAnisetteService(
@@ -253,9 +272,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.billing = BillingService(settings)
         app.state.admin = AdminService(settings)
         app.state.notifications = NotificationService()
+        app.state.premium = PremiumService()
         app.state.settings = settings
         app.state.native_anisette = native_anisette
         await app.state.billing.bootstrap_catalog(database)
+        premium_retention_worker = PremiumRetentionWorker(database)
+        app.state.premium_retention_worker = premium_retention_worker
+        premium_retention_task = asyncio.create_task(
+            premium_retention_worker.run(background_stop),
+            name="premium-location-retention-worker",
+        )
         if settings.notification_worker_enabled:
             notification_worker = NotificationWorker(
                 database,
@@ -264,14 +290,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
             app.state.notification_worker = notification_worker
             notification_task = asyncio.create_task(
-                notification_worker.run(notification_stop),
+                notification_worker.run(background_stop),
                 name="renewal-notification-worker",
             )
         yield
     finally:
-        notification_stop.set()
+        background_stop.set()
         if notification_task is not None:
             await notification_task
+        if premium_retention_task is not None:
+            await premium_retention_task
         if opened_database is not None:
             await opened_database.close()
         if native_anisette is not None:
@@ -286,6 +314,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(admin_router)
+app.include_router(premium_router)
 
 
 @app.middleware("http")
@@ -463,6 +492,18 @@ async def notification_error_handler(request: Request, exc: NotificationError):
     )
 
 
+@app.exception_handler(PremiumError)
+async def premium_error_handler(request: Request, exc: PremiumError):
+    return _error_response(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        message=SAFE_PREMIUM_MESSAGES.get(
+            exc.code, "The premium tracker request could not be completed."
+        ),
+    )
+
+
 @app.exception_handler(Exception)
 async def unexpected_error_handler(request: Request, exc: Exception):
     request_id = _request_id(request)
@@ -588,6 +629,43 @@ async def request_device_location_history_24h(
         request_id,
         principal.user_id,
         device_id,
+        len(result.locations),
+    )
+    return result
+
+
+@app.post(
+    "/v1/devices/{device_id}/location/history",
+    response_model=DeviceLocationHistoryResponse,
+)
+async def request_device_location_history(
+    device_id: UUID,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+    days: int = Query(default=30, ge=1, le=30),
+) -> DeviceLocationHistoryResponse:
+    """Return up to 30 days of premium location history for the owner."""
+
+    request_id = getattr(request.state, "request_id", "unknown")
+    logger.info(
+        "location_history_request_received request_id=%s user_id=%s device_id=%s days=%s",
+        request_id,
+        principal.user_id,
+        device_id,
+        days,
+    )
+    result = await app.state.location.request_report_history(
+        app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+        days=days,
+    )
+    logger.info(
+        "location_history_request_completed request_id=%s user_id=%s device_id=%s days=%s location_count=%s",
+        request_id,
+        principal.user_id,
+        device_id,
+        days,
         len(result.locations),
     )
     return result

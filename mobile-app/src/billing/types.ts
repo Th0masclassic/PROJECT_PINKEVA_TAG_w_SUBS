@@ -83,13 +83,9 @@ export function canStartCheckout(subscription: DeviceSubscription): boolean {
 }
 
 export function canInstallEntitlement(subscription: DeviceSubscription): boolean {
-  if (subscription.status !== 'active' && subscription.status !== 'trialing') return false;
-  const expiresAt = subscription.currentPeriodEnd
-    ? Date.parse(subscription.currentPeriodEnd)
-    : Number.NaN;
-  return (
-    Number.isFinite(expiresAt) &&
-    expiresAt > Date.now() &&
-    subscription.entitlementSyncStatus !== 'installed'
-  );
+  // Kept as a compatibility hook for old screens and old firmware recovery.
+  // Current tags advertise from their stored public key, so subscription
+  // renewal never requires a BLE entitlement update.
+  void subscription;
+  return false;
 }

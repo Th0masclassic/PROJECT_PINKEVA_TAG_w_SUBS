@@ -9,7 +9,11 @@ export type NotificationKind =
   | 'renewal_1_day'
   | 'expired'
   | 'tag_sync_required'
-  | 'admin_message';
+  | 'admin_message'
+  | 'safe_zone_enter'
+  | 'safe_zone_exit'
+  | 'lost_mode_location'
+  | 'movement_detected';
 
 export type UserNotification = {
   id: string;
@@ -66,7 +70,11 @@ function parseKind(value: unknown): NotificationKind | null {
     value === 'renewal_1_day' ||
     value === 'expired' ||
     value === 'tag_sync_required' ||
-    value === 'admin_message'
+    value === 'admin_message' ||
+    value === 'safe_zone_enter' ||
+    value === 'safe_zone_exit' ||
+    value === 'lost_mode_location' ||
+    value === 'movement_detected'
     ? value
     : null;
 }
