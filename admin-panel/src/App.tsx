@@ -172,19 +172,25 @@ function AdminDashboard({ client, config, onSignOut }: { client: SupabaseClient;
   if (loading) return <main className="auth-shell"><div className="auth-card"><div className="spinner" /><h1>Opening secure console…</h1></div></main>;
   if (!identity) return <main className="auth-shell"><div className="auth-card"><h1>Access denied</h1><p className="error">{message}</p><button className="primary" onClick={onSignOut}>Sign out</button></div></main>;
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'overview', label: 'Overview' }, { id: 'users', label: 'Users & trackers' },
-    { id: 'plans', label: 'Plans & prices' }, { id: 'devices', label: 'Register tag' },
-    ...(identity.role === 'owner' ? [{ id: 'admins' as Tab, label: 'Administrators' }] : []),
-    { id: 'audit', label: 'Audit log' },
+  const tabs: { id: Tab; label: string; mobileLabel: string }[] = [
+    { id: 'overview', label: 'Overview', mobileLabel: 'Home' },
+    { id: 'users', label: 'Users & trackers', mobileLabel: 'Users' },
+    { id: 'plans', label: 'Plans & prices', mobileLabel: 'Plans' },
+    { id: 'devices', label: 'Register tag', mobileLabel: 'Tags' },
+    ...(identity.role === 'owner'
+      ? [{ id: 'admins' as Tab, label: 'Administrators', mobileLabel: 'Admins' }]
+      : []),
+    { id: 'audit', label: 'Audit log', mobileLabel: 'Audit' },
   ];
 
   return (
     <div className="app-shell">
       <aside>
-        <div className="sidebar-brand"><span>P</span><div><strong>Pinkeva</strong><small>Admin Console</small></div></div>
-        <nav>{tabs.map((item) => <button key={item.id} className={tab === item.id ? 'active' : ''} onClick={() => setTab(item.id)}>{item.label}</button>)}</nav>
-        <div className="sidebar-footer"><span className="role-badge">{identity.role}</span><button onClick={onSignOut}>Sign out</button></div>
+        <div className="sidebar-top">
+          <div className="sidebar-brand"><span>P</span><div><strong>Pinkeva</strong><small>Admin Console</small></div></div>
+          <div className="sidebar-footer"><span className="role-badge">{identity.role}</span><button onClick={onSignOut}>Sign out</button></div>
+        </div>
+        <nav aria-label="Admin sections">{tabs.map((item) => <button key={item.id} className={tab === item.id ? 'active' : ''} aria-current={tab === item.id ? 'page' : undefined} aria-label={item.label} onClick={() => setTab(item.id)}><span className="desktop-nav-label">{item.label}</span><span className="mobile-nav-label">{item.mobileLabel}</span></button>)}</nav>
       </aside>
       <main className="dashboard">
         <header><div><p className="eyebrow">SECURE OPERATIONS</p><h1>{tabs.find((item) => item.id === tab)?.label}</h1></div><button className="secondary" onClick={() => setRefresh((value) => value + 1)}>Refresh</button></header>
@@ -224,6 +230,7 @@ function UsersPanel({ client, config, identity, refresh, setMessage }: PanelProp
         adminRequest<Plan[]>(client, config.apiUrl, '/v1/admin/plans'),
       ]);
       setUsers(userRows); setPlans(planRows);
+      setSelected((current) => current && userRows.some((user) => user.id === current.user.id) ? current : null);
     } catch (error) { setMessage(safeAdminMessage(error)); }
   }, [client, config.apiUrl, search, setMessage]);
   useEffect(() => { void load(); }, [refresh]);
@@ -238,9 +245,9 @@ function UsersPanel({ client, config, identity, refresh, setMessage }: PanelProp
     catch (error) { setMessage(safeAdminMessage(error)); }
   };
 
-  return <section className="split-layout">
-    <div className="panel"><form className="search" onSubmit={(e) => { e.preventDefault(); void load(search); }}><input placeholder="Search email, name, or user ID" value={search} onChange={(e) => setSearch(e.target.value)} /><button className="secondary">Search</button></form><div className="list">{users.map((user) => <button className={`list-row ${selected?.user.id === user.id ? 'selected' : ''}`} key={user.id} onClick={() => void openUser(user)}><div><strong>{user.display_name || 'Unnamed user'}</strong><span>{user.email || user.id}</span></div><div className="row-meta"><span>{user.tracker_count} tags</span>{user.is_admin ? <b>Admin</b> : identity.role === 'owner' ? <button className="mini" onClick={(e) => { e.stopPropagation(); void grantAdmin(user.id); }}>Make admin</button> : null}</div></button>)}</div></div>
-    <div className="panel detail-panel">{selected ? <UserDetail client={client} config={config} data={selected} plans={plans} reload={() => openUser(users.find((u) => u.id === selected.user.id)!)} setMessage={setMessage} /> : <div className="empty"><h2>Select an account</h2><p>Trackers, locations, and subscriptions will appear here.</p></div>}</div>
+  return <section className={`split-layout ${selected ? 'has-selection' : ''}`}>
+    <div className="panel user-list-panel"><form className="search" onSubmit={(e) => { e.preventDefault(); void load(search); }}><input aria-label="Search accounts" placeholder="Search email, name, or user ID" value={search} onChange={(e) => setSearch(e.target.value)} /><button className="secondary">Search</button></form><div className="list">{users.map((user) => <div className={`list-row ${selected?.user.id === user.id ? 'selected' : ''}`} key={user.id}><button className="list-row-open" onClick={() => void openUser(user)}><span><strong>{user.display_name || 'Unnamed user'}</strong><small>{user.email || user.id}</small></span><span className="tracker-count">{user.tracker_count} tags</span></button><div className="row-meta">{user.is_admin ? <b>Admin</b> : identity.role === 'owner' ? <button className="mini" onClick={() => void grantAdmin(user.id)}>Make admin</button> : null}</div></div>)}{users.length === 0 ? <p className="list-empty">No accounts found.</p> : null}</div></div>
+    <div className="panel detail-panel">{selected ? <><button className="mobile-back" onClick={() => setSelected(null)} aria-label="Back to accounts">← Accounts</button><UserDetail client={client} config={config} data={selected} plans={plans} reload={async () => { const user = users.find((row) => row.id === selected.user.id); if (user) await openUser(user); else setSelected(null); }} setMessage={setMessage} /></> : <div className="empty"><h2>Select an account</h2><p>Trackers, locations, and subscriptions will appear here.</p></div>}</div>
   </section>;
 }
 
@@ -285,11 +292,11 @@ function AdminsPanel({ client, config, refresh, setMessage }: PanelProps) {
   useEffect(() => { void load(); }, [refresh]);
   const grant = async (e: FormEvent) => { e.preventDefault(); if (!window.confirm('Grant administrator access to this user?')) return; try { await adminRequest(client, config.apiUrl, `/v1/admin/admins/${userId}`, { method: 'POST' }); setUserId(''); setMessage('Administrator granted.'); await load(); } catch (error) { setMessage(safeAdminMessage(error)); } };
   const revoke = async (id: string) => { if (!window.confirm('Revoke this administrator immediately?')) return; try { await adminRequest(client, config.apiUrl, `/v1/admin/admins/${id}`, { method: 'DELETE' }); setMessage('Administrator revoked.'); await load(); } catch (error) { setMessage(safeAdminMessage(error)); } };
-  return <section><form className="panel admin-grant" onSubmit={grant}><div><h2>Grant administrator</h2><p>Use the Supabase user UUID. The account must enable TOTP MFA before accessing data.</p></div><input placeholder="User UUID" pattern="[0-9a-fA-F-]{36}" value={userId} onChange={(e) => setUserId(e.target.value)} required /><button className="primary small">Grant</button></form><div className="panel table-wrap"><table><thead><tr><th>Administrator</th><th>Granted</th><th /></tr></thead><tbody>{admins.map((admin) => <tr key={admin.id}><td><strong>{admin.display_name || 'Unnamed user'}</strong><small>{admin.email || admin.user_id}</small></td><td>{new Date(admin.granted_at).toLocaleString()}</td><td><button className="danger small" onClick={() => void revoke(admin.user_id)}>Revoke</button></td></tr>)}</tbody></table></div></section>;
+  return <section><form className="panel admin-grant" onSubmit={grant}><div><h2>Grant administrator</h2><p>Use the Supabase user UUID. The account must enable TOTP MFA before accessing data.</p></div><input aria-label="Supabase user UUID" placeholder="User UUID" pattern="[0-9a-fA-F-]{36}" value={userId} onChange={(e) => setUserId(e.target.value)} required /><button className="primary small">Grant</button></form><div className="panel table-wrap"><table><thead><tr><th>Administrator</th><th>Granted</th><th /></tr></thead><tbody>{admins.map((admin) => <tr key={admin.id}><td data-label="Admin"><strong>{admin.display_name || 'Unnamed user'}</strong><small>{admin.email || admin.user_id}</small></td><td data-label="Granted">{new Date(admin.granted_at).toLocaleString()}</td><td className="table-action"><button className="danger small" onClick={() => void revoke(admin.user_id)}>Revoke</button></td></tr>)}</tbody></table></div></section>;
 }
 
 function AuditPanel({ client, config, refresh, setMessage }: PanelProps) {
   const [rows, setRows] = useState<Audit[]>([]);
   useEffect(() => { void adminRequest<Audit[]>(client, config.apiUrl, '/v1/admin/audit?limit=200').then(setRows).catch((error) => setMessage(safeAdminMessage(error))); }, [client, config.apiUrl, refresh, setMessage]);
-  return <section><div className="section-intro"><h2>Privileged activity</h2><p>Append-only records of administrative mutations. Secrets are intentionally excluded.</p></div><div className="panel table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Request</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td>{new Date(row.created_at).toLocaleString()}</td><td>{row.actor_email || row.actor_user_id}</td><td><code>{row.action}</code></td><td>{row.target_type}<small>{row.target_id}</small></td><td><code>{row.request_id.slice(0, 8)}</code></td></tr>)}</tbody></table></div></section>;
+  return <section><div className="section-intro"><h2>Privileged activity</h2><p>Append-only records of administrative mutations. Secrets are intentionally excluded.</p></div><div className="panel table-wrap"><table><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Request</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td data-label="Time">{new Date(row.created_at).toLocaleString()}</td><td data-label="Actor">{row.actor_email || row.actor_user_id}</td><td data-label="Action"><code>{row.action}</code></td><td data-label="Target">{row.target_type}<small>{row.target_id}</small></td><td data-label="Request"><code>{row.request_id.slice(0, 8)}</code></td></tr>)}</tbody></table></div></section>;
 }

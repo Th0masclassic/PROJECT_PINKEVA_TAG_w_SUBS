@@ -14,6 +14,12 @@ and AAL2/TOTP MFA before reading or changing administrative data.
    database admin roles.
 4. Run `npm install`, then `npm run dev` or `npm run build`.
 
+The console is responsive from 320px upward. On phones it uses a safe-area-aware
+bottom navigation bar, account drill-down views, stacked forms, and card-style
+audit tables. Once deployed over HTTPS, it can be added to an iPhone or Android
+home screen from the browser's share/menu actions. It remains a separate admin
+surface: do not link to it from the customer Pinkeva app.
+
 Production hosting must add these response headers at the CDN/reverse proxy:
 
 ```text
