@@ -1,0 +1,39 @@
+{
+  "name": "pinkeva-admin-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.ts",
+  "scripts": {
+    "start": "expo start",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test src/*.test.ts",
+    "check": "npm run typecheck && npm test",
+    "export:ios": "expo export --platform ios --output-dir dist-ios"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.2",
+    "@supabase/supabase-js": "^2.112.4",
+    "expo": "~57.0.16",
+    "expo-clipboard": "~57.0.1",
+    "expo-font": "~57.0.2",
+    "expo-linear-gradient": "~57.0.1",
+    "expo-linking": "~57.0.7",
+    "expo-secure-store": "~57.0.1",
+    "expo-splash-screen": "~57.0.8",
+    "expo-status-bar": "~57.0.1",
+    "expo-system-ui": "~57.0.2",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-maps": "1.27.2",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-url-polyfill": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  }
+}
