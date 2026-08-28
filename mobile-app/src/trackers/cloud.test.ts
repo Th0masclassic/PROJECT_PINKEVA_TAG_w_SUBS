@@ -48,7 +48,7 @@ test('maps an active owned device to a hosted Tracker with its canonical UUID', 
 
 test('queries only the authenticated user active ownerships with a safe device projection', async () => {
   const calls: Array<[string, ...unknown[]]> = [];
-  const query = {
+  const ownershipQuery = {
     select(projection: string) {
       calls.push(['select', projection]);
       return this;
@@ -66,10 +66,24 @@ test('queries only the authenticated user active ownerships with a safe device p
       return Promise.resolve({ data: [activeOwnership()], error: null, status: 200 });
     },
   };
+  const profileQuery = {
+    select(projection: string) {
+      calls.push(['select', projection]);
+      return this;
+    },
+    eq(column: string, value: string) {
+      calls.push(['eq', column, value]);
+      return this;
+    },
+    maybeSingle() {
+      calls.push(['maybeSingle']);
+      return Promise.resolve({ data: { account_status: 'active' }, error: null, status: 200 });
+    },
+  };
   const client = {
     from(table: string) {
       calls.push(['from', table]);
-      return query;
+      return table === 'profiles' ? profileQuery : ownershipQuery;
     },
   } as unknown as SupabaseClient;
 
@@ -77,6 +91,10 @@ test('queries only the authenticated user active ownerships with a safe device p
 
   assert.equal(trackers[0]?.id, DEVICE_ID);
   assert.deepEqual(calls, [
+    ['from', 'profiles'],
+    ['select', 'account_status'],
+    ['eq', 'id', USER_ID],
+    ['maybeSingle'],
     ['from', 'ownership'],
     [
       'select',
@@ -86,6 +104,25 @@ test('queries only the authenticated user active ownerships with a safe device p
     ['is', 'ended_at', null],
     ['order', 'started_at', { ascending: true }],
   ]);
+});
+
+test('stops before reading tracker data when the account is banned', async () => {
+  const client = {
+    from() {
+      return {
+        select() { return this; },
+        eq() { return this; },
+        maybeSingle() {
+          return Promise.resolve({ data: { account_status: 'banned' }, error: null, status: 200 });
+        },
+      };
+    },
+  } as unknown as SupabaseClient;
+
+  await assert.rejects(
+    () => fetchOwnedTrackers(client, USER_ID),
+    (error: unknown) => error instanceof OwnedTrackerError && error.code === 'banned',
+  );
 });
 
 test('uses conservative display defaults for nullable projected fields', () => {

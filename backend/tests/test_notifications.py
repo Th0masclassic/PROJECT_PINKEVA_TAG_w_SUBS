@@ -34,6 +34,8 @@ def job(*, attempt_count: int = 1) -> NotificationJob:
         period_end=datetime(2026, 9, 26, tzinfo=UTC),
         cancel_at_period_end=False,
         device_name="Wallet",
+        title=None,
+        body=None,
         attempt_count=attempt_count,
     )
 
@@ -109,7 +111,7 @@ async def test_expo_gateway_disables_only_unregistered_destination(
     assert captured["headers"]["Authorization"] == "Bearer push-access-token"
     assert [message["to"] for message in captured["json"]] == [first, stale]
     assert captured["json"][0]["data"] == {"route": "subscription"}
-    assert captured["json"][0]["channelId"] == "subscription-renewals"
+    assert captured["json"][0]["channelId"] == "pinkeva-notifications"
 
 
 @pytest.mark.asyncio
@@ -162,3 +164,44 @@ async def test_worker_records_no_token_and_exponential_retry() -> None:
     assert exhausted_worker.finishes == [
         {"status": "failed", "error_code": "PUSH_RETRY_EXHAUSTED"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_delivers_admin_message_to_the_notification_inbox_route() -> None:
+    captured: dict[str, Any] = {}
+
+    class Gateway:
+        async def send(
+            self,
+            tokens: list[str],
+            *,
+            title: str,
+            body: str,
+            data: Mapping[str, str],
+        ) -> PushResult:
+            captured.update(tokens=tokens, title=title, body=body, data=dict(data))
+            return PushResult()
+
+    worker = CapturingWorker(["ExpoPushToken[token]"], Gateway())
+    await worker.process(
+        NotificationJob(
+            id=uuid4(),
+            user_id=uuid4(),
+            device_id=None,
+            kind="admin_message",
+            period_end=None,
+            cancel_at_period_end=False,
+            device_name="Your Pinkeva tag",
+            title="A helpful update",
+            body="Please open Pinkeva when you have a moment.",
+            attempt_count=1,
+        )
+    )
+
+    assert captured == {
+        "tokens": ["ExpoPushToken[token]"],
+        "title": "A helpful update",
+        "body": "Please open Pinkeva when you have a moment.",
+        "data": {"kind": "admin_message", "route": "notifications"},
+    }
+    assert worker.finishes == [{"status": "sent", "disabled_tokens": ()}]

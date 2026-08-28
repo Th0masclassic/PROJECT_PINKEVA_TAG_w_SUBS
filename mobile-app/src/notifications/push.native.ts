@@ -52,8 +52,8 @@ async function register(input: {
 }): Promise<RegisteredDestination | null> {
   if (Platform.OS !== 'ios' && Platform.OS !== 'android') return null;
   if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('subscription-renewals', {
-      name: 'Subscription renewals',
+    await Notifications.setNotificationChannelAsync('pinkeva-notifications', {
+      name: 'Pinkeva notifications',
       importance: Notifications.AndroidImportance.HIGH,
       sound: 'default',
       vibrationPattern: [0, 250, 150, 250],
@@ -130,16 +130,14 @@ export function useRenewalPushRegistration(input: {
   onOpenSubscription?: (deviceId: string) => void;
 }): void {
   const destination = useRef<RegisteredDestination | null>(null);
-  const previousUserId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (previousUserId.current && !input.userId && destination.current) {
+    if ((!input.enabled || !input.userId) && destination.current) {
       const registered = destination.current;
       destination.current = null;
       void unregister(registered).catch(() => undefined);
     }
-    previousUserId.current = input.userId;
-  }, [input.userId]);
+  }, [input.enabled, input.userId]);
 
   useEffect(() => {
     if (!input.enabled || !input.userId || !input.onOpenSubscription) return undefined;

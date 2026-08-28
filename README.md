@@ -6,7 +6,7 @@ Pinqeva is a prototype Bluetooth item-tracking system built around an ESP32-base
 
 The same tag can be attached to personal belongings or left inside a vehicle. When used in a car, the application will associate the tag with owner-provided vehicle information and display the car's last reported location.
 
-> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, ESP32 GATT receiver, signed BLE firmware-update path, Stripe subscription workflow, signed tag-entitlement path, native map surface, and secured admin console exist; the finder-report worker and final production validation are not yet complete.
+> Pinqeva is currently an engineering prototype. The key-provisioning backend, mobile provisioning UI, separate native Admin app, ESP32 GATT receiver, signed BLE firmware-update path, Stripe subscription workflow, signed tag-entitlement path, native map surface, and secured browser admin console exist; the finder-report worker and final production validation are not yet complete.
 
 ## Project overview
 
@@ -51,6 +51,7 @@ The complete architecture and proposed communication contract are documented in 
 | Backend API and worker | Provisioning, firmware, billing, entitlement, notification, and admin modules | Key custody, claims/releases, owner-scoped signed firmware publication, app-independent Stripe renewal reconciliation, signed entitlement issuance/read-back acknowledgement, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. The location-report worker remains. |
 | Pinqeva map and vehicle UI | Map UI implemented | iOS/Android use native Google Maps when restricted SDK keys are configured and render only stored tracker coordinates. Location ingestion/history and the vehicle profile remain. |
 | Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
+| Admin mobile app | Implemented baseline | Separate native iOS/Android app with its own bundle identity and encrypted session, Supabase TOTP MFA, role-gated operations, native tracker maps, subscriptions, pricing, device registration, administrator management, and audit views. |
 | Subscription enforcement | Implemented prototype | Active/trialing subscriptions receive signed device-bound entitlements; the firmware fails closed on missing, expired, invalid, or replayed leases. |
 
 ## Current tag behavior
@@ -130,8 +131,9 @@ The tag does not currently provide speed, fuel level, engine state, mileage, or 
 | [`docs/system-architecture-and-protocol.md`](docs/system-architecture-and-protocol.md) | Hardware/software architecture, BLE protocol, API proposal, subscription model, and roadmap. |
 | [`backend`](backend) | Authenticated provisioning API, key custody, manufacturing helper, and tests. |
 | [`admin-panel`](admin-panel) | MFA-gated browser console for user, tracker, subscription, price, device, role, and audit operations. |
+| [`admin-mobile-app`](admin-mobile-app) | Separate native Pinkeva Admin application for iOS and Android. |
 | [`app-client`](app-client) | React Native App-to-Tag provisioning bridge and protocol tests. |
-| [`mobile-app`](mobile-app) | Expo/React Native product application for iOS, Android, and web. |
+| [`mobile-app`](mobile-app) | Customer-facing Expo/React Native product application for iOS, Android, and web; it contains no Admin console or privileged Admin API surface. |
 | [`docs/provisioning-security-review.md`](docs/provisioning-security-review.md) | Threat scenarios, implemented controls, residual risks, and recovery decisions. |
 | [`docs/supabase-cloud-deployment.md`](docs/supabase-cloud-deployment.md) | Hosted database, Auth-provider, backend-secret, and mobile setup. |
 

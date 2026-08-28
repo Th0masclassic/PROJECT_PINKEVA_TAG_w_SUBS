@@ -7,6 +7,7 @@ const UUID_PATTERN =
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
 
 export type OwnedTrackerErrorCode =
+  | 'banned'
   | 'authentication'
   | 'configuration'
   | 'invalid-response'
@@ -153,6 +154,22 @@ export async function fetchOwnedTrackers(
   userId: string,
 ): Promise<Tracker[]> {
   const normalizedUserId = parseUuid(userId);
+  const profileQuery = await client
+    .from('profiles')
+    .select('account_status')
+    .eq('id', normalizedUserId)
+    .maybeSingle();
+  if (profileQuery.error || !profileQuery.data) {
+    throw new OwnedTrackerError(
+      profileQuery.status === 401 || profileQuery.status === 403 ? 'authentication' : 'unavailable',
+    );
+  }
+  if (profileQuery.data.account_status === 'banned') {
+    throw new OwnedTrackerError('banned');
+  }
+  if (profileQuery.data.account_status !== 'active') {
+    throw new OwnedTrackerError('invalid-response');
+  }
   const { data, error, status } = await client
     .from('ownership')
     .select(

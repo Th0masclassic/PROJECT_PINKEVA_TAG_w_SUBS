@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, Response
 from .admin import AdminError, AdminService, router as admin_router
 from .anisette_provider import NativeAnisetteError, NativeAnisetteService
 from .apple_auth import AppleAuthManager, AppleAuthenticationError
-from .auth import AuthenticatedPrincipal
+from .auth import AccountAccessError, AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
 from .database import Database
@@ -136,6 +136,8 @@ SAFE_ADMIN_MESSAGES = {
     "ADMIN_OWNER_IMMUTABLE": "Environment owners cannot be removed here.",
     "ADMIN_PROVIDER_UNAVAILABLE": "The payment provider is temporarily unavailable.",
     "ADMIN_INVALID_REQUEST": "Please check the information and try again.",
+    "ADMIN_PROTECTED_ACCOUNT": "This protected account cannot be suspended.",
+    "ADMIN_TARGET_BANNED": "This account is suspended. Restore access before sending a message.",
 }
 
 SAFE_LOCATION_MESSAGES = {
@@ -406,6 +408,20 @@ async def admin_error_handler(request: Request, exc: AdminError):
         message=SAFE_ADMIN_MESSAGES.get(
             exc.code, "The request could not be completed."
         ),
+    )
+
+
+@app.exception_handler(AccountAccessError)
+async def account_access_error_handler(request: Request, exc: AccountAccessError):
+    messages = {
+        "ACCOUNT_BANNED": "This account is unavailable. Please contact Pinkeva support.",
+        "ACCOUNT_ACCESS_UNAVAILABLE": "Account access is temporarily unavailable. Please try again.",
+    }
+    return _error_response(
+        request,
+        status_code=exc.status_code,
+        code=exc.code,
+        message=messages.get(exc.code, "The request could not be completed."),
     )
 
 

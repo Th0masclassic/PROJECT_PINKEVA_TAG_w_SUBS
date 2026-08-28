@@ -8,13 +8,14 @@ export type NotificationKind =
   | 'renewal_7_days'
   | 'renewal_1_day'
   | 'expired'
-  | 'tag_sync_required';
+  | 'tag_sync_required'
+  | 'admin_message';
 
 export type UserNotification = {
   id: string;
-  deviceId: string;
+  deviceId: string | null;
   kind: NotificationKind;
-  periodEnd: string;
+  periodEnd: string | null;
   title: string;
   body: string;
   createdAt: string;
@@ -64,7 +65,8 @@ function parseKind(value: unknown): NotificationKind | null {
   return value === 'renewal_7_days' ||
     value === 'renewal_1_day' ||
     value === 'expired' ||
-    value === 'tag_sync_required'
+    value === 'tag_sync_required' ||
+    value === 'admin_message'
     ? value
     : null;
 }
@@ -76,14 +78,17 @@ export function parseUserNotifications(value: unknown): UserNotification[] {
   return value.notifications.map((item) => {
     if (!isRecord(item)) throw new NotificationApiError('invalid_response');
     const id = parseUuid(item.id);
-    const deviceId = parseUuid(item.device_id);
+    const deviceId = item.device_id === null ? null : parseUuid(item.device_id);
     const kind = parseKind(item.kind);
-    const periodEnd = parseDate(item.period_end);
+    const periodEnd = item.period_end === null ? null : parseDate(item.period_end);
     const title = parseText(item.title, 120);
     const body = parseText(item.body, 320);
     const createdAt = parseDate(item.created_at);
     const readAt = item.read_at === null ? null : parseDate(item.read_at);
-    if (!id || !deviceId || !kind || !periodEnd || !title || !body || !createdAt || readAt === null && item.read_at !== null) {
+    const isAdminMessage = kind === 'admin_message';
+    if (!id || !kind || !title || !body || !createdAt || readAt === null && item.read_at !== null ||
+      (isAdminMessage && (deviceId !== null || periodEnd !== null)) ||
+      (!isAdminMessage && (!deviceId || !periodEnd))) {
       throw new NotificationApiError('invalid_response');
     }
     return { id, deviceId, kind, periodEnd, title, body, createdAt, readAt };

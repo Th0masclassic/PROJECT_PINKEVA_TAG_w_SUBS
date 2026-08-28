@@ -1,0 +1,17 @@
+{
+  "name": "Pinkeva Admin",
+  "short_name": "Pinkeva Admin",
+  "description": "Secure operations console for Pinkeva administrators.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7fb",
+  "theme_color": "#071a3d",
+  "icons": [
+    {
+      "src": "/admin-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "expo": {
+    "name": "Pinkeva Admin",
+    "slug": "pinkeva-admin",
+    "scheme": "com.pinkeva.admin",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "backgroundColor": "#F7F9FD",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pinkeva.admin",
+      "appleTeamId": "4P5765BPRH",
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.pinkeva.admin",
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F7F9FD",
+          "image": "./assets/icon.png",
+          "imageWidth": 180,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-font",
+      "expo-secure-store",
+      "expo-system-ui"
+    ]
+  }
+}
