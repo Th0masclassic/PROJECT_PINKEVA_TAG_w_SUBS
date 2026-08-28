@@ -63,6 +63,8 @@ export function safeAdminMessage(error: unknown): string {
     ADMIN_RESOURCE_NOT_FOUND: 'The requested record no longer exists.',
     ADMIN_CONFLICT: 'The record changed or already exists. Refresh and try again.',
     ADMIN_PROVIDER_UNAVAILABLE: 'Stripe is temporarily unavailable.',
+    ADMIN_PROTECTED_ACCOUNT: 'Administrator and owner accounts cannot be suspended here.',
+    ADMIN_TARGET_BANNED: 'Restore this account before sending a notification.',
     REQUEST_TIMEOUT: 'The server took too long to respond.',
     NETWORK_UNAVAILABLE: 'Check your secure API connection and try again.',
   };

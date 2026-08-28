@@ -10,6 +10,7 @@ import {
 const LEGACY_PREFERENCES_KEY = 'pinkeva.preferences.v1';
 const LANGUAGE_PREFERENCES_KEY = 'pinkeva.language.preferences.v2';
 const TRACKER_PREFERENCES_PREFIX = 'pinkeva.tracker.preferences.v2';
+const NOTIFICATION_PREFERENCES_PREFIX = 'pinkeva.notification.preferences.v1';
 
 export type AppPreferences = TrackerPreferences & {
   language: Language | null;
@@ -77,4 +78,20 @@ export async function saveTrackerPreferences(
   preferences: TrackerPreferences,
 ): Promise<void> {
   await AsyncStorage.setItem(trackerPreferencesKey(userId), JSON.stringify(preferences));
+}
+
+export async function loadNotificationPreference(userId: string | null): Promise<boolean> {
+  if (!userId) return true;
+  try {
+    return (await AsyncStorage.getItem(`${NOTIFICATION_PREFERENCES_PREFIX}:${userId}`)) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
+export async function saveNotificationPreference(userId: string, enabled: boolean): Promise<void> {
+  await AsyncStorage.setItem(
+    `${NOTIFICATION_PREFERENCES_PREFIX}:${userId}`,
+    enabled ? 'on' : 'off',
+  );
 }

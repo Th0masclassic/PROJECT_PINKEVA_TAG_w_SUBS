@@ -129,7 +129,7 @@ export function IconButton({
   );
 }
 
-export function Field({ label, icon, ...props }: TextInputProps & { label: string; icon?: IconName }) {
+export function Field({ label, icon, style, ...props }: TextInputProps & { label: string; icon?: IconName }) {
   return (
     <View style={styles.fieldWrap}>
       <Text style={styles.fieldLabel}>{label}</Text>
@@ -139,7 +139,7 @@ export function Field({ label, icon, ...props }: TextInputProps & { label: strin
           {...props}
           accessibilityLabel={label}
           placeholderTextColor="#9AA4B8"
-          style={styles.fieldInput}
+          style={[styles.fieldInput, props.multiline && styles.fieldInputMultiline, style]}
         />
       </View>
     </View>
@@ -178,10 +178,10 @@ export function SectionIntro({ title, body }: { title: string; body?: string }) 
   );
 }
 
-export function Badge({ label, tone = 'blue' }: { label: string; tone?: 'blue' | 'green' | 'navy' }) {
+export function Badge({ label, tone = 'blue' }: { label: string; tone?: 'blue' | 'green' | 'navy' | 'danger' }) {
   return (
-    <View style={[styles.badge, tone === 'green' && styles.badgeGreen, tone === 'navy' && styles.badgeNavy]}>
-      <Text style={[styles.badgeText, tone === 'green' && styles.badgeTextGreen, tone === 'navy' && styles.badgeTextNavy]}>{label}</Text>
+    <View style={[styles.badge, tone === 'green' && styles.badgeGreen, tone === 'navy' && styles.badgeNavy, tone === 'danger' && styles.badgeDanger]}>
+      <Text style={[styles.badgeText, tone === 'green' && styles.badgeTextGreen, tone === 'navy' && styles.badgeTextNavy, tone === 'danger' && styles.badgeTextDanger]}>{label}</Text>
     </View>
   );
 }
@@ -300,6 +300,7 @@ const styles = StyleSheet.create({
   fieldLabel: { color: colors.mutedDark, fontSize: 13, fontWeight: '700' },
   fieldShell: { minHeight: 56, borderWidth: 1, borderColor: colors.border, borderRadius: radii.small, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: colors.surface },
   fieldInput: { flex: 1, minHeight: 54, color: colors.text, fontSize: 16 },
+  fieldInputMultiline: { minHeight: 92, paddingVertical: 14, textAlignVertical: 'top' },
   header: { minHeight: 82, paddingHorizontal: 18, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 9 },
   headerCopy: { flex: 1, minWidth: 0 },
   headerTitle: { color: colors.text, fontSize: 30, fontWeight: '800', letterSpacing: -.7 },
@@ -311,9 +312,11 @@ const styles = StyleSheet.create({
   badge: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 6, borderRadius: radii.pill, backgroundColor: colors.bluePale },
   badgeGreen: { backgroundColor: colors.successPale },
   badgeNavy: { backgroundColor: colors.navy },
+  badgeDanger: { backgroundColor: colors.dangerPale },
   badgeText: { color: colors.blue, fontSize: 11, fontWeight: '800', textTransform: 'uppercase', letterSpacing: .5 },
   badgeTextGreen: { color: colors.success },
   badgeTextNavy: { color: '#FFFFFF' },
+  badgeTextDanger: { color: colors.danger },
   stateWrap: { minHeight: 260, padding: 28, alignItems: 'center', justifyContent: 'center', gap: 12 },
   stateIcon: { width: 52, height: 52, borderRadius: 18, backgroundColor: colors.bluePale, alignItems: 'center', justifyContent: 'center' },
   stateTitle: { color: colors.text, fontSize: 19, fontWeight: '800', textAlign: 'center' },

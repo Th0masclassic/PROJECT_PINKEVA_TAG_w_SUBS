@@ -22,6 +22,9 @@ export type UserSummary = {
   tracker_count: number;
   subscription_count: number;
   is_admin: boolean;
+  account_status: 'active' | 'banned';
+  banned_at: string | null;
+  ban_reason: string | null;
 };
 
 export type TrackerSummary = {
@@ -43,7 +46,7 @@ export type TrackerSummary = {
 };
 
 export type UserTrackers = {
-  user: Pick<UserSummary, 'id' | 'display_name' | 'email' | 'created_at'>;
+  user: Pick<UserSummary, 'id' | 'display_name' | 'email' | 'created_at' | 'account_status' | 'banned_at' | 'ban_reason'>;
   trackers: TrackerSummary[];
 };
 

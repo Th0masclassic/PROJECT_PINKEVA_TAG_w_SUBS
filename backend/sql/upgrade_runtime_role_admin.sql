@@ -4,7 +4,10 @@
 
 \set ON_ERROR_STOP on
 
-GRANT SELECT (id, display_name, email, stripe_customer_id, created_at, updated_at)
+GRANT SELECT (id, display_name, email, stripe_customer_id, created_at, updated_at,
+  account_status, banned_at, banned_by, ban_reason)
+  ON TABLE public.profiles TO pinqeva_backend;
+GRANT UPDATE (account_status, banned_at, banned_by, ban_reason)
   ON TABLE public.profiles TO pinqeva_backend;
 
 GRANT SELECT, INSERT, UPDATE ON TABLE public.plan TO pinqeva_backend;

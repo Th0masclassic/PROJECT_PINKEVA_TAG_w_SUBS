@@ -40,6 +40,13 @@ class Principal:
     session_id: UUID | None = None
 
 
+class AccountAccessError(RuntimeError):
+    def __init__(self, code: str, status_code: int) -> None:
+        super().__init__(code)
+        self.code = code
+        self.status_code = status_code
+
+
 @lru_cache
 def _jwks_client(url: str) -> PyJWKClient:
     # The macOS Python distribution used for local development does not always
@@ -97,6 +104,30 @@ async def authenticated_principal(
             detail="The access token is invalid or expired",
             headers={"WWW-Authenticate": "Bearer"},
         ) from None
+    # The bearer token is cryptographically valid even after an operator bans
+    # the account. Check the server-side access state here so every protected
+    # API route consistently stops before doing account work.
+    try:
+        async with request.app.state.database.transaction() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT account_status
+                  FROM public.profiles
+                 WHERE id = %s
+                """,
+                (user_id,),
+            )
+            profile = await cursor.fetchone()
+    except Exception as error:
+        logger.error(
+            "account_access_check_failed error_type=%s request_id=%s",
+            type(error).__name__,
+            getattr(request.state, "request_id", "unknown"),
+        )
+        raise AccountAccessError("ACCOUNT_ACCESS_UNAVAILABLE", 503) from None
+    if profile is not None and profile["account_status"] == "banned":
+        raise AccountAccessError("ACCOUNT_BANNED", 403)
+
     return Principal(
         user_id=user_id,
         assurance_level=assurance_level,

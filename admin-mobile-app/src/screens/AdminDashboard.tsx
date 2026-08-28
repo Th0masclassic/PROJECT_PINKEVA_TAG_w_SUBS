@@ -231,6 +231,7 @@ function UsersScreen({ client, apiUrl, refreshKey, showNotice, identity }: Commo
         apiUrl={apiUrl}
         data={selected}
         plans={plans}
+        protectedAccount={Boolean(summary?.is_admin)}
         onBack={() => setSelected(null)}
         onReload={async () => { if (summary) await openUser(summary); else setSelected(null); }}
         showNotice={showNotice}
@@ -253,7 +254,7 @@ function UsersScreen({ client, apiUrl, refreshKey, showNotice, identity }: Commo
                 <Pressable accessibilityRole="button" onPress={() => void openUser(user)} style={({ pressed }) => [styles.userOpen, pressed && styles.pressed]}>
                   <View style={styles.avatar}><Text style={styles.avatarText}>{(user.display_name || user.email || 'U').slice(0, 1).toUpperCase()}</Text></View>
                   <View style={styles.userCopy}>
-                    <View style={styles.userNameRow}><Text numberOfLines={1} style={styles.userName}>{user.display_name || 'Unnamed user'}</Text>{user.is_admin ? <Badge label="Admin" /> : null}</View>
+                    <View style={styles.userNameRow}><Text numberOfLines={1} style={styles.userName}>{user.display_name || 'Unnamed user'}</Text>{user.is_admin ? <Badge label="Admin" /> : null}{user.account_status === 'banned' ? <Badge label="Banned" tone="danger" /> : null}</View>
                     <Text numberOfLines={1} style={styles.userEmail}>{user.email || user.id}</Text>
                     <Text style={styles.userMeta}>{user.tracker_count} tags · {user.subscription_count} subscriptions</Text>
                   </View>
@@ -274,6 +275,7 @@ function UserDetailScreen({
   apiUrl,
   data,
   plans,
+  protectedAccount,
   onBack,
   onReload,
   showNotice,
@@ -282,11 +284,17 @@ function UserDetailScreen({
   apiUrl: string;
   data: UserTrackers;
   plans: Plan[];
+  protectedAccount: boolean;
   onBack: () => void;
   onReload: () => Promise<void>;
   showNotice: (message: string, error?: boolean) => void;
 }) {
   const [refreshing, setRefreshing] = useState(false);
+  const [messageTitle, setMessageTitle] = useState('');
+  const [messageBody, setMessageBody] = useState('');
+  const [banReason, setBanReason] = useState('');
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [messageBusy, setMessageBusy] = useState(false);
   const located = data.trackers.filter((tracker) => tracker.last_latitude !== null && tracker.last_longitude !== null);
   const region = useMemo(() => {
     if (!located.length) return null;
@@ -307,10 +315,53 @@ function UserDetailScreen({
     catch (error) { showNotice(safeAdminMessage(error), true); }
   };
 
+  const sendMessage = async () => {
+    const title = messageTitle.trim();
+    const body = messageBody.trim();
+    if (!title || !body) { showNotice('Add a notification title and message.', true); return; }
+    if (!await confirmAction('Send this notification?', `Send “${title}” to this Pinkeva account?`)) return;
+    setMessageBusy(true);
+    try {
+      await adminRequest(client, apiUrl, `/v1/admin/users/${data.user.id}/notifications`, { method: 'POST', body: JSON.stringify({ title, body }) });
+      setMessageTitle(''); setMessageBody(''); showNotice('Notification queued for delivery.');
+    } catch (error) { showNotice(safeAdminMessage(error), true); }
+    finally { setMessageBusy(false); }
+  };
+
+  const updateAccess = async (banned: boolean) => {
+    const reason = banReason.trim();
+    if (banned && !reason) { showNotice('Add a short reason before suspending access.', true); return; }
+    if (!await confirmAction(
+      banned ? 'Suspend this account?' : 'Restore this account?',
+      banned
+        ? 'The customer will immediately lose Pinkeva API and tracker-data access. Billing history is kept.'
+        : 'The customer can sign in and access their Pinkeva data again.',
+      banned,
+    )) return;
+    setAccessBusy(true);
+    try {
+      await adminRequest(client, apiUrl, `/v1/admin/users/${data.user.id}/access`, { method: 'PATCH', body: JSON.stringify(banned ? { banned: true, reason } : { banned: false }) });
+      setBanReason(''); showNotice(banned ? 'Account access suspended.' : 'Account access restored.'); await onReload();
+    } catch (error) { showNotice(safeAdminMessage(error), true); }
+    finally { setAccessBusy(false); }
+  };
+
   return (
     <ScrollView contentContainerStyle={styles.screen} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); void onReload().finally(() => setRefreshing(false)); }} tintColor={colors.blue} />}>
       <ScreenHeader title={data.user.display_name || 'Unnamed user'} subtitle={data.user.email || data.user.id} onBack={onBack} />
-      <View style={styles.detailBadgeRow}><Badge label={`${data.trackers.length} tracker${data.trackers.length === 1 ? '' : 's'}`} /><Text style={styles.joinedText}>Joined {formatDate(data.user.created_at)}</Text></View>
+      <View style={styles.detailBadgeRow}><View style={styles.detailBadges}><Badge label={`${data.trackers.length} tracker${data.trackers.length === 1 ? '' : 's'}`} />{data.user.account_status === 'banned' ? <Badge label="Banned" tone="danger" /> : <Badge label="Active" tone="green" />}</View><Text style={styles.joinedText}>Joined {formatDate(data.user.created_at)}</Text></View>
+      {!protectedAccount ? (
+        <Surface style={styles.operatorCard}>
+          <View style={styles.operatorHeader}><View style={styles.operatorIcon}><Ionicons name="megaphone-outline" size={23} color={colors.blue} /></View><View style={styles.operatorCopy}><Text style={styles.cardTitle}>Send notification</Text><Text style={styles.cardBody}>This appears in the customer’s Pinkeva inbox and is delivered to enabled phones.</Text></View></View>
+          <View style={styles.formStack}><Field label="Title" value={messageTitle} onChangeText={setMessageTitle} maxLength={120} placeholder="A short, helpful title" /><Field label="Message" value={messageBody} onChangeText={setMessageBody} multiline maxLength={320} placeholder="What should the customer know?" /><PrimaryButton label={messageBusy ? 'Queuing…' : 'Send notification'} compact icon="send-outline" disabled={messageBusy || data.user.account_status === 'banned'} onPress={() => void sendMessage()} /></View>
+        </Surface>
+      ) : null}
+      {!protectedAccount ? (
+        <Surface style={data.user.account_status === 'banned' ? [styles.operatorCard, styles.restoreCard] : styles.operatorCard}>
+          <View style={styles.operatorHeader}><View style={[styles.operatorIcon, data.user.account_status === 'banned' && styles.operatorIconDanger]}><Ionicons name={data.user.account_status === 'banned' ? 'lock-open-outline' : 'ban-outline'} size={23} color={data.user.account_status === 'banned' ? colors.danger : colors.blue} /></View><View style={styles.operatorCopy}><Text style={styles.cardTitle}>{data.user.account_status === 'banned' ? 'Restore account access' : 'Suspend account access'}</Text><Text style={styles.cardBody}>{data.user.account_status === 'banned' ? `Suspended ${formatDate(data.user.banned_at)}${data.user.ban_reason ? ` · ${data.user.ban_reason}` : ''}` : 'Suspension blocks customer API and tracker-data access without deleting their records.'}</Text></View></View>
+          {data.user.account_status === 'banned' ? <SecondaryButton label={accessBusy ? 'Restoring…' : 'Restore access'} compact icon="lock-open-outline" disabled={accessBusy} onPress={() => void updateAccess(false)} /> : <View style={styles.formStack}><Field label="Reason for suspension" value={banReason} onChangeText={setBanReason} maxLength={240} placeholder="Required for the audit record" /><SecondaryButton label={accessBusy ? 'Suspending…' : 'Suspend account'} compact icon="ban-outline" danger disabled={accessBusy} onPress={() => void updateAccess(true)} /></View>}
+        </Surface>
+      ) : <Surface style={styles.protectedCard}><Text style={styles.cardTitle}>Protected administrator account</Text><Text style={styles.cardBody}>Administrator accounts are never suspended from this screen.</Text></Surface>}
       {region ? (
         <Surface style={styles.mapCard}>
           <MapView style={styles.map} initialRegion={region}>
@@ -584,7 +635,15 @@ const styles = StyleSheet.create({
   userEmail: { color: colors.muted, fontSize: 13 },
   userMeta: { color: colors.blue, fontSize: 12, fontWeight: '600' },
   detailBadgeRow: { marginBottom: 15, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 10 },
+  detailBadges: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, flex: 1 },
   joinedText: { flex: 1, color: colors.muted, fontSize: 12, textAlign: 'right' },
+  operatorCard: { padding: 17, gap: 15, marginBottom: 15 },
+  restoreCard: { borderColor: '#F2C6CA' },
+  protectedCard: { padding: 17, gap: 5, marginBottom: 15, backgroundColor: colors.bluePale },
+  operatorHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  operatorIcon: { width: 44, height: 44, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bluePale },
+  operatorIconDanger: { backgroundColor: colors.dangerPale },
+  operatorCopy: { flex: 1, minWidth: 0 },
   mapCard: { height: 250, marginBottom: 16 },
   map: { flex: 1 },
   trackerStack: { gap: 13 },

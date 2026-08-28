@@ -20,6 +20,7 @@ function errorMessage(copy: ReturnType<typeof useBillingCopy>, error: Notificati
 }
 
 function notificationIcon(kind: UserNotification['kind']): ComponentProps<typeof Ionicons>['name'] {
+  if (kind === 'admin_message') return 'megaphone-outline';
   if (kind === 'tag_sync_required') return 'download-outline';
   if (kind === 'expired') return 'alert-circle-outline';
   return 'notifications-outline';
@@ -74,7 +75,7 @@ export function NotificationsScreen({
                   accessibilityLabel={`${notification.title}. ${notification.body}`}
                   onPress={() => {
                     if (unread) void onMarkRead(notification.id).catch(() => undefined);
-                    onOpenSubscription(notification.deviceId);
+                    if (notification.deviceId) onOpenSubscription(notification.deviceId);
                   }}
                   style={({ pressed }) => [
                     styles.notificationRow,
@@ -102,7 +103,7 @@ export function NotificationsScreen({
                       {formatBillingDate(notification.createdAt, language) ?? '—'}
                     </Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={22} color={colors.muted} />
+                  {notification.deviceId ? <Ionicons name="chevron-forward" size={22} color={colors.muted} /> : null}
                 </Pressable>
               );
             })}

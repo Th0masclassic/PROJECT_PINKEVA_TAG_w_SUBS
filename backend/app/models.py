@@ -431,14 +431,15 @@ NotificationKind = Literal[
     "renewal_1_day",
     "expired",
     "tag_sync_required",
+    "admin_message",
 ]
 
 
 class UserNotificationSummary(StrictModel):
     id: UUID
-    device_id: UUID
+    device_id: UUID | None = None
     kind: NotificationKind
-    period_end: datetime
+    period_end: datetime | None = None
     title: str = Field(min_length=1, max_length=120)
     body: str = Field(min_length=1, max_length=320)
     created_at: datetime

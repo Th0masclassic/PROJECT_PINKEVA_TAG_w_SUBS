@@ -29,8 +29,10 @@ import {
 } from './src/model';
 import {
   loadLanguagePreference,
+  loadNotificationPreference,
   loadTrackerPreferences,
   saveLanguagePreference,
+  saveNotificationPreference,
   saveTrackerPreferences,
 } from './src/preferences';
 import { AuthScreen } from './src/screens/AuthScreen';
@@ -84,6 +86,10 @@ function AppContent() {
   const { language, setLanguage, t } = useI18n();
   const auth = useAuth();
   const [languageHydrated, setLanguageHydrated] = useState(false);
+  const [notificationPreferenceOwnerId, setNotificationPreferenceOwnerId] = useState<
+    string | null | undefined
+  >(undefined);
+  const [notificationDeliveryEnabled, setNotificationDeliveryEnabled] = useState(true);
   const [trackerPreferencesOwnerId, setTrackerPreferencesOwnerId] = useState<
     string | null | undefined
   >(undefined);
@@ -213,6 +219,20 @@ function AppContent() {
   }, [auth.ready, userId]);
 
   useEffect(() => {
+    let active = true;
+    setNotificationPreferenceOwnerId(undefined);
+    setNotificationDeliveryEnabled(true);
+    void loadNotificationPreference(userId).then((enabled) => {
+      if (!active) return;
+      setNotificationDeliveryEnabled(enabled);
+      setNotificationPreferenceOwnerId(userId);
+    });
+    return () => {
+      active = false;
+    };
+  }, [userId]);
+
+  useEffect(() => {
     if (!languageHydrated) return;
     void saveLanguagePreference(languageChosen ? language : null).catch(() => undefined);
   }, [language, languageChosen, languageHydrated]);
@@ -264,12 +284,21 @@ function AppContent() {
     [billing.refreshDevice, notificationInbox.refresh],
   );
   useRenewalPushRegistration({
-    enabled: Boolean(auth.session),
+    enabled: Boolean(auth.session) && notificationDeliveryEnabled,
     userId: auth.user?.id ?? null,
     apiConfig: PROVISIONING_API_CONFIG,
     getAccessToken: auth.getAccessToken,
     onOpenSubscription: openSubscriptionFromNotification,
   });
+  const updateNotificationDelivery = useCallback(
+    async (enabled: boolean) => {
+      setNotificationDeliveryEnabled(enabled);
+      if (userId && notificationPreferenceOwnerId === userId) {
+        await saveNotificationPreference(userId, enabled);
+      }
+    },
+    [notificationPreferenceOwnerId, userId],
+  );
   const mainTracker = useMemo(
     () => displayTrackers.find((tracker) => tracker.id === trackerPreferences.mainTrackerId),
     [displayTrackers, trackerPreferences.mainTrackerId],
@@ -679,7 +708,14 @@ function AppContent() {
     }
 
     if (route.name === 'info') {
-      return <InfoScreen topic={route.topic} onBack={() => changeTab('settings')} />;
+      return (
+        <InfoScreen
+          topic={route.topic}
+          onBack={() => changeTab('settings')}
+          notificationDeliveryEnabled={notificationDeliveryEnabled}
+          onNotificationDeliveryChange={updateNotificationDelivery}
+        />
+      );
     }
 
     if (activeTab === 'trackers') {

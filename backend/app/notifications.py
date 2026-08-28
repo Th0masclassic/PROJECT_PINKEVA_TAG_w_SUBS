@@ -45,11 +45,13 @@ class PermanentPushError(RuntimeError):
 class NotificationJob:
     id: UUID
     user_id: UUID
-    device_id: UUID
+    device_id: UUID | None
     kind: str
-    period_end: datetime
+    period_end: datetime | None
     cancel_at_period_end: bool
     device_name: str
+    title: str | None
+    body: str | None
     attempt_count: int
 
 
@@ -191,14 +193,15 @@ class NotificationService:
             """
             SELECT notification.id, notification.device_id,
                    notification.kind, notification.period_end,
+                   notification.title, notification.body,
                    notification.created_at, notification.read_at,
                    subscription.cancel_at_period_end,
                    COALESCE(NULLIF(BTRIM(device.name), ''),
                             device.serial_number) AS device_name
               FROM public.user_notification notification
-              JOIN public.subscription subscription
+              LEFT JOIN public.subscription subscription
                 ON subscription.id = notification.subscription_id
-              JOIN public.device device
+              LEFT JOIN public.device device
                 ON device.id = notification.device_id
              WHERE notification.user_id = %s
              ORDER BY notification.created_at DESC, notification.id DESC
@@ -209,11 +212,14 @@ class NotificationService:
         rows = await query.fetchall()
         notifications: list[UserNotificationSummary] = []
         for row in rows:
-            title, body = notification_copy(
-                row["kind"],
-                device_name=row["device_name"],
-                cancel_at_period_end=bool(row["cancel_at_period_end"]),
-            )
+            if row["kind"] == "admin_message":
+                title, body = row["title"], row["body"]
+            else:
+                title, body = notification_copy(
+                    row["kind"],
+                    device_name=row["device_name"] or "Your Pinkeva tag",
+                    cancel_at_period_end=bool(row["cancel_at_period_end"]),
+                )
             notifications.append(
                 UserNotificationSummary(
                     id=row["id"],
@@ -272,7 +278,7 @@ class ExpoPushGateway:
                 "body": body,
                 "data": dict(data),
                 "priority": "high",
-                "channelId": "subscription-renewals",
+                "channelId": "pinkeva-notifications",
             }
             for token in tokens
         ]
@@ -452,6 +458,19 @@ class NotificationWorker:
                      ORDER BY notification.due_at, notification.id
                      FOR UPDATE OF notification SKIP LOCKED
                      LIMIT %s
+                ), claim_rows AS (
+                    SELECT notification.id,
+                           COALESCE(subscription.cancel_at_period_end, false)
+                             AS cancel_at_period_end,
+                           COALESCE(NULLIF(BTRIM(device.name), ''),
+                                    device.serial_number,
+                                    'Your Pinkeva tag') AS device_name
+                      FROM public.user_notification notification
+                      JOIN due ON due.id = notification.id
+                 LEFT JOIN public.subscription subscription
+                        ON subscription.id = notification.subscription_id
+                 LEFT JOIN public.device device
+                        ON device.id = notification.device_id
                 )
                 UPDATE public.user_notification notification
                    SET push_status = 'processing',
@@ -459,17 +478,14 @@ class NotificationWorker:
                        lease_owner = %s,
                        lease_expires_at = now() + interval '2 minutes',
                        updated_at = now()
-                  FROM due, public.subscription subscription,
-                       public.device device
-                 WHERE notification.id = due.id
-                   AND subscription.id = notification.subscription_id
-                   AND device.id = notification.device_id
+                  FROM claim_rows
+                 WHERE notification.id = claim_rows.id
                 RETURNING notification.id, notification.user_id,
                           notification.device_id, notification.kind,
                           notification.period_end,
-                          subscription.cancel_at_period_end,
-                          COALESCE(NULLIF(BTRIM(device.name), ''),
-                                   device.serial_number) AS device_name,
+                          claim_rows.cancel_at_period_end,
+                          claim_rows.device_name,
+                          notification.title, notification.body,
                           notification.attempt_count
                 """,
                 (batch_size, self.worker_id),
@@ -484,6 +500,8 @@ class NotificationWorker:
                 period_end=row["period_end"],
                 cancel_at_period_end=bool(row["cancel_at_period_end"]),
                 device_name=row["device_name"],
+                title=row["title"],
+                body=row["body"],
                 attempt_count=int(row["attempt_count"]),
             )
             for row in rows
@@ -494,9 +512,12 @@ class NotificationWorker:
             query = await connection.execute(
                 """
                 SELECT expo_push_token
-                  FROM public.mobile_push_token
-                 WHERE user_id = %s AND enabled = true
-                 ORDER BY created_at
+                  FROM public.mobile_push_token token
+                  JOIN public.profiles profile ON profile.id = token.user_id
+                 WHERE token.user_id = %s
+                   AND token.enabled = true
+                   AND profile.account_status = 'active'
+                 ORDER BY token.created_at
                  LIMIT 100
                 """,
                 (job.user_id,),
@@ -558,22 +579,32 @@ class NotificationWorker:
         if not tokens:
             await self._finish(job, status="no_tokens")
             return
-        title, body = notification_copy(
-            job.kind,
-            device_name=job.device_name,
-            cancel_at_period_end=job.cancel_at_period_end,
-        )
+        if job.kind == "admin_message":
+            title, body = job.title, job.body
+        else:
+            title, body = notification_copy(
+                job.kind,
+                device_name=job.device_name,
+                cancel_at_period_end=job.cancel_at_period_end,
+            )
+        if not title or not body:
+            await self._finish(job, status="failed", error_code="PUSH_INVALID_MESSAGE")
+            return
+        data: dict[str, str] = {"kind": job.kind, "route": "notifications"}
+        if job.device_id is not None and job.period_end is not None:
+            data.update(
+                {
+                    "deviceId": str(job.device_id),
+                    "periodEnd": job.period_end.isoformat(),
+                    "route": "subscription",
+                }
+            )
         try:
             result = await self.gateway.send(
                 tokens,
                 title=title,
                 body=body,
-                data={
-                    "kind": job.kind,
-                    "deviceId": str(job.device_id),
-                    "periodEnd": job.period_end.isoformat(),
-                    "route": "subscription",
-                },
+                data=data,
             )
         except RetryablePushError as exc:
             if job.attempt_count >= 8:

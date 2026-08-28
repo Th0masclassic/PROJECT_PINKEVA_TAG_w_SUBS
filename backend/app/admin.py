@@ -46,6 +46,34 @@ class AdminSubscriptionGrant(StrictModel):
     )
 
 
+class AdminUserAccessUpdate(StrictModel):
+    banned: bool
+    reason: str | None = Field(default=None, max_length=240)
+
+    @field_validator("reason")
+    @classmethod
+    def safe_reason(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized or re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid reason")
+        return normalized
+
+
+class AdminUserNotificationCreate(StrictModel):
+    title: str = Field(min_length=1, max_length=120)
+    body: str = Field(min_length=1, max_length=320)
+
+    @field_validator("title", "body")
+    @classmethod
+    def safe_message_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid message")
+        return normalized
+
+
 class AdminDeviceRegistration(StrictModel):
     serial_number: str = Field(min_length=16, max_length=16)
     name: str = Field(default="Pinkeva Tag", min_length=1, max_length=120)
@@ -384,7 +412,8 @@ class AdminService:
                 """
                 WITH selected_profile AS (
                   SELECT profile.id, profile.display_name, profile.email,
-                         profile.created_at
+                         profile.created_at, profile.account_status,
+                         profile.banned_at, profile.ban_reason
                     FROM public.profiles profile
                    WHERE %s = ''
                       OR position(%s in lower(COALESCE(profile.email, ''))) > 0
@@ -394,7 +423,8 @@ class AdminService:
                    LIMIT %s
                 )
                 SELECT profile.id, profile.display_name, profile.email,
-                       profile.created_at,
+                       profile.created_at, profile.account_status,
+                       profile.banned_at, profile.ban_reason,
                        (
                          SELECT count(*) FROM public.ownership ownership
                           WHERE ownership.user_id = profile.id
@@ -428,7 +458,8 @@ class AdminService:
         async with database.transaction() as connection:
             profile_cursor = await connection.execute(
                 """
-                SELECT id, display_name, email, created_at
+                SELECT id, display_name, email, created_at, account_status,
+                       banned_at, ban_reason
                   FROM public.profiles WHERE id = %s
                 """,
                 (user_id,),
@@ -467,6 +498,129 @@ class AdminService:
                 "user": dict(profile),
                 "trackers": [dict(row) for row in await cursor.fetchall()],
             }
+
+    async def update_user_access(
+        self,
+        database: Database,
+        principal: Principal,
+        *,
+        user_id: UUID,
+        update: AdminUserAccessUpdate,
+        request_id: UUID,
+    ) -> dict[str, Any]:
+        await self.role_for(database, principal)
+        async with database.transaction() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT profile.id, profile.account_status,
+                       EXISTS (
+                         SELECT 1 FROM public.admin_role_assignment role
+                          WHERE role.user_id = profile.id
+                            AND role.revoked_at IS NULL
+                       ) AS is_admin
+                  FROM public.profiles profile
+                 WHERE profile.id = %s
+                 FOR UPDATE
+                """,
+                (user_id,),
+            )
+            profile = await cursor.fetchone()
+            if profile is None:
+                raise AdminError("ADMIN_RESOURCE_NOT_FOUND", 404)
+            if (
+                user_id == principal.user_id
+                or user_id in self.settings.admin_owner_user_ids
+                or bool(profile["is_admin"])
+            ):
+                raise AdminError("ADMIN_PROTECTED_ACCOUNT", 409)
+            if update.banned:
+                if update.reason is None:
+                    raise AdminError("ADMIN_INVALID_REQUEST", 422)
+                changed = await connection.execute(
+                    """
+                    UPDATE public.profiles
+                       SET account_status = 'banned',
+                           banned_at = now(),
+                           banned_by = %s,
+                           ban_reason = %s
+                     WHERE id = %s
+                 RETURNING id, account_status, banned_at, ban_reason
+                    """,
+                    (principal.user_id, update.reason, user_id),
+                )
+                action = "user.banned"
+                details = {"reason": update.reason}
+            else:
+                changed = await connection.execute(
+                    """
+                    UPDATE public.profiles
+                       SET account_status = 'active',
+                           banned_at = NULL,
+                           banned_by = NULL,
+                           ban_reason = NULL
+                     WHERE id = %s
+                 RETURNING id, account_status, banned_at, ban_reason
+                    """,
+                    (user_id,),
+                )
+                action = "user.unbanned"
+                details = {}
+            result = await changed.fetchone()
+            await self.audit(
+                connection,
+                actor_user_id=principal.user_id,
+                action=action,
+                target_type="user",
+                target_id=str(user_id),
+                request_id=request_id,
+                details=details,
+            )
+            return dict(result)
+
+    async def create_user_notification(
+        self,
+        database: Database,
+        principal: Principal,
+        *,
+        user_id: UUID,
+        message: AdminUserNotificationCreate,
+        request_id: UUID,
+    ) -> dict[str, Any]:
+        await self.role_for(database, principal)
+        async with database.transaction() as connection:
+            target = await connection.execute(
+                """
+                SELECT account_status FROM public.profiles
+                 WHERE id = %s
+                 FOR KEY SHARE
+                """,
+                (user_id,),
+            )
+            profile = await target.fetchone()
+            if profile is None:
+                raise AdminError("ADMIN_RESOURCE_NOT_FOUND", 404)
+            if profile["account_status"] == "banned":
+                raise AdminError("ADMIN_TARGET_BANNED", 409)
+            inserted = await connection.execute(
+                """
+                INSERT INTO public.user_notification (
+                    user_id, kind, title, body, admin_created_by, due_at
+                ) VALUES (%s, 'admin_message', %s, %s, %s, now())
+                RETURNING id, user_id, kind, title, body, created_at, push_status
+                """,
+                (user_id, message.title, message.body, principal.user_id),
+            )
+            result = await inserted.fetchone()
+            await self.audit(
+                connection,
+                actor_user_id=principal.user_id,
+                action="notification.created",
+                target_type="user",
+                target_id=str(user_id),
+                request_id=request_id,
+                details={"notification_id": str(result["id"]), "kind": "admin_message"},
+            )
+            return dict(result)
 
     async def plans(self, database: Database, principal: Principal) -> list[dict[str, Any]]:
         await self.role_for(database, principal)
@@ -1036,6 +1190,38 @@ async def admin_user_trackers(
 ):
     return await _service(request).user_trackers(
         _database(request), principal, user_id
+    )
+
+
+@router.patch("/users/{user_id}/access")
+async def admin_update_user_access(
+    user_id: UUID,
+    update: AdminUserAccessUpdate,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+):
+    return await _service(request).update_user_access(
+        _database(request),
+        principal,
+        user_id=user_id,
+        update=update,
+        request_id=_request_id(request),
+    )
+
+
+@router.post("/users/{user_id}/notifications", status_code=status.HTTP_201_CREATED)
+async def admin_create_user_notification(
+    user_id: UUID,
+    message: AdminUserNotificationCreate,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+):
+    return await _service(request).create_user_notification(
+        _database(request),
+        principal,
+        user_id=user_id,
+        message=message,
+        request_id=_request_id(request),
     )
 
 
