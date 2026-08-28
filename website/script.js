@@ -97,23 +97,6 @@ document.querySelectorAll('[data-cart-quantity="plus"]').forEach((button) => {
   });
 });
 
-function updatePlatform(platform) {
-  const isAndroid = platform === 'android';
-  document.querySelectorAll('[data-platform]').forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.platform === platform);
-  });
-  document.querySelectorAll('[data-drawer-platform]').forEach((button) => {
-    button.classList.toggle('is-active', button.dataset.drawerPlatform === platform);
-  });
-  const note = isAndroid ? 'Your PINQEVA app will set up the Google finder path.' : 'Your PINQEVA app will set up the Apple finder path.';
-  const drawerNote = isAndroid ? 'Google finder path selected.' : 'Apple finder path selected.';
-  document.querySelector('.platform-note').textContent = note;
-  document.querySelector('[data-drawer-platform-note]').textContent = drawerNote;
-}
-
-document.querySelectorAll('[data-platform]').forEach((button) => button.addEventListener('click', () => updatePlatform(button.dataset.platform)));
-document.querySelectorAll('[data-drawer-platform]').forEach((button) => button.addEventListener('click', () => updatePlatform(button.dataset.drawerPlatform)));
-
 document.querySelectorAll('[data-gallery-image]').forEach((button) => {
   button.addEventListener('click', () => {
     const image = document.querySelector('#gallery-main-image');

@@ -67,13 +67,10 @@ button { cursor: pointer; }
 .price-row strong { color: var(--ink); font-weight: 700; }
 .purchase-option { margin-top: 30px; }
 .option-label { display: block; margin-bottom: 10px; font-family: var(--font-display); font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
-.platform-options { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
-.platform-option { min-height: 75px; padding: 13px 15px; border: 1px solid var(--line); background: var(--white); color: var(--ink); text-align: left; transition: border-color .2s ease, background .2s ease; }
-.platform-option:hover, .platform-option.is-active { border-color: var(--navy); background: #f4f7fd; }
-.platform-option strong, .platform-option span { display: block; }
-.platform-option strong { font-family: var(--font-display); font-size: 14px; font-weight: 700; }
-.platform-option span { margin-top: 3px; color: var(--muted); font-size: 10px; }
-.platform-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; }
+.compatibility-copy { display: flex; align-items: baseline; justify-content: space-between; gap: 18px; padding: 14px 15px; border: 1px solid var(--navy); background: #f4f7fd; }
+.compatibility-copy strong { font-family: var(--font-display); font-size: 15px; font-weight: 700; }
+.compatibility-copy span { color: var(--muted); font-size: 10px; text-align: right; }
+.compatibility-note { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .colour-option { margin-top: 23px; }
 .colour-choice { display: inline-flex; align-items: center; gap: 9px; padding: 10px 13px; border: 1px solid var(--navy); background: #f4f7fd; color: var(--ink); font-size: 12px; font-weight: 600; }
 .colour-swatch { width: 15px; height: 15px; border-radius: 50%; border: 1px solid rgba(255,255,255,.65); background: linear-gradient(135deg, #0a1d40, #1a477f); box-shadow: 0 0 0 1px #35506f; }
@@ -195,7 +192,7 @@ footer > p { margin: 0; justify-self: end; max-width: 390px; color: rgba(255,255
 body.drawer-open .drawer-backdrop { visibility: visible; opacity: 1; }
 body.drawer-open .cart-drawer { visibility: visible; transform: translateX(0); }
 .drawer-header { display: flex; align-items: start; justify-content: space-between; padding-bottom: 23px; border-bottom: 1px solid var(--line); }
-.drawer-header span, .drawer-platform > span, .drawer-quantity > span { color: var(--blue); font-family: var(--font-display); font-size: 9px; font-weight: 800; letter-spacing: .13em; }
+.drawer-header span, .drawer-quantity > span { color: var(--blue); font-family: var(--font-display); font-size: 9px; font-weight: 800; letter-spacing: .13em; }
 .drawer-header h2 { margin: 5px 0 0; font-family: var(--font-display); font-size: 28px; letter-spacing: -.055em; }
 .drawer-header button { width: 35px; height: 35px; border: 1px solid var(--line); background: transparent; font-size: 26px; line-height: 1; }
 .drawer-empty { display: none; padding: 60px 0 34px; text-align: center; }
@@ -205,7 +202,6 @@ body.drawer-open .cart-drawer { visibility: visible; transform: translateX(0); }
 .drawer-empty button { min-width: 190px; min-height: 47px; margin-top: 23px; border: 1px solid var(--navy); background: var(--navy); color: var(--white); font-family: var(--font-display); font-size: 11px; font-weight: 700; }
 .cart-drawer.is-empty .drawer-empty { display: block; }
 .cart-drawer.is-empty .drawer-product,
-.cart-drawer.is-empty .drawer-platform,
 .cart-drawer.is-empty .drawer-quantity,
 .cart-drawer.is-empty .drawer-summary,
 .cart-drawer.is-empty .drawer-checkout,
@@ -218,11 +214,6 @@ body.drawer-open .cart-drawer { visibility: visible; transform: translateX(0); }
 .drawer-product > div:nth-child(2) > span { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .drawer-product > div:nth-child(2) button { padding: 0; margin-top: 9px; border: 0; color: var(--blue); background: transparent; font-size: 10px; }
 .drawer-product > strong { align-self: start; font-family: var(--font-display); font-size: 13px; }
-.drawer-platform { padding: 23px 0; border-bottom: 1px solid var(--line); }
-.drawer-platform > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
-.drawer-platform button { padding: 11px; border: 1px solid var(--line); background: var(--white); font-family: var(--font-display); font-size: 11px; font-weight: 700; }
-.drawer-platform button.is-active { border-color: var(--navy); background: #f1f5fd; color: var(--blue-dark); }
-.drawer-platform p { margin: 9px 0 0; color: var(--muted); font-size: 10px; }
 .drawer-quantity { display: flex; align-items: center; justify-content: space-between; padding: 21px 0; }
 .drawer-quantity div { display: flex; align-items: center; gap: 18px; }
 .drawer-quantity button { padding: 0; border: 0; background: transparent; color: var(--blue); font-size: 20px; }
