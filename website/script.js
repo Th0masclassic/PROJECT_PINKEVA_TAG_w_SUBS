@@ -1,23 +1,22 @@
 const body = document.body;
 const navToggle = document.querySelector('.nav-toggle');
-const navLinks = document.querySelector('.nav-links');
+const mobileNav = document.querySelector('.mobile-nav');
 const drawer = document.querySelector('.cart-drawer');
-const overlay = document.querySelector('.cart-overlay');
 const toast = document.querySelector('.toast');
-const cardPrice = 14.99;
+const price = 14.99;
 let quantity = 1;
+let cartQuantity = 0;
 let toastTimer;
+
+function formatPrice(value) {
+  return `€${value.toFixed(2)}`;
+}
 
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add('is-visible');
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => toast.classList.remove('is-visible'), 3200);
-}
-
-function setNav(open) {
-  navLinks.classList.toggle('is-open', open);
-  navToggle.setAttribute('aria-expanded', String(open));
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove('is-visible'), 3200);
 }
 
 function setDrawer(open) {
@@ -25,84 +24,123 @@ function setDrawer(open) {
   drawer.setAttribute('aria-hidden', String(!open));
 }
 
-function updateCart() {
-  const value = document.querySelector('[data-quantity-value]');
-  const subtotal = document.querySelector('[data-subtotal]');
-  if (value) value.textContent = quantity;
-  if (subtotal) subtotal.textContent = `€${(cardPrice * quantity).toFixed(2)}`;
+function setMobileNav(open) {
+  navToggle.classList.toggle('is-open', open);
+  navToggle.setAttribute('aria-expanded', String(open));
+  mobileNav.classList.toggle('is-open', open);
 }
 
-navToggle?.addEventListener('click', () => setNav(!navLinks.classList.contains('is-open')));
-navLinks?.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => setNav(false)));
+function updateCart() {
+  document.querySelectorAll('[data-product-quantity-value]').forEach((element) => {
+    element.textContent = quantity;
+  });
+  document.querySelectorAll('[data-cart-quantity-value]').forEach((element) => {
+    element.textContent = cartQuantity;
+  });
+  document.querySelectorAll('[data-drawer-subtotal]').forEach((element) => {
+    element.textContent = formatPrice(price * cartQuantity);
+  });
+  document.querySelectorAll('[data-cart-count]').forEach((element) => {
+    element.textContent = cartQuantity;
+  });
+  drawer.classList.toggle('is-empty', cartQuantity === 0);
+}
 
-document.querySelectorAll('[data-add-cart]').forEach((trigger) => {
-  trigger.addEventListener('click', (event) => {
-    event.preventDefault();
-    setNav(false);
+navToggle?.addEventListener('click', () => setMobileNav(!mobileNav.classList.contains('is-open')));
+mobileNav?.querySelectorAll('a, button').forEach((element) => element.addEventListener('click', () => setMobileNav(false)));
+
+document.querySelectorAll('[data-open-cart]').forEach((button) => {
+  button.addEventListener('click', () => {
+    setMobileNav(false);
     setDrawer(true);
   });
 });
+document.querySelectorAll('[data-add-to-cart]').forEach((button) => {
+  button.addEventListener('click', () => {
+    cartQuantity = quantity;
+    updateCart();
+    setMobileNav(false);
+    setDrawer(true);
+  });
+});
+document.querySelectorAll('[data-close-cart]').forEach((button) => button.addEventListener('click', () => setDrawer(false)));
 
-document.querySelectorAll('[data-close-cart]').forEach((trigger) => trigger.addEventListener('click', () => setDrawer(false)));
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
     setDrawer(false);
-    setNav(false);
+    setMobileNav(false);
   }
 });
 
-document.querySelector('[data-quantity="minus"]')?.addEventListener('click', () => {
-  quantity = Math.max(1, quantity - 1);
-  updateCart();
+document.querySelectorAll('[data-product-quantity="minus"]').forEach((button) => {
+  button.addEventListener('click', () => {
+    quantity = Math.max(1, quantity - 1);
+    updateCart();
+  });
 });
-document.querySelector('[data-quantity="plus"]')?.addEventListener('click', () => {
-  quantity = Math.min(10, quantity + 1);
-  updateCart();
+document.querySelectorAll('[data-product-quantity="plus"]').forEach((button) => {
+  button.addEventListener('click', () => {
+    quantity = Math.min(10, quantity + 1);
+    updateCart();
+  });
 });
-document.querySelector('[data-remove]')?.addEventListener('click', () => {
-  quantity = 0;
-  updateCart();
-  showToast('Your card was removed from the local preview.');
+document.querySelectorAll('[data-cart-quantity="minus"]').forEach((button) => {
+  button.addEventListener('click', () => {
+    cartQuantity = Math.max(1, cartQuantity - 1);
+    updateCart();
+  });
+});
+document.querySelectorAll('[data-cart-quantity="plus"]').forEach((button) => {
+  button.addEventListener('click', () => {
+    cartQuantity = Math.min(10, cartQuantity + 1);
+    updateCart();
+  });
 });
 
-document.querySelectorAll('[data-platform]').forEach((button) => {
-  button.addEventListener('click', () => {
-    document.querySelectorAll('[data-platform]').forEach((item) => item.classList.remove('is-active'));
-    button.classList.add('is-active');
-    const note = document.querySelector('.platform-note');
-    if (note) {
-      note.textContent = button.dataset.platform === 'android'
-        ? 'The app will provision the Google finding path.'
-        : 'The app will provision the Apple finding path.';
-    }
+function updatePlatform(platform) {
+  const isAndroid = platform === 'android';
+  document.querySelectorAll('[data-platform]').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.platform === platform);
   });
+  document.querySelectorAll('[data-drawer-platform]').forEach((button) => {
+    button.classList.toggle('is-active', button.dataset.drawerPlatform === platform);
+  });
+  const note = isAndroid ? 'Your PINQEVA app will set up the Google finder path.' : 'Your PINQEVA app will set up the Apple finder path.';
+  const drawerNote = isAndroid ? 'Google finder path selected.' : 'Apple finder path selected.';
+  document.querySelector('.platform-note').textContent = note;
+  document.querySelector('[data-drawer-platform-note]').textContent = drawerNote;
+}
+
+document.querySelectorAll('[data-platform]').forEach((button) => button.addEventListener('click', () => updatePlatform(button.dataset.platform)));
+document.querySelectorAll('[data-drawer-platform]').forEach((button) => button.addEventListener('click', () => updatePlatform(button.dataset.drawerPlatform)));
+
+document.querySelectorAll('[data-gallery-image]').forEach((button) => {
+  button.addEventListener('click', () => {
+    const image = document.querySelector('#gallery-main-image');
+    document.querySelectorAll('[data-gallery-image]').forEach((item) => item.classList.remove('is-active'));
+    button.classList.add('is-active');
+    image.classList.add('is-swapping');
+    setTimeout(() => {
+      image.src = button.dataset.galleryImage;
+      image.alt = button.dataset.galleryAlt;
+      image.classList.remove('is-swapping');
+    }, 140);
+  });
+});
+
+document.querySelector('[data-remove]')?.addEventListener('click', () => {
+  cartQuantity = 0;
+  updateCart();
+  showToast('The card was removed from your cart.');
 });
 
 document.querySelector('[data-checkout]')?.addEventListener('click', () => {
-  if (quantity === 0) {
-    quantity = 1;
-    updateCart();
+  if (cartQuantity === 0) {
+    showToast('Your cart is empty.');
+    return;
   }
-  showToast('Local preview ready — connect this button to Stripe Checkout when you are ready.');
+  showToast('Local preview only — connect this button to Stripe Checkout when you are ready.');
 });
-
-document.querySelector('.signup-form')?.addEventListener('submit', (event) => {
-  event.preventDefault();
-  const form = event.currentTarget;
-  const message = form.parentElement.querySelector('.signup-message');
-  message.textContent = 'You’re on the early-access list.';
-  form.reset();
-});
-
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach((entry) => {
-    if (entry.isIntersecting) {
-      entry.target.classList.add('is-visible');
-      observer.unobserve(entry.target);
-    }
-  });
-}, { threshold: 0.12 });
-document.querySelectorAll('.reveal').forEach((element) => observer.observe(element));
 
 document.querySelector('#year').textContent = new Date().getFullYear();
 updateCart();

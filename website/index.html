@@ -3,378 +3,255 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#07152f" />
-    <meta name="description" content="PINKEVA Card — a slim tracker for the things you carry, with optional cloud protection for the moments that matter." />
+    <meta name="theme-color" content="#071a36" />
+    <meta name="description" content="PINKEVA Card — a slim finder card for the things you carry, with optional PINQEVA Cloud protection." />
     <title>PINKEVA Card — Find what matters</title>
     <link rel="icon" type="image/png" href="assets/brand-mark.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <svg class="icon-defs" aria-hidden="true" focusable="false">
-      <symbol id="icon-arrow" viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6" /></symbol>
-      <symbol id="icon-arrow-up" viewBox="0 0 24 24"><path d="M7 17 17 7M8 7h9v9" /></symbol>
-      <symbol id="icon-pin" viewBox="0 0 24 24"><path d="M20 10c0 5-8 11-8 11S4 15 4 10a8 8 0 1 1 16 0Z" /><circle cx="12" cy="10" r="2.5" /></symbol>
-      <symbol id="icon-waves" viewBox="0 0 24 24"><path d="M3 8c2.2-2.2 4.8-2.2 7 0s4.8 2.2 7 0 4.8-2.2 7 0M3 13c2.2-2.2 4.8-2.2 7 0s4.8 2.2 7 0 4.8-2.2 7 0M3 18c2.2-2.2 4.8-2.2 7 0s4.8 2.2 7 0 4.8-2.2 7 0" /></symbol>
-      <symbol id="icon-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7" /><path d="M3 4v5h5M12 7v5l3 2" /></symbol>
-      <symbol id="icon-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></symbol>
-      <symbol id="icon-shield" viewBox="0 0 24 24"><path d="M12 3 20 6v5c0 5-3.2 8.3-8 10-4.8-1.7-8-5-8-10V6l8-3Z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></symbol>
-      <symbol id="icon-car" viewBox="0 0 24 24"><path d="m5 11 1.5-5h11L19 11M4 11h16v7H4zM7 18v2M17 18v2M7 14h.01M17 14h.01" /></symbol>
-      <symbol id="icon-share" viewBox="0 0 24 24"><circle cx="18" cy="5" r="2.5" /><circle cx="6" cy="12" r="2.5" /><circle cx="18" cy="19" r="2.5" /><path d="m8.3 10.8 7.4-4.4M8.3 13.2l7.4 4.4" /></symbol>
-      <symbol id="icon-battery" viewBox="0 0 24 24"><rect x="3" y="7" width="17" height="10" rx="2" /><path d="M20 10h2v4h-2M7 10v4M10 10v4M13 10v4" /></symbol>
-      <symbol id="icon-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3M12 14v3" /></symbol>
-      <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12 4.5 4.5L19 7" /></symbol>
-      <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></symbol>
-      <symbol id="icon-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></symbol>
-      <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></symbol>
-      <symbol id="icon-spark" viewBox="0 0 24 24"><path d="m12 2 1.5 6.5L20 10l-6.5 1.5L12 18l-1.5-6.5L4 10l6.5-1.5L12 2ZM19 16l.7 2.3L22 19l-2.3.7L19 22l-.7-2.3L16 19l2.3-.7L19 16Z" /></symbol>
-    </svg>
-
     <div class="announcement">
-      <div class="container announcement-inner">
-        <span class="announcement-dot"></span>
-        <span>Launch offer: your first month of PINQEVA Cloud is included</span>
-        <a href="#subscription">See what’s included <svg class="icon icon-small"><use href="#icon-arrow" /></svg></a>
-      </div>
+      <span>PINQEVA CLOUD · YOUR FIRST MONTH IS INCLUDED</span>
+      <a href="#cloud">See what’s included <span>→</span></a>
     </div>
 
     <header class="site-header">
-      <div class="container nav-inner">
-        <a class="brand" href="#top" aria-label="PINQEVA home">
-          <span class="brand-mark"><img src="assets/brand-mark.png" alt="" /></span>
-          <span class="brand-word">PINQEVA</span>
-        </a>
-        <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false">
-          <svg class="icon"><use href="#icon-menu" /></svg>
-        </button>
-        <nav class="nav-links" aria-label="Main navigation">
-          <a href="#product">The card</a>
-          <a href="#features">Features</a>
+      <div class="header-inner">
+        <button class="nav-toggle" type="button" aria-label="Open navigation" aria-expanded="false"><span></span><span></span></button>
+        <nav class="nav nav-left" aria-label="Primary navigation">
+          <a href="#product">The Card</a>
           <a href="#how-it-works">How it works</a>
-          <a href="#subscription">PINQEVA Cloud</a>
-          <a href="#faq">FAQ</a>
-          <a class="nav-buy" href="#buy" data-add-cart>Get the card <svg class="icon icon-small"><use href="#icon-arrow" /></svg></a>
+          <a href="#cloud">PINQEVA Cloud</a>
+        </nav>
+        <a class="brand" href="#product" aria-label="PINKEVA home">
+          <img src="assets/brand-mark.png" alt="" />
+          <span>PINKEVA</span>
+        </a>
+        <nav class="nav nav-right" aria-label="Store navigation">
+          <a href="#faq">Support</a>
+          <button class="cart-button" type="button" data-open-cart>Cart <span data-cart-count>0</span></button>
         </nav>
       </div>
+      <nav class="mobile-nav" aria-label="Mobile navigation">
+        <a href="#product">The Card</a>
+        <a href="#how-it-works">How it works</a>
+        <a href="#cloud">PINQEVA Cloud</a>
+        <a href="#faq">Support</a>
+        <button type="button" data-open-cart>View cart <span>→</span></button>
+      </nav>
     </header>
 
-    <main id="top">
-      <section class="hero" id="product">
-        <div class="hero-glow hero-glow-one"></div>
-        <div class="hero-glow hero-glow-two"></div>
-        <div class="container hero-grid">
-          <div class="hero-copy reveal">
-            <div class="eyebrow eyebrow-light"><span class="eyebrow-line"></span> The everyday finder</div>
-            <h1>Find what matters.<br /><em>Feel lighter.</em></h1>
-            <p class="hero-lead">PINQEVA Card slips into the things you already carry and helps you find them again — at home, on the road, or wherever the day took you.</p>
-            <div class="hero-actions">
-              <a class="button button-primary" href="#buy" data-add-cart>Get PINQEVA Card <svg class="icon"><use href="#icon-arrow" /></svg></a>
-              <a class="text-link text-link-light" href="#how-it-works">See how it works <svg class="icon icon-small"><use href="#icon-arrow" /></svg></a>
+    <main>
+      <section class="product" id="product">
+        <div class="product-gallery">
+          <div class="gallery-thumbnails" aria-label="Product images">
+            <button class="gallery-thumb is-active" type="button" data-gallery-image="assets/card-transparent.png" data-gallery-alt="PINKEVA Card in Midnight Blue">
+              <img src="assets/card-transparent.png" alt="" />
+              <span class="sr-only">View PINQEVA Card render</span>
+            </button>
+            <button class="gallery-thumb" type="button" data-gallery-image="assets/card.png" data-gallery-alt="PINKEVA Card front detail">
+              <img src="assets/card.png" alt="" />
+              <span class="sr-only">View PINQEVA Card front detail</span>
+            </button>
+          </div>
+          <div class="gallery-main">
+            <span class="gallery-label">PINQEVA / CARD</span>
+            <img id="gallery-main-image" src="assets/card-transparent.png" alt="PINKEVA Card in Midnight Blue" />
+            <span class="gallery-colour">MIDNIGHT BLUE</span>
+          </div>
+        </div>
+
+        <div class="product-details">
+          <p class="product-kicker">THE EVERYDAY FINDER</p>
+          <h1>PINQEVA <span>Card</span></h1>
+          <p class="product-subtitle">A card-sized finder for the things you never want to lose.</p>
+          <div class="product-divider"></div>
+
+          <div class="price-row">
+            <div>
+              <span class="price">€14.99</span>
+              <span class="tax-note">per card</span>
             </div>
-            <div class="hero-price-row">
-              <div>
-                <span class="price-label">Launch price</span>
-                <span class="hero-price"><span class="currency">€</span>14<span class="cents">99</span></span>
-                <span class="price-note">per PINQEVA Card</span>
-              </div>
-              <div class="hero-price-divider"></div>
-              <div class="free-month"><span class="free-month-icon"><svg class="icon icon-small"><use href="#icon-spark" /></svg></span><div><strong>1st month free</strong><span>Cloud protection included</span></div></div>
+            <p>Includes one month of<br /><strong>PINQEVA Cloud</strong></p>
+          </div>
+
+          <section class="purchase-option">
+            <span class="option-label">Choose your phone</span>
+            <div class="platform-options">
+              <button type="button" class="platform-option is-active" data-platform="iphone"><strong>iPhone</strong><span>Apple finder path</span></button>
+              <button type="button" class="platform-option" data-platform="android"><strong>Android</strong><span>Google finder path</span></button>
             </div>
-            <div class="hero-proof-row">
-              <span><span class="proof-icon">A</span> iPhone</span>
-              <span><span class="proof-icon proof-google">G</span> Android</span>
-              <span><svg class="icon icon-small"><use href="#icon-lock" /></svg> Privacy-first</span>
+            <p class="platform-note">Your PINQEVA app will set up the Apple finder path.</p>
+          </section>
+
+          <section class="purchase-option colour-option">
+            <span class="option-label">Colour</span>
+            <button type="button" class="colour-choice is-active"><span class="colour-swatch"></span> Midnight Blue</button>
+          </section>
+
+          <div class="purchase-row">
+            <div class="quantity-picker" aria-label="Quantity">
+              <button type="button" data-product-quantity="minus" aria-label="Decrease quantity">−</button>
+              <span data-product-quantity-value>1</span>
+              <button type="button" data-product-quantity="plus" aria-label="Increase quantity">+</button>
             </div>
+            <button class="add-button" type="button" data-add-to-cart>Add to cart <span>→</span></button>
           </div>
+          <p class="purchase-assurance">Your card keeps advertising its selected finder identity. PINQEVA Cloud adds the services marked <sup>*</sup> — it never needs a renewal sync.</p>
 
-          <div class="hero-visual reveal reveal-delay">
-            <div class="orbit orbit-one"></div>
-            <div class="orbit orbit-two"></div>
-            <div class="hero-product-stage">
-              <div class="stage-label stage-label-top"><span class="stage-label-dot"></span> PINQEVA / CARD</div>
-              <div class="stage-grid-lines"></div>
-              <img class="hero-card" src="assets/card-transparent.png" alt="PINQEVA Card in midnight blue" />
-              <div class="card-glint"></div>
-              <div class="stage-spec stage-spec-top"><strong>2 mm</strong><span>card-thin profile</span></div>
-              <div class="stage-spec stage-spec-bottom"><span class="stage-spec-icon"><svg class="icon icon-small"><use href="#icon-waves" /></svg></span><strong>One card.</strong><span>two finding networks</span></div>
-              <span class="stage-coordinate coordinate-one">38.7223° N</span>
-              <span class="stage-coordinate coordinate-two">09.1393° W</span>
-            </div>
-            <div class="hero-floating-note"><span class="floating-pulse"></span><span>Ready when you need it</span><svg class="icon icon-small"><use href="#icon-arrow-up" /></svg></div>
-          </div>
-        </div>
-        <div class="hero-bottom-fade"></div>
-      </section>
-
-      <section class="trust-strip" aria-label="PINQEVA highlights">
-        <div class="container trust-grid">
-          <div class="trust-item"><span class="trust-number">01</span><span><strong>Fits your everyday</strong><small>Card-sized, low profile</small></span></div>
-          <div class="trust-item"><span class="trust-number">02</span><span><strong>Works across platforms</strong><small>Apple + Android setup</small></span></div>
-          <div class="trust-item"><span class="trust-number">03</span><span><strong>Cloud when it counts</strong><small>Optional PINQEVA Cloud*</small></span></div>
-          <div class="trust-item"><span class="trust-number">04</span><span><strong>Made to be found</strong><small>Broadcasts with a valid key</small></span></div>
-        </div>
-      </section>
-
-      <section class="intro-section section-pad" id="features">
-        <div class="container">
-          <div class="section-heading intro-heading reveal">
-            <div class="eyebrow"><span class="eyebrow-line"></span> Less searching, more living</div>
-            <h2>The small card with a<br /><span>big sense of relief.</span></h2>
-            <p>Wallets, keys, bags, passports, the car you left three streets back — PINQEVA gives the important things a way home.</p>
-          </div>
-
-          <div class="feature-grid">
-            <article class="feature-card feature-card-dark reveal">
-              <div class="feature-top"><span class="feature-icon"><svg class="icon"><use href="#icon-pin" /></svg></span><span class="feature-index">01</span></div>
-              <h3>Find it nearby</h3>
-              <p>When it’s close, use the PINQEVA app to see its last known place and connect to the tag.</p>
-              <span class="feature-foot">Built into the card experience</span>
-            </article>
-            <article class="feature-card reveal reveal-delay-short">
-              <div class="feature-top"><span class="feature-icon feature-icon-blue"><svg class="icon"><use href="#icon-waves" /></svg></span><span class="feature-index">02</span></div>
-              <h3>Find it farther away</h3>
-              <p>Choose your platform during setup and use the compatible Apple or Google finder network.</p>
-              <span class="feature-foot">Apple + Android path</span>
-            </article>
-            <article class="feature-card feature-card-premium reveal reveal-delay-short">
-              <div class="feature-top"><span class="feature-icon feature-icon-pink"><svg class="icon"><use href="#icon-history" /></svg></span><span class="feature-index">03</span></div>
-              <div class="feature-tag">PINQEVA Cloud*</div>
-              <h3>See the bigger picture</h3>
-              <p>Open the map for the latest report and look back through up to 30 days of location history.</p>
-              <span class="feature-foot">History stays owner-controlled</span>
-            </article>
-            <article class="feature-card feature-card-premium reveal reveal-delay-short">
-              <div class="feature-top"><span class="feature-icon feature-icon-pink"><svg class="icon"><use href="#icon-bell" /></svg></span><span class="feature-index">04</span></div>
-              <div class="feature-tag">PINQEVA Cloud*</div>
-              <h3>Know when it moves</h3>
-              <p>Get movement, safe-zone, and vehicle-protection alerts before a small miss becomes a big problem.</p>
-              <span class="feature-foot">Smart alerts in the app</span>
-            </article>
-            <article class="feature-card reveal">
-              <div class="feature-top"><span class="feature-icon feature-icon-blue"><svg class="icon"><use href="#icon-battery" /></svg></span><span class="feature-index">05</span></div>
-              <h3>One card, low fuss</h3>
-              <p>Designed around the things you already carry — with a simple, card-sized presence instead of another gadget.</p>
-              <span class="feature-foot">Made for wallets, bags & cars</span>
-            </article>
-            <article class="feature-card feature-card-premium reveal reveal-delay-short">
-              <div class="feature-top"><span class="feature-icon feature-icon-pink"><svg class="icon"><use href="#icon-share" /></svg></span><span class="feature-index">06</span></div>
-              <div class="feature-tag">PINQEVA Cloud*</div>
-              <h3>Share a way back</h3>
-              <p>Create an expiring recovery link or report so a good person can help return what you lost.</p>
-              <span class="feature-foot">Share only what you choose</span>
-            </article>
-            <article class="feature-card feature-card-premium reveal reveal-delay-short">
-              <div class="feature-top"><span class="feature-icon feature-icon-pink"><svg class="icon"><use href="#icon-car" /></svg></span><span class="feature-index">07</span></div>
-              <div class="feature-tag">PINQEVA Cloud*</div>
-              <h3>Protect your parked car</h3>
-              <p>Pair the card with a vehicle profile and keep a clearer eye on where it was last seen.</p>
-              <span class="feature-foot">Crowd-sourced, not GPS</span>
-            </article>
-            <article class="feature-card feature-card-dark reveal reveal-delay-short">
-              <div class="feature-top"><span class="feature-icon"><svg class="icon"><use href="#icon-shield" /></svg></span><span class="feature-index">08</span></div>
-              <h3>Your data, your call</h3>
-              <p>Private-by-design access, owner-bound history, and controls to delete the records you no longer need.</p>
-              <span class="feature-foot">No subscription state on the tag</span>
-            </article>
-          </div>
-          <p class="section-footnote"><sup>*</sup> PINQEVA Cloud features require an active subscription or trial. The physical card keeps advertising its selected finder identity without a subscription or a tag sync.</p>
-        </div>
-      </section>
-
-      <section class="carry-section section-pad section-pad-tight">
-        <div class="container carry-grid">
-          <div class="carry-visual reveal">
-            <div class="carry-backdrop"></div>
-            <img src="assets/card-transparent.png" alt="PINQEVA Card floating above a soft blue surface" />
-            <div class="carry-caption"><span class="caption-line"></span><span>Made for the slot<br /><strong>you already have.</strong></span></div>
-          </div>
-          <div class="carry-copy reveal reveal-delay">
-            <div class="eyebrow"><span class="eyebrow-line"></span> Invisible by design</div>
-            <h2>It goes where the panic usually starts.</h2>
-            <p class="large-copy">PINQEVA Card is made to disappear into the everyday: behind your cards, inside a travel bag, next to your keys, or tucked into the car.</p>
-            <div class="carry-list">
-              <div class="carry-list-item"><span class="list-bullet">01</span><div><strong>Credit-card format</strong><span>Low-profile enough for the things you carry every day.</span></div></div>
-              <div class="carry-list-item"><span class="list-bullet">02</span><div><strong>One choice at setup</strong><span>iPhone or Android — the app sets up the right finder path.</span></div></div>
-              <div class="carry-list-item"><span class="list-bullet">03</span><div><strong>Cloud only when useful</strong><span>Subscribe for protection features; the card itself never waits for billing.</span></div></div>
-            </div>
-            <a class="text-link" href="#buy">Put one in your wallet <svg class="icon icon-small"><use href="#icon-arrow" /></svg></a>
-          </div>
-        </div>
-      </section>
-
-      <section class="app-section section-pad" id="how-it-works">
-        <div class="container app-grid">
-          <div class="app-copy reveal">
-            <div class="eyebrow"><span class="eyebrow-line"></span> One calm place</div>
-            <h2>See your things.<br /><span>Not a wall of data.</span></h2>
-            <p class="large-copy">The PINQEVA app keeps the useful bits close: the latest location, the last time it was seen, and the tools that help you act next.</p>
-            <div class="app-points">
-              <div class="app-point"><span class="app-point-icon"><svg class="icon"><use href="#icon-pin" /></svg></span><div><strong>Latest location</strong><span>A clean map view for every paired tracker.</span></div></div>
-              <div class="app-point"><span class="app-point-icon"><svg class="icon"><use href="#icon-history" /></svg></span><div><strong>Location history*</strong><span>Understand the route, not just the final dot.</span></div></div>
-              <div class="app-point"><span class="app-point-icon"><svg class="icon"><use href="#icon-bell" /></svg></span><div><strong>Alerts that earn their place*</strong><span>Safe zones, movement, and lost-mode updates.</span></div></div>
-            </div>
-            <a class="button button-dark" href="#subscription">Explore PINQEVA Cloud <svg class="icon"><use href="#icon-arrow" /></svg></a>
-          </div>
-          <div class="app-visual reveal reveal-delay">
-            <div class="phone-shadow"></div>
-            <div class="phone-frame">
-              <div class="phone-speaker"></div>
-              <img src="assets/app-home.png" alt="PINQEVA app home screen showing a card tracker and map" />
-            </div>
-            <div class="app-float-card app-float-card-one"><span class="float-card-dot"></span><div><strong>PINQEVA Card</strong><small>Last seen · just now</small></div><svg class="icon icon-small"><use href="#icon-arrow-up" /></svg></div>
-            <div class="app-float-card app-float-card-two"><span class="float-card-lock"><svg class="icon icon-small"><use href="#icon-shield" /></svg></span><div><strong>Private by design</strong><small>Owner-only history</small></div></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="map-section section-pad-tight">
-        <div class="container map-panel reveal">
-          <div class="map-copy">
-            <div class="eyebrow eyebrow-light"><span class="eyebrow-line"></span> When the map matters</div>
-            <h2>A clearer answer<br /><em>to “where was it?”</em></h2>
-            <p>Open one map for your cards, keys, bags, and vehicle profile. PINQEVA shows the latest available report with its age — because an honest timestamp is more useful than false certainty.</p>
-            <div class="map-note"><span class="map-note-icon"><svg class="icon icon-small"><use href="#icon-shield" /></svg></span><span><strong>Crowd-sourced, not continuous GPS</strong><small>Reports depend on nearby compatible devices and network availability.</small></span></div>
-            <a class="text-link text-link-light" href="#faq">Read the details <svg class="icon icon-small"><use href="#icon-arrow" /></svg></a>
-          </div>
-          <div class="map-visual"><div class="map-image-frame"><img src="assets/map-section.png" alt="PINQEVA map view with tracker locations" /></div><div class="map-pin map-pin-one">PINQEVA Card</div><div class="map-pin map-pin-two">Keys</div></div>
-        </div>
-      </section>
-
-      <section class="subscription-section section-pad" id="subscription">
-        <div class="subscription-glow"></div>
-        <div class="container subscription-grid">
-          <div class="subscription-copy reveal">
-            <div class="eyebrow eyebrow-light"><span class="eyebrow-line"></span> PINQEVA Cloud</div>
-            <h2>The card stays simple.<br /><em>The cloud gets smarter.</em></h2>
-            <p class="large-copy">Start with one free month, then keep the protection that fits your life. Your subscription unlocks cloud features — never the card’s basic ability to advertise.</p>
-            <div class="subscription-quote"><span class="quote-mark">“</span><p>Renewal changes cloud access only. No Bluetooth session. No new date written to the card.</p></div>
-          </div>
-          <div class="pricing-card reveal reveal-delay" id="buy">
-            <div class="pricing-top"><span class="pricing-badge"><svg class="icon icon-small"><use href="#icon-spark" /></svg> First month included</span><span class="pricing-card-label">Per card</span></div>
-            <div class="pricing-price"><span class="currency">€</span>2<span class="cents">99</span><span class="pricing-period">/ month</span></div>
-            <p class="pricing-intro">Your first month is on us. Cancel anytime from your account.</p>
-            <div class="pricing-divider"></div>
-            <ul class="pricing-list">
-              <li><svg class="icon"><use href="#icon-check" /></svg> Latest location and 30-day history</li>
-              <li><svg class="icon"><use href="#icon-check" /></svg> Safe-zone, movement, and lost-mode alerts</li>
-              <li><svg class="icon"><use href="#icon-check" /></svg> Vehicle protection and recovery tools</li>
-              <li><svg class="icon"><use href="#icon-check" /></svg> Privacy controls and owner-bound access</li>
-              <li><svg class="icon"><use href="#icon-check" /></svg> No tag sync needed when you renew</li>
-            </ul>
-            <button class="button button-primary button-full" type="button" data-add-cart>Get the card + 1 month free <svg class="icon"><use href="#icon-arrow" /></svg></button>
-            <p class="pricing-small">Available plans: €2.99 monthly · €7.99 / 3 months · €14.99 / 6 months · €26.99 / year</p>
-          </div>
-        </div>
-      </section>
-
-      <section class="comparison-section section-pad">
-        <div class="container">
-          <div class="section-heading center-heading reveal">
-            <div class="eyebrow"><span class="eyebrow-line"></span> Clear by design</div>
-            <h2>What you get, at a glance.</h2>
-            <p>The card is useful on its own. PINQEVA Cloud is for the moments where more context and more time can make a difference.</p>
-          </div>
-          <div class="comparison-table reveal">
-            <div class="comparison-header"><div>PINQEVA experience</div><div class="comparison-column">With the card</div><div class="comparison-column comparison-cloud">With Cloud*</div></div>
-            <div class="comparison-row"><div><strong>Finder-network advertising</strong><span>Selected Apple or Android path</span></div><div class="check-cell"><svg class="icon"><use href="#icon-check" /></svg></div><div class="check-cell comparison-cloud"><svg class="icon"><use href="#icon-check" /></svg></div></div>
-            <div class="comparison-row"><div><strong>PINQEVA app pairing</strong><span>Set up and manage your tracker</span></div><div class="check-cell"><svg class="icon"><use href="#icon-check" /></svg></div><div class="check-cell comparison-cloud"><svg class="icon"><use href="#icon-check" /></svg></div></div>
-            <div class="comparison-row"><div><strong>Latest cloud location</strong><span>Owner-only report access</span></div><div class="check-cell check-muted">—</div><div class="check-cell comparison-cloud"><svg class="icon"><use href="#icon-check" /></svg></div></div>
-            <div class="comparison-row"><div><strong>History, zones & alerts</strong><span>More context when it matters</span></div><div class="check-cell check-muted">—</div><div class="check-cell comparison-cloud"><svg class="icon"><use href="#icon-check" /></svg></div></div>
-            <div class="comparison-row"><div><strong>Renewal over Bluetooth</strong><span>Billing state never lives on the card</span></div><div class="check-cell check-muted">Not needed</div><div class="check-cell comparison-cloud check-muted">Not needed</div></div>
-          </div>
-          <p class="section-footnote comparison-footnote"><sup>*</sup> “Cloud” refers to the PINQEVA subscription service. Apple Find My and Google Find Hub availability, certification, and network behavior are subject to each platform’s requirements and rollout.</p>
-        </div>
-      </section>
-
-      <section class="steps-section section-pad-tight" id="setup">
-        <div class="container steps-grid">
-          <div class="steps-copy reveal">
-            <div class="eyebrow"><span class="eyebrow-line"></span> Ready in a few calm steps</div>
-            <h2>From box to<br /><span>peace of mind.</span></h2>
-            <p class="large-copy">Choose your platform, pair your card, and put it somewhere you never want to lose.</p>
-            <div class="steps-list">
-              <div class="step"><span class="step-number">01</span><div><strong>Choose your path</strong><span>iPhone uses Apple. Android uses Google. PINQEVA sets up the right identity.</span></div></div>
-              <div class="step"><span class="step-number">02</span><div><strong>Pair the card</strong><span>Follow the in-app setup and give your card a name you’ll recognize.</span></div></div>
-              <div class="step"><span class="step-number">03</span><div><strong>Carry on</strong><span>The card keeps advertising. Cloud protection is there when you want the extra layer.</span></div></div>
-            </div>
-          </div>
-          <div class="steps-visual reveal reveal-delay">
-            <div class="step-orb step-orb-one"></div><div class="step-orb step-orb-two"></div>
-            <img src="assets/card.png" alt="PINQEVA Card product render" />
-            <div class="step-sticker"><span class="sticker-icon"><svg class="icon icon-small"><use href="#icon-check" /></svg></span><span><strong>Setup without guesswork</strong><small>One app. One card. One clear next step.</small></span></div>
-          </div>
-        </div>
-      </section>
-
-      <section class="faq-section section-pad" id="faq">
-        <div class="container faq-grid">
-          <div class="faq-heading reveal">
-            <div class="eyebrow"><span class="eyebrow-line"></span> Good to know</div>
-            <h2>Questions before<br /><span>you carry on?</span></h2>
-            <p>We’d rather be clear about how PINQEVA works than hide the important bits in a footer.</p>
-            <a class="text-link" href="#buy">Get your PINQEVA Card <svg class="icon icon-small"><use href="#icon-arrow" /></svg></a>
-          </div>
-          <div class="faq-list reveal reveal-delay">
+          <div class="product-accordions">
             <details open>
-              <summary>Do I need a subscription for the card to work?<span class="faq-plus"><svg class="icon icon-small"><use href="#icon-plus" /></svg></span></summary>
-              <p>No. The card’s selected finder identity continues advertising without a subscription. PINQEVA Cloud is required for cloud location retrieval, history, alerts, safe zones, recovery tools, and vehicle protection.</p>
+              <summary>What’s included <span>+</span></summary>
+              <p>One PINQEVA Card in Midnight Blue and your first month of PINQEVA Cloud. Setup happens in the PINQEVA app.</p>
             </details>
             <details>
-              <summary>Does renewal need a Bluetooth connection?<span class="faq-plus"><svg class="icon icon-small"><use href="#icon-plus" /></svg></span></summary>
-              <p>No. Renewal updates your cloud access on the backend. Nothing has to be written to the physical card, so you don’t need to find it, connect to it, or send it a new expiry date.</p>
+              <summary>PINQEVA Cloud <span>+</span></summary>
+              <p>Cloud features include latest location, retained history, safe zones, alerts, lost mode, recovery tools, vehicle protection, and tracker health.</p>
             </details>
             <details>
-              <summary>Can I use PINQEVA with iPhone and Android?<span class="faq-plus"><svg class="icon icon-small"><use href="#icon-plus" /></svg></span></summary>
-              <p>PINQEVA is being built with both platform paths in mind. You select the matching setup during provisioning. Final Apple Find My and Google Find Hub operation remains subject to each platform’s certification and partner requirements.</p>
-            </details>
-            <details>
-              <summary>Will the map show a live GPS position?<span class="faq-plus"><svg class="icon icon-small"><use href="#icon-plus" /></svg></span></summary>
-              <p>PINQEVA is a Bluetooth crowd-network tracker, not a continuous GPS device. The app shows the latest available network report, its timestamp, and the history your subscription retains.</p>
-            </details>
-            <details>
-              <summary>What can I put the card in?<span class="faq-plus"><svg class="icon icon-small"><use href="#icon-plus" /></svg></span></summary>
-              <p>It is designed for card slots, wallets, bags, travel cases, and a vehicle. Anything you would rather find than replace is a good place to start.</p>
+              <summary>Compatibility <span>+</span></summary>
+              <p>Choose the matching iPhone or Android setup path in the app. Finder-network availability is subject to each platform’s approval, region, and requirements.</p>
             </details>
           </div>
         </div>
       </section>
 
-      <section class="final-cta">
-        <div class="final-cta-stars"></div>
-        <div class="container final-cta-inner reveal">
-          <div class="eyebrow eyebrow-light"><span class="eyebrow-line"></span> Your next everyday essential</div>
-          <h2>Stop searching for the<br /><em>things that matter.</em></h2>
-          <p>One slim card. A calmer way to find what you carry.</p>
-          <a class="button button-primary" href="#buy" data-add-cart>Get PINQEVA Card <svg class="icon"><use href="#icon-arrow" /></svg></a>
+      <section class="benefit-strip" aria-label="PINKEVA Card highlights">
+        <div><strong>Card-sized</strong><span>Made to fit the things you already carry.</span></div>
+        <div><strong>One clear setup</strong><span>Choose iPhone or Android in the PINQEVA app.</span></div>
+        <div><strong>Cloud on your terms</strong><span>Premium services are optional and per card.<sup>*</sup></span></div>
+        <div><strong>No renewal sync</strong><span>Billing never changes the card’s finder broadcast.</span></div>
+      </section>
+
+      <section class="statement" id="how-it-works">
+        <div class="statement-copy">
+          <p class="section-kicker">WHY A CARD?</p>
+          <h2>The things you carry<br />shouldn’t carry <em>your stress.</em></h2>
+          <p>PINQEVA Card sits quietly in the background until the one moment it matters. It’s designed around the shape of daily life: a wallet, travel bag, keys, or the car you left after a long day.</p>
+          <a class="inline-link" href="#cloud">Explore the protection <span>→</span></a>
         </div>
+        <div class="statement-image">
+          <div class="statement-image-inner">
+            <img src="assets/card-transparent.png" alt="PINQEVA Card product render" />
+            <p><span>01</span> Made for the slot<br />you already have.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="feature-section">
+        <div class="section-intro">
+          <p class="section-kicker">THE PINQEVA EXPERIENCE</p>
+          <h2>Simple on purpose.</h2>
+          <p>Everything starts with the card. Add PINQEVA Cloud when you want a clearer picture and a little more time on your side.</p>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <span>01</span>
+            <h3>Finder setup</h3>
+            <p>Pair your card in the PINQEVA app and select the platform path that matches your phone.</p>
+          </article>
+          <article>
+            <span>02</span>
+            <h3>Find what’s nearby</h3>
+            <p>Open the app when the item is close and use its last known place to start your search.</p>
+          </article>
+          <article>
+            <span>03</span>
+            <h3>Map & history<sup>*</sup></h3>
+            <p>See the latest available report and keep up to 30 days of owner-controlled location history.</p>
+          </article>
+          <article>
+            <span>04</span>
+            <h3>Smart protection<sup>*</sup></h3>
+            <p>Use safe zones, movement alerts, lost mode, recovery sharing, and vehicle protection.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="app-showcase">
+        <div class="app-visual">
+          <img src="assets/app-home.png" alt="PINQEVA mobile app showing a card tracker and map" />
+        </div>
+        <div class="app-copy">
+          <p class="section-kicker">ONE CALM PLACE</p>
+          <h2>When it’s not in<br />your hand, <em>open the map.</em></h2>
+          <p>The PINQEVA app keeps the next useful action obvious: see what was last reported, mark something lost, check a safe zone, or review the history you chose to retain.</p>
+          <ul>
+            <li><strong>Latest location<sup>*</sup></strong><span>Timestamped, owner-only reports.</span></li>
+            <li><strong>Location history<sup>*</sup></strong><span>Up to 30 days, with deletion controls.</span></li>
+            <li><strong>Recovery & vehicle tools<sup>*</sup></strong><span>For the days that need a better plan.</span></li>
+          </ul>
+        </div>
+      </section>
+
+      <section class="cloud" id="cloud">
+        <div class="cloud-copy">
+          <p class="section-kicker section-kicker-light">PINQEVA CLOUD</p>
+          <h2>The card stays ready.<br /><em>You add the protection.</em></h2>
+          <p>PINQEVA Cloud is an optional service for each card. It unlocks the layers of context that make a lost item easier to understand, protect, and recover.</p>
+          <p class="cloud-rule">Every feature with an asterisk <sup>*</sup> needs an active PINQEVA Cloud subscription. The card’s finder broadcast does not.</p>
+        </div>
+        <div class="cloud-plan">
+          <div class="plan-top"><span>PINQEVA CLOUD</span><strong>FIRST MONTH INCLUDED</strong></div>
+          <div class="plan-price"><span>€</span>2<small>99</small><em>/ month</em></div>
+          <p>One subscription per PINQEVA Card.</p>
+          <ul>
+            <li>Latest location & 30-day history<sup>*</sup></li>
+            <li>Safe-zone, movement & lost-mode alerts<sup>*</sup></li>
+            <li>Recovery shares & recovery reports<sup>*</sup></li>
+            <li>Vehicle protection & tracker health<sup>*</sup></li>
+            <li>Renew without Bluetooth or tag access</li>
+          </ul>
+          <button type="button" class="plan-button" data-add-to-cart>Get the card + Cloud <span>→</span></button>
+          <small class="plan-note">€2.99 monthly · €7.99 / 3 months · €14.99 / 6 months · €26.99 / year</small>
+        </div>
+      </section>
+
+      <section class="steps">
+        <div class="steps-heading"><p class="section-kicker">THREE SIMPLE STEPS</p><h2>Carry less worry.</h2></div>
+        <ol>
+          <li><span>01</span><strong>Choose your phone</strong><p>Select iPhone or Android before setup.</p></li>
+          <li><span>02</span><strong>Pair your card</strong><p>Use the PINQEVA app to name and connect it.</p></li>
+          <li><span>03</span><strong>Keep moving</strong><p>Use Cloud when you want the extra layer of protection.<sup>*</sup></p></li>
+        </ol>
+      </section>
+
+      <section class="faq" id="faq">
+        <div class="faq-heading"><p class="section-kicker">GOOD TO KNOW</p><h2>Questions,<br /><em>answered.</em></h2></div>
+        <div class="faq-list">
+          <details open><summary>Do I need a subscription for the card to work?<span>+</span></summary><p>No. The card’s selected finder identity continues advertising without a subscription. PINQEVA Cloud is for the services marked <sup>*</sup>.</p></details>
+          <details><summary>Does renewal need a Bluetooth connection?<span>+</span></summary><p>No. Subscription renewal updates cloud access only. Nothing new is sent to the card and you do not need to have it nearby.</p></details>
+          <details><summary>Will it show a live GPS position?<span>+</span></summary><p>No. PINQEVA is a Bluetooth crowd-network tracker, not a continuous GPS device. The app shows the latest available report and its timestamp.</p></details>
+          <details><summary>Can I set up iPhone and Android?<span>+</span></summary><p>Choose the appropriate path during setup. Finder-network availability remains subject to platform requirements, approval, and regional rollout.</p></details>
+        </div>
+      </section>
+
+      <section class="final-callout">
+        <p>ONE CARD. A LITTLE MORE PEACE OF MIND.</p>
+        <h2>Find what matters.</h2>
+        <button type="button" data-add-to-cart>Get PINQEVA Card <span>→</span></button>
       </section>
     </main>
 
-    <footer class="site-footer">
-      <div class="container footer-grid">
-        <div class="footer-brand-column">
-          <a class="brand brand-footer" href="#top"><span class="brand-mark"><img src="assets/brand-mark.png" alt="" /></span><span class="brand-word">PINQEVA</span></a>
-          <p>Always know what is near.</p>
-          <span class="footer-status"><span class="status-dot"></span> Prototype storefront</span>
-        </div>
-        <div class="footer-links"><span class="footer-heading">Explore</span><a href="#product">The card</a><a href="#features">Features</a><a href="#how-it-works">How it works</a></div>
-        <div class="footer-links"><span class="footer-heading">Support</span><a href="#faq">FAQ</a><a href="#subscription">Subscription</a><a href="#setup">Setup guide</a></div>
-        <div class="footer-signup"><span class="footer-heading">Stay close</span><p>Product updates, early access, and the occasional useful reminder.</p><form class="signup-form"><label class="sr-only" for="email">Email address</label><input id="email" type="email" placeholder="Your email address" required /><button type="submit" aria-label="Subscribe"><svg class="icon icon-small"><use href="#icon-arrow" /></svg></button></form><small class="signup-message" aria-live="polite"></small></div>
-      </div>
-      <div class="container footer-bottom"><span>© <span id="year"></span> PINQEVA. Designed for the things you carry.</span><span>Apple Find My and Google Find Hub support are subject to platform approval and availability.</span></div>
+    <footer>
+      <div class="footer-brand"><img src="assets/brand-mark.png" alt="" /><span>PINQEVA</span></div>
+      <div class="footer-links"><a href="#product">The Card</a><a href="#cloud">PINQEVA Cloud</a><a href="#faq">Support</a></div>
+      <p>© <span id="year"></span> PINQEVA. Finder-network availability is subject to platform approval and availability.</p>
     </footer>
 
-    <div class="cart-overlay" data-close-cart></div>
-    <aside class="cart-drawer" aria-label="PINQEVA Card order" aria-hidden="true">
-      <div class="cart-drawer-head"><div><span class="eyebrow">Your carry, covered</span><h2>PINQEVA Card</h2></div><button class="icon-button" type="button" data-close-cart aria-label="Close order panel"><svg class="icon"><use href="#icon-close" /></svg></button></div>
-      <div class="cart-product"><div class="cart-product-image"><img src="assets/card-transparent.png" alt="" /></div><div><strong>PINQEVA Card</strong><span>Midnight blue · single card</span><button class="cart-remove" type="button" data-remove>Remove</button></div><strong class="cart-product-price">€14.99</strong></div>
-      <div class="platform-picker"><span class="picker-label">Setup path</span><div class="platform-options"><button type="button" class="platform-option is-active" data-platform="iphone"><span class="proof-icon">A</span> iPhone</button><button type="button" class="platform-option" data-platform="android"><span class="proof-icon proof-google">G</span> Android</button></div><small class="platform-note">The app will provision the Apple finding path.</small></div>
-      <div class="quantity-row"><span>Quantity</span><div class="quantity-control"><button type="button" data-quantity="minus" aria-label="Decrease quantity">−</button><span data-quantity-value>1</span><button type="button" data-quantity="plus" aria-label="Increase quantity">+</button></div></div>
-      <div class="cart-summary"><div><span>Card subtotal</span><strong data-subtotal>€14.99</strong></div><div><span>PINQEVA Cloud</span><strong>1st month free</strong></div></div>
-      <button class="button button-dark button-full" type="button" data-checkout>Continue to checkout <svg class="icon"><use href="#icon-arrow" /></svg></button>
-      <p class="cart-demo-note"><svg class="icon icon-small"><use href="#icon-lock" /></svg> Local preview — connect this button to your live checkout when the storefront is ready.</p>
+    <div class="drawer-backdrop" data-close-cart></div>
+    <aside class="cart-drawer is-empty" aria-label="Shopping cart" aria-hidden="true">
+      <div class="drawer-header"><div><span>YOUR CART</span><h2>PINQEVA Card</h2></div><button type="button" data-close-cart aria-label="Close cart">×</button></div>
+      <div class="drawer-empty"><span>YOUR CART IS EMPTY</span><h3>Start with the card.</h3><p>Keep the things you carry easier to find.</p><button type="button" data-close-cart>Continue shopping <span>→</span></button></div>
+      <div class="drawer-product"><div class="drawer-product-image"><img src="assets/card-transparent.png" alt="" /></div><div><strong>PINQEVA Card</strong><span>Midnight Blue</span><button type="button" data-remove>Remove</button></div><strong data-drawer-subtotal>€14.99</strong></div>
+      <div class="drawer-platform"><span>SETUP PATH</span><div><button class="is-active" type="button" data-drawer-platform="iphone">iPhone</button><button type="button" data-drawer-platform="android">Android</button></div><p data-drawer-platform-note>Apple finder path selected.</p></div>
+      <div class="drawer-quantity"><span>QUANTITY</span><div><button type="button" data-cart-quantity="minus">−</button><strong data-cart-quantity-value>1</strong><button type="button" data-cart-quantity="plus">+</button></div></div>
+      <div class="drawer-summary"><div><span>Card subtotal</span><strong data-drawer-subtotal>€14.99</strong></div><div><span>PINQEVA Cloud</span><strong>First month included</strong></div></div>
+      <button class="drawer-checkout" type="button" data-checkout>Continue to checkout <span>→</span></button>
+      <p class="drawer-footnote">Local preview only. Connect this action to Stripe Checkout when you are ready to sell.</p>
     </aside>
 
     <div class="toast" role="status" aria-live="polite"></div>
