@@ -106,7 +106,7 @@ class FirmwareService:
     def _load_release(self) -> FirmwareRelease | None:
         if not self.settings.firmware_image_path:
             return None
-        if self.settings.entitlement_private_key is None:
+        if self.settings.firmware_signing_private_key is None:
             # Availability can still report the configured release, but session
             # issuance will fail closed until the matching signer is installed.
             image_path = Path(self.settings.firmware_image_path).expanduser()
@@ -131,7 +131,7 @@ class FirmwareService:
             manifest = build_firmware_manifest(
                 version=self.settings.firmware_version,
                 image=image,
-                private_key=self.settings.entitlement_private_key,
+                private_key=self.settings.firmware_signing_private_key,
             )
         except ValueError as exc:
             raise ConfigurationError(str(exc)) from exc
@@ -201,12 +201,16 @@ class FirmwareService:
         request: FirmwareUpdateSessionRequest,
     ) -> FirmwareUpdateSessionResponse:
         release = self._published_release()
-        if release is None or self.settings.entitlement_private_key is None or not release.manifest:
+        if (
+            release is None
+            or self.settings.firmware_signing_private_key is None
+            or not release.manifest
+        ):
             raise FirmwareError("FIRMWARE_UNAVAILABLE", 503)
         device = await self._owned_device(connection, user_id=user_id, device_id=device_id)
         if device["serial_number"] != request.serial_number:
             raise FirmwareError("DEVICE_AUTHORIZATION_REJECTED", 403)
-        if device["status"] not in {"claimed", "suspended"}:
+        if device["status"] != "claimed":
             raise FirmwareError("TAG_NOT_READY", 409)
         if not self.settings.dev_bypass_bootstrap_auth and (
             device["bootstrap_key_ciphertext"] is None

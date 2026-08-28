@@ -51,14 +51,14 @@ def decode_32_byte_secret(name: str, value: str) -> bytes:
     return decoded
 
 
-def decode_optional_entitlement_private_key(
+def decode_optional_firmware_signing_private_key(
     name: str, value: str | None
 ) -> ec.EllipticCurvePrivateKey | None:
-    """Decode the backend signing key without making startup depend on it.
+    """Decode the firmware manifest signer without making startup depend on it.
 
     The local .env intentionally uses a HERE_* placeholder until the operator
-    installs the matching key. Billing and provisioning can still start, while
-    the entitlement endpoint fails closed until a real P-256 key is present.
+    installs the matching key. The API can still start while firmware update
+    issuance fails closed until a real P-256 key is present.
     """
 
     normalized = (value or "").strip()
@@ -287,7 +287,7 @@ class Settings:
     claim_token_key: bytes
     session_ttl_seconds: int
     claim_ttl_seconds: int
-    entitlement_private_key: ec.EllipticCurvePrivateKey | None = None
+    firmware_signing_private_key: ec.EllipticCurvePrivateKey | None = None
     # Find My report credentials are deliberately optional at process startup:
     # provisioning and authentication must still work on a server before the
     # operator has completed the one-time Apple token setup. Location requests
@@ -304,6 +304,8 @@ class Settings:
     findmy_anisette_url: str = "http://127.0.0.1:6969"
     findmy_request_timeout_seconds: float = 15.0
     findmy_lookback_hours: int = 24
+    google_findhub_bridge_url: str = ""
+    google_findhub_bridge_token: str = ""
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_map: tuple[tuple[str, str, str], ...] = ()
@@ -411,6 +413,28 @@ def get_settings() -> Settings:
         "PINQEVA_FINDMY_ANISETTE_URL",
         os.getenv("PINQEVA_FINDMY_ANISETTE_URL", "http://127.0.0.1:6969").strip(),
     )
+    google_findhub_bridge_url = os.getenv(
+        "PINQEVA_GOOGLE_FINDHUB_BRIDGE_URL", ""
+    ).strip()
+    google_findhub_bridge_token = os.getenv(
+        "PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN", ""
+    ).strip()
+    if bool(google_findhub_bridge_url) != bool(google_findhub_bridge_token):
+        raise ConfigurationError(
+            "PINQEVA_GOOGLE_FINDHUB_BRIDGE_URL and "
+            "PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN must be configured together"
+        )
+    if google_findhub_bridge_url:
+        google_findhub_bridge_url = validate_https_url(
+            "PINQEVA_GOOGLE_FINDHUB_BRIDGE_URL", google_findhub_bridge_url
+        )
+        if (
+            len(google_findhub_bridge_token) > 4096
+            or any(ord(character) < 0x21 for character in google_findhub_bridge_token)
+        ):
+            raise ConfigurationError(
+                "PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN has an invalid format"
+            )
 
     project_url_value = os.getenv("SUPABASE_URL", "").strip()
     if project_url_value:
@@ -486,9 +510,9 @@ def get_settings() -> Settings:
         ),
         session_ttl_seconds=session_ttl,
         claim_ttl_seconds=claim_ttl,
-        entitlement_private_key=decode_optional_entitlement_private_key(
-            "PINQEVA_ENTITLEMENT_PRIVATE_KEY",
-            os.getenv("PINQEVA_ENTITLEMENT_PRIVATE_KEY"),
+        firmware_signing_private_key=decode_optional_firmware_signing_private_key(
+            "PINQEVA_FIRMWARE_SIGNING_PRIVATE_KEY",
+            os.getenv("PINQEVA_FIRMWARE_SIGNING_PRIVATE_KEY"),
         ),
         findmy_auth_file=os.getenv("PINQEVA_FINDMY_AUTH_FILE", "").strip(),
         findmy_apple_id=findmy_apple_id,
@@ -509,6 +533,8 @@ def get_settings() -> Settings:
         findmy_anisette_url=findmy_anisette_url,
         findmy_request_timeout_seconds=findmy_timeout,
         findmy_lookback_hours=findmy_lookback,
+        google_findhub_bridge_url=google_findhub_bridge_url,
+        google_findhub_bridge_token=google_findhub_bridge_token,
         stripe_secret_key=validate_stripe_secret(
             "STRIPE_SECRET_KEY",
             _required("STRIPE_SECRET_KEY"),

@@ -71,7 +71,7 @@ def notification_copy(
         if cancel_at_period_end:
             return (
                 "Subscription ends in one week",
-                f"{name} will stop tracking in one week unless you resume its subscription.",
+                f"Pinkeva cloud services for {name} will pause in one week unless you resume its subscription.",
             )
         return (
             "Subscription renews in one week",
@@ -81,7 +81,7 @@ def notification_copy(
         if cancel_at_period_end:
             return (
                 "Subscription ends tomorrow",
-                f"{name} will stop tracking tomorrow unless you resume its subscription.",
+                f"Pinkeva cloud services for {name} will pause tomorrow unless you resume its subscription.",
             )
         return (
             "Subscription renews tomorrow",
@@ -91,11 +91,6 @@ def notification_copy(
         return (
             "Subscription expired",
             f"Cloud location, history, sharing, and smart alerts for {name} are paused until you renew.",
-        )
-    if kind == "tag_sync_required":
-        return (
-            "Tag update no longer required",
-            f"{name} now keeps broadcasting its public key without a subscription update.",
         )
     raise ValueError("Unsupported notification kind")
 
@@ -345,19 +340,6 @@ class NotificationWorker:
 
     async def schedule_due(self) -> int:
         async with self.database.transaction() as connection:
-            await connection.execute(
-                """
-                UPDATE public.user_notification notification
-                   SET push_status = 'skipped',
-                       lease_owner = NULL,
-                       lease_expires_at = NULL,
-                       updated_at = now()
-                 WHERE notification.kind = 'tag_sync_required'
-                   AND notification.push_status IN (
-                       'pending', 'retry', 'processing'
-                   )
-                """
-            )
             inserted = 0
             schedules = (
                 (

@@ -132,7 +132,7 @@ test('uses conservative display defaults for nullable projected fields', () => {
         device: {
           id: DEVICE_ID.toUpperCase(),
           name: null,
-          status: 'suspended',
+          status: 'claimed',
           firmware_version: null,
         },
       }),

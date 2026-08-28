@@ -1,15 +1,10 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
-import { interpolateBillingCopy, useBillingCopy } from '../billing/copy';
+import { useBillingCopy } from '../billing/copy';
 import { billingIntervalLabel, formatBillingMoney, localizedBillingPlanName } from '../billing/format';
-import { useRenewalCopy } from '../billing/renewalCopy';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
-import {
-  canInstallEntitlement,
-  type BillingPlan,
-  type DeviceSubscription,
-} from '../billing/types';
+import { type BillingPlan, type DeviceSubscription } from '../billing/types';
 import {
   AppSafeArea,
   PrimaryButton,
@@ -54,20 +49,9 @@ export function SubscriptionsScreen({
 }) {
   const { language, t } = useI18n();
   const copy = useBillingCopy();
-  const renewalCopy = useRenewalCopy();
   const managedTrackers = trackers.filter((tracker) => tracker.source !== 'local-preview');
   const availablePlans = collectAvailablePlans(managedTrackers, subscriptions);
   const featuredPlan = availablePlans[availablePlans.length - 1];
-  const pendingTrackers = managedTrackers.filter((tracker) => {
-    const subscription = subscriptions[tracker.id];
-    return subscription ? canInstallEntitlement(subscription) : false;
-  });
-  const pendingSummary = interpolateBillingCopy(
-    pendingTrackers.length === 1
-      ? renewalCopy.updatesPendingOne
-      : renewalCopy.updatesPendingMany,
-    { count: String(pendingTrackers.length) },
-  );
 
   return (
     <AppSafeArea>
@@ -206,37 +190,6 @@ export function SubscriptionsScreen({
           </Surface>
         )}
 
-        {managedTrackers.length ? (
-          <Surface
-            style={[
-              styles.renewalFooter,
-              pendingTrackers.length > 0 ? styles.renewalFooterPending : {},
-            ]}
-          >
-            <View style={styles.renewalFooterIcon}>
-              <Ionicons
-                name={pendingTrackers.length ? 'download-outline' : 'shield-checkmark-outline'}
-                size={25}
-                color={pendingTrackers.length ? '#9A5A00' : colors.blue}
-              />
-            </View>
-            <View style={styles.renewalFooterCopy}>
-              <Text style={styles.renewalFooterTitle}>{renewalCopy.updatesTitle}</Text>
-              <Text style={styles.renewalFooterBody}>
-                {pendingTrackers.length ? pendingSummary : renewalCopy.updatesComplete}
-              </Text>
-            </View>
-            {pendingTrackers.length ? (
-              <PrimaryButton
-                label={renewalCopy.updateTag}
-                icon="download-outline"
-                onPress={() => onOpenSubscription(pendingTrackers[0]!.id)}
-                style={styles.renewalFooterButton}
-                testID="subscription-footer-update-tag"
-              />
-            ) : null}
-          </Surface>
-        ) : null}
       </ScrollView>
     </AppSafeArea>
   );
@@ -330,25 +283,5 @@ const styles = StyleSheet.create({
   emptyTitle: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
   emptyBody: { color: colors.muted, fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 8 },
   emptyButton: { width: '100%', marginTop: 18 },
-  renewalFooter: {
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    backgroundColor: '#F5F8FF',
-  },
-  renewalFooterPending: { backgroundColor: '#FFF8E8', borderWidth: 1, borderColor: '#F4D89B' },
-  renewalFooterIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
-  },
-  renewalFooterCopy: { flex: 1, gap: 4, paddingTop: 1 },
-  renewalFooterTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  renewalFooterBody: { color: colors.mutedDark, fontSize: 14, lineHeight: 20 },
-  renewalFooterButton: { alignSelf: 'flex-end', minWidth: 0, flexShrink: 1 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.99 }] },
 });

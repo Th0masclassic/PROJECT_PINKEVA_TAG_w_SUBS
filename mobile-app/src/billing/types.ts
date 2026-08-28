@@ -36,9 +36,6 @@ export type DeviceSubscription = {
   currentPeriodStart: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean;
-  entitlementSyncStatus: 'pending' | 'issued' | 'installed' | null;
-  tagEntitlementExpiresAt: string | null;
-  tagEntitlementUpdatedAt: string | null;
   availablePlans: BillingPlan[];
 };
 
@@ -80,12 +77,4 @@ export function isCurrentSubscription(subscription: DeviceSubscription): boolean
 
 export function canStartCheckout(subscription: DeviceSubscription): boolean {
   return !isCurrentSubscription(subscription);
-}
-
-export function canInstallEntitlement(subscription: DeviceSubscription): boolean {
-  // Kept as a compatibility hook for old screens and old firmware recovery.
-  // Current tags advertise from their stored public key, so subscription
-  // renewal never requires a BLE entitlement update.
-  void subscription;
-  return false;
 }

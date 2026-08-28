@@ -6,6 +6,7 @@ export function useRenewalPushRegistration(_input: {
   apiConfig: ProvisioningApiConfig | null;
   getAccessToken: () => Promise<string | null>;
   onOpenSubscription?: (deviceId: string) => void;
+  onOpenTracker?: (deviceId: string) => void;
 }): void {
   // Push registration is intentionally native-only. The web build still uses
   // the same backend notification inbox without requesting browser push.

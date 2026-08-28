@@ -112,13 +112,18 @@ async function unregister(destination: RegisteredDestination): Promise<void> {
   );
 }
 
-function subscriptionDeviceId(response: Notifications.NotificationResponse): string | null {
+function notificationDestination(
+  response: Notifications.NotificationResponse,
+): { route: 'subscription' | 'tracker'; deviceId: string } | null {
   const data = response.notification.request.content.data;
   if (!data || typeof data !== 'object') return null;
   const values = data as Record<string, unknown>;
   const deviceId = values.deviceId;
-  return values.route === 'subscription' && typeof deviceId === 'string' && UUID_PATTERN.test(deviceId)
-    ? deviceId.toLowerCase()
+  const route = values.route;
+  return (route === 'subscription' || route === 'tracker') &&
+    typeof deviceId === 'string' &&
+    UUID_PATTERN.test(deviceId)
+    ? { route, deviceId: deviceId.toLowerCase() }
     : null;
 }
 
@@ -128,6 +133,7 @@ export function useRenewalPushRegistration(input: {
   apiConfig: ProvisioningApiConfig | null;
   getAccessToken: () => Promise<string | null>;
   onOpenSubscription?: (deviceId: string) => void;
+  onOpenTracker?: (deviceId: string) => void;
 }): void {
   const destination = useRef<RegisteredDestination | null>(null);
 
@@ -140,11 +146,16 @@ export function useRenewalPushRegistration(input: {
   }, [input.enabled, input.userId]);
 
   useEffect(() => {
-    if (!input.enabled || !input.userId || !input.onOpenSubscription) return undefined;
+    if (!input.enabled || !input.userId) return undefined;
     let active = true;
     const open = (response: Notifications.NotificationResponse) => {
-      const deviceId = subscriptionDeviceId(response);
-      if (active && deviceId) input.onOpenSubscription?.(deviceId);
+      const destination = notificationDestination(response);
+      if (!active || !destination) return;
+      if (destination.route === 'tracker') {
+        input.onOpenTracker?.(destination.deviceId);
+      } else {
+        input.onOpenSubscription?.(destination.deviceId);
+      }
     };
     const listener = Notifications.addNotificationResponseReceivedListener(open);
     void Notifications.getLastNotificationResponseAsync().then((response) => {
@@ -154,7 +165,7 @@ export function useRenewalPushRegistration(input: {
       active = false;
       listener.remove();
     };
-  }, [input.enabled, input.onOpenSubscription, input.userId]);
+  }, [input.enabled, input.onOpenSubscription, input.onOpenTracker, input.userId]);
 
   useEffect(() => {
     if (!input.enabled || !input.userId || !input.apiConfig) return;

@@ -9,20 +9,24 @@ export const KEY_FINGERPRINT_UUID = 'a6f0f005-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const TAG_CONTROL_KEY_UUID = 'a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const TAG_CHALLENGE_UUID = 'a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const TAG_AUTHORIZATION_PROOF_UUID = 'a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01';
-export const SUBSCRIPTION_ENTITLEMENT_UUID = 'a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const GOOGLE_ADVERTISEMENT_KEY_UUID = 'a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const UTC_TIME_UUID = 'a6f0f00b-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FIRMWARE_MANIFEST_UUID = 'a6f0f00c-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FIRMWARE_DATA_UUID = 'a6f0f00d-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FIRMWARE_CONTROL_UUID = 'a6f0f00e-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FIRMWARE_STATUS_UUID = 'a6f0f00f-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FIRMWARE_VERSION_UUID = 'a6f0f010-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const GOOGLE_KEY_FINGERPRINT_UUID = 'a6f0f011-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const FINDING_NETWORK_UUID = 'a6f0f012-3e4d-4b1a-9c2e-72d24c8f0a01';
 
 export const ADVERTISEMENT_KEY_LENGTH = 28;
 export const KEY_FINGERPRINT_LENGTH = 32;
 export const TAG_CONTROL_KEY_LENGTH = 32;
 export const TAG_CHALLENGE_LENGTH = 32;
 export const TAG_AUTHORIZATION_PROOF_LENGTH = 32;
-export const SUBSCRIPTION_ENTITLEMENT_LENGTH = 135;
+export const GOOGLE_ADVERTISEMENT_KEY_LENGTH = 20;
+export const GOOGLE_KEY_FINGERPRINT_LENGTH = 32;
+export const FINDING_NETWORK_LENGTH = 1;
 export const UTC_TIME_LENGTH = 8;
 export const FIRMWARE_MANIFEST_LENGTH = 115;
 export const FIRMWARE_STATUS_LENGTH = 6;
@@ -31,8 +35,10 @@ export const TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 export const NON_BONDING_SETUP_CAPABILITY = 0x0020;
 export const UTC_TIME_SYNC_CAPABILITY = 0x0040;
 export const FIRMWARE_UPDATE_CAPABILITY = 0x0080;
+export const DUAL_FINDING_NETWORK_CAPABILITY = 0x0100;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
 export const PINKEVA_SERIAL_PATTERN = /^PKV-[0-9A-F]{12}$/;
+export type FindingNetwork = 'apple' | 'google';
 
 export type ProtocolInformation = {
   protocolMajor: number;
@@ -168,6 +174,36 @@ export function decodeTagKeyFingerprint(value: Uint8Array): Uint8Array | null {
     throw new ProvisioningClientError('INVALID_TAG_FINGERPRINT', 'Unexpected key fingerprint');
   }
   return value.every((byte) => byte === 0) ? null : value;
+}
+
+export function decodeGoogleKeyFingerprint(value: Uint8Array): Uint8Array | null {
+  if (value.length !== GOOGLE_KEY_FINGERPRINT_LENGTH) {
+    throw new ProvisioningClientError(
+      'INVALID_TAG_FINGERPRINT',
+      'Unexpected Google key fingerprint',
+    );
+  }
+  return value.every((byte) => byte === 0) ? null : value;
+}
+
+export function encodeFindingNetwork(value: FindingNetwork): Uint8Array {
+  return Uint8Array.of(value === 'apple' ? 0x01 : 0x02);
+}
+
+export function decodeFindingNetwork(value: Uint8Array): FindingNetwork | null {
+  if (value.length !== FINDING_NETWORK_LENGTH) {
+    throw new ProvisioningClientError(
+      'INVALID_FINDING_NETWORK',
+      'Unexpected finding-network value',
+    );
+  }
+  if (value[0] === 0x00) return null;
+  if (value[0] === 0x01) return 'apple';
+  if (value[0] === 0x02) return 'google';
+  throw new ProvisioningClientError(
+    'INVALID_FINDING_NETWORK',
+    'Tag returned an unknown finding network',
+  );
 }
 
 export function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {

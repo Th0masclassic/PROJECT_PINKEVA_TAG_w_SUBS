@@ -9,6 +9,9 @@ export type DeviceClaimStart = {
   tag_action: 'write_key' | 'verify_existing_key';
   advertisement_key_base64url: string;
   advertisement_key_sha256_base64url: string;
+  google_advertisement_key_base64url: string;
+  google_advertisement_key_sha256_base64url: string;
+  finding_network: 'apple' | 'google';
   tag_authorization_proof_base64url: string;
   claim_completion_token_base64url: string;
   tag_control_key_base64url: string | null;
@@ -22,23 +25,7 @@ export type DeviceClaim = {
   status: 'claimed';
   claimed_at: string;
   next_action: 'ready';
-};
-
-export type DeviceEntitlement = {
-  device_id: string;
-  serial_number: string;
-  entitlement_base64url: string;
-  tag_authorization_proof_base64url: string;
-  packet_sha256_base64url: string;
-  expires_at: string;
-  counter: number;
-};
-
-export type DeviceEntitlementAcknowledgement = {
-  device_id: string;
-  counter: number;
-  expires_at: string;
-  status: 'installed';
+  finding_network: 'apple' | 'google';
 };
 
 export type FirmwareAvailability = {
@@ -164,6 +151,9 @@ function isDeviceClaimStart(value: unknown): value is DeviceClaimStart {
     (value.tag_action === 'write_key' || value.tag_action === 'verify_existing_key') &&
     hasString(value, 'advertisement_key_base64url') &&
     hasString(value, 'advertisement_key_sha256_base64url') &&
+    hasString(value, 'google_advertisement_key_base64url') &&
+    hasString(value, 'google_advertisement_key_sha256_base64url') &&
+    (value.finding_network === 'apple' || value.finding_network === 'google') &&
     hasString(value, 'tag_authorization_proof_base64url') &&
     hasString(value, 'claim_completion_token_base64url') &&
     hasNullableString(value, 'tag_control_key_base64url') &&
@@ -179,38 +169,8 @@ function isDeviceClaim(value: unknown): value is DeviceClaim {
     hasString(value, 'serial_number') &&
     value.status === 'claimed' &&
     hasString(value, 'claimed_at') &&
-    value.next_action === 'ready'
-  );
-}
-
-function isDeviceEntitlement(value: unknown): value is DeviceEntitlement {
-  if (!isRecord(value)) return false;
-  return (
-    hasString(value, 'device_id') &&
-    hasString(value, 'serial_number') &&
-    hasString(value, 'entitlement_base64url') &&
-    hasString(value, 'tag_authorization_proof_base64url') &&
-    hasString(value, 'packet_sha256_base64url') &&
-    hasString(value, 'expires_at') &&
-    typeof value.counter === 'number' &&
-    Number.isSafeInteger(value.counter) &&
-    value.counter > 0
-  );
-}
-
-function isDeviceEntitlementAcknowledgement(
-  value: unknown,
-): value is DeviceEntitlementAcknowledgement {
-  if (!isRecord(value)) return false;
-  const expiresAt = value.expires_at;
-  return (
-    hasString(value, 'device_id') &&
-    typeof value.counter === 'number' &&
-    Number.isSafeInteger(value.counter) &&
-    value.counter > 0 &&
-    typeof expiresAt === 'string' &&
-    Number.isFinite(Date.parse(expiresAt)) &&
-    value.status === 'installed'
+    value.next_action === 'ready' &&
+    (value.finding_network === 'apple' || value.finding_network === 'google')
   );
 }
 
@@ -359,6 +319,9 @@ export class PinqevaProvisioningClient {
     idempotencyKey: string;
     tagChallengeBase64url: string;
     tagAdvertisementKeySha256Base64url: string | null;
+    tagGoogleAdvertisementKeySha256Base64url: string | null;
+    findingNetwork: 'apple' | 'google';
+    tagFindingNetwork: 'apple' | 'google' | null;
   }): Promise<DeviceClaimStart> {
     return this.request(
       '/v1/devices/claim',
@@ -371,6 +334,10 @@ export class PinqevaProvisioningClient {
           tag_challenge_base64url: input.tagChallengeBase64url,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          finding_network: input.findingNetwork,
+          tag_finding_network: input.tagFindingNetwork,
         }),
       },
       isDeviceClaimStart,
@@ -382,6 +349,8 @@ export class PinqevaProvisioningClient {
     idempotencyKey: string;
     tagChallengeBase64url: string;
     tagAdvertisementKeySha256Base64url: string | null;
+    tagGoogleAdvertisementKeySha256Base64url: string | null;
+    tagFindingNetwork: 'apple' | 'google' | null;
   }): Promise<ProvisioningRequest> {
     return this.request(
       '/v1/provisioning/requests',
@@ -393,6 +362,9 @@ export class PinqevaProvisioningClient {
           tag_challenge_base64url: input.tagChallengeBase64url,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          tag_finding_network: input.tagFindingNetwork,
         }),
       },
       isProvisioningRequest,
@@ -424,6 +396,7 @@ export class PinqevaProvisioningClient {
   completeDeviceClaim(input: {
     claim: DeviceClaimStart;
     tagAdvertisementKeySha256Base64url: string;
+    tagGoogleAdvertisementKeySha256Base64url: string;
   }): Promise<DeviceClaim> {
     return this.request(
       '/v1/devices/claim/complete',
@@ -434,48 +407,14 @@ export class PinqevaProvisioningClient {
           serial_number: input.claim.serial_number,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          finding_network: input.claim.finding_network,
           claim_completion_token_base64url:
             input.claim.claim_completion_token_base64url,
         }),
       },
       isDeviceClaim,
-    );
-  }
-
-  startDeviceEntitlement(input: {
-    deviceId: string;
-    serialNumber: string;
-    tagChallengeBase64url: string;
-  }): Promise<DeviceEntitlement> {
-    return this.request(
-      `/v1/devices/${input.deviceId}/entitlements`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          serial_number: input.serialNumber,
-          tag_challenge_base64url: input.tagChallengeBase64url,
-        }),
-      },
-      isDeviceEntitlement,
-    );
-  }
-
-  acknowledgeDeviceEntitlement(input: {
-    deviceId: string;
-    entitlement: DeviceEntitlement;
-    packetSha256Base64url: string;
-  }): Promise<DeviceEntitlementAcknowledgement> {
-    return this.request(
-      `/v1/devices/${input.deviceId}/entitlements/acknowledge`,
-      {
-        method: 'POST',
-        body: JSON.stringify({
-          counter: input.entitlement.counter,
-          expires_at: input.entitlement.expires_at,
-          packet_sha256_base64url: input.packetSha256Base64url,
-        }),
-      },
-      isDeviceEntitlementAcknowledgement,
     );
   }
 

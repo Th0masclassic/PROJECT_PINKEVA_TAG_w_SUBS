@@ -21,13 +21,21 @@ function errorMessage(copy: ReturnType<typeof useBillingCopy>, error: Notificati
 
 function notificationIcon(kind: UserNotification['kind']): ComponentProps<typeof Ionicons>['name'] {
   if (kind === 'admin_message') return 'megaphone-outline';
-  if (kind === 'tag_sync_required') return 'shield-checkmark-outline';
   if (kind === 'safe_zone_enter') return 'enter-outline';
   if (kind === 'safe_zone_exit') return 'exit-outline';
   if (kind === 'lost_mode_location') return 'location-outline';
   if (kind === 'movement_detected') return 'navigate-outline';
   if (kind === 'expired') return 'alert-circle-outline';
   return 'notifications-outline';
+}
+
+function isTrackerAlert(kind: UserNotification['kind']): boolean {
+  return (
+    kind === 'safe_zone_enter' ||
+    kind === 'safe_zone_exit' ||
+    kind === 'lost_mode_location' ||
+    kind === 'movement_detected'
+  );
 }
 
 export function NotificationsScreen({
@@ -37,6 +45,7 @@ export function NotificationsScreen({
   onBack,
   onRetry,
   onOpenSubscription,
+  onOpenTracker,
   onMarkRead,
 }: {
   notifications: readonly UserNotification[];
@@ -45,6 +54,7 @@ export function NotificationsScreen({
   onBack: () => void;
   onRetry: () => Promise<void>;
   onOpenSubscription: (deviceId: string) => void;
+  onOpenTracker: (deviceId: string) => void;
   onMarkRead: (notificationId: string) => Promise<void>;
 }) {
   const { language, t } = useI18n();
@@ -79,7 +89,13 @@ export function NotificationsScreen({
                   accessibilityLabel={`${notification.title}. ${notification.body}`}
                   onPress={() => {
                     if (unread) void onMarkRead(notification.id).catch(() => undefined);
-                    if (notification.deviceId) onOpenSubscription(notification.deviceId);
+                    if (notification.deviceId) {
+                      if (isTrackerAlert(notification.kind)) {
+                        onOpenTracker(notification.deviceId);
+                      } else {
+                        onOpenSubscription(notification.deviceId);
+                      }
+                    }
                   }}
                   style={({ pressed }) => [
                     styles.notificationRow,

@@ -50,8 +50,6 @@ GRANT SELECT, INSERT, UPDATE
 GRANT SELECT, INSERT, UPDATE
   ON TABLE public.subscription_cancellation_outbox TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE
-  ON TABLE public.device_entitlement_sync TO pinqeva_backend;
-GRANT SELECT, INSERT, UPDATE
   ON TABLE public.mobile_push_token TO pinqeva_backend;
 GRANT SELECT, INSERT, UPDATE
   ON TABLE public.user_notification TO pinqeva_backend;

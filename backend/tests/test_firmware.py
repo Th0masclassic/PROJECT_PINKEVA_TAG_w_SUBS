@@ -58,7 +58,7 @@ def settings(image_path: str, private_key: ec.EllipticCurvePrivateKey) -> Settin
         claim_token_key=os.urandom(32),
         session_ttl_seconds=600,
         claim_ttl_seconds=86_400,
-        entitlement_private_key=private_key,
+        firmware_signing_private_key=private_key,
         dev_bypass_bootstrap_auth=True,
         firmware_image_path=image_path,
         firmware_version="0.4.1",
@@ -147,7 +147,9 @@ async def test_unsigned_configured_image_is_not_advertised(tmp_path) -> None:
     configured = settings(
         str(image_path), ec.generate_private_key(ec.SECP256R1())
     )
-    service = FirmwareService(replace(configured, entitlement_private_key=None))
+    service = FirmwareService(
+        replace(configured, firmware_signing_private_key=None)
+    )
     user_id = uuid4()
     device_id = uuid4()
 

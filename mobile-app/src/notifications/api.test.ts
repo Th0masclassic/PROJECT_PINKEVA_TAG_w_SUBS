@@ -16,10 +16,10 @@ const payload = {
     {
       id: NOTIFICATION_ID,
       device_id: DEVICE_ID,
-      kind: 'tag_sync_required',
+      kind: 'renewal_1_day',
       period_end: '2099-09-01T00:00:00Z',
-      title: 'Renewal ready — update your tag',
-      body: 'Hold the button for 5 seconds.',
+      title: 'Subscription renews tomorrow',
+      body: 'The subscription is scheduled to renew automatically tomorrow.',
       created_at: '2099-08-01T00:00:00Z',
       read_at: null,
     },
@@ -31,14 +31,31 @@ test('parses the durable renewal notification inbox contract', () => {
     {
       id: NOTIFICATION_ID,
       deviceId: DEVICE_ID,
-      kind: 'tag_sync_required',
+      kind: 'renewal_1_day',
       periodEnd: '2099-09-01T00:00:00Z',
-      title: 'Renewal ready — update your tag',
-      body: 'Hold the button for 5 seconds.',
+      title: 'Subscription renews tomorrow',
+      body: 'The subscription is scheduled to renew automatically tomorrow.',
       createdAt: '2099-08-01T00:00:00Z',
       readAt: null,
     },
   ]);
+});
+
+test('parses premium tracker alerts without a billing period', () => {
+  const premiumPayload = {
+    notifications: [
+      {
+        ...payload.notifications[0],
+        kind: 'safe_zone_exit',
+        period_end: null,
+        title: 'Keys left Home',
+        body: 'Keys moved outside your Home safe zone.',
+      },
+    ],
+  };
+
+  assert.equal(parseUserNotifications(premiumPayload)[0]?.kind, 'safe_zone_exit');
+  assert.equal(parseUserNotifications(premiumPayload)[0]?.periodEnd, null);
 });
 
 test('rejects malformed notification inbox payloads', () => {

@@ -2,8 +2,8 @@
 
 #include <cstdint>
 
-// P-256 public key used to verify backend-issued entitlements and signed
-// firmware manifests. The matching private key remains in the backend.
+// P-256 public key used to verify signed firmware manifests. The matching
+// private key remains in the backend.
 constexpr uint8_t PINKEVA_RELEASE_PUBLIC_KEY[65] = {
     0x04, 0x05, 0x6C, 0xB2, 0x6D, 0x81, 0x34, 0xFB,
     0x88, 0x61, 0xF6, 0x78, 0xB0, 0x87, 0xA2, 0x26,

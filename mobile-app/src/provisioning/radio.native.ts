@@ -89,7 +89,10 @@ class NativeTagRadio implements TagRadio {
     },
   ) {
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
-    return new TagProvisioner(this.manager, backend).provision(input);
+    return new TagProvisioner(this.manager, backend).provision({
+      ...input,
+      findingNetwork: Platform.OS === 'android' ? 'google' : 'apple',
+    });
   }
 
   inspectTag(
@@ -101,19 +104,6 @@ class NativeTagRadio implements TagRadio {
   ) {
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
     return new TagProvisioner(this.manager, backend).inspectTag(input);
-  }
-
-  installEntitlement(
-    backend: PinqevaProvisioningClient,
-    input: {
-      peripheralId: string;
-      deviceId: string;
-      serialNumber: string;
-      onProgress: (progress: ProvisioningProgress) => void;
-    },
-  ) {
-    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
-    return new TagProvisioner(this.manager, backend).installEntitlement(input);
   }
 
   installFirmware(

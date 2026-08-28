@@ -1,6 +1,5 @@
 import type {
   DeviceClaim,
-  DeviceEntitlement,
   PinqevaProvisioningClient,
 } from './api';
 import type { ProvisioningProgress, TagIdentity } from './provisionTag';
@@ -35,15 +34,6 @@ export interface TagRadio {
       onProgress: (progress: ProvisioningProgress) => void;
     },
   ): Promise<DeviceClaim>;
-  installEntitlement(
-    backend: PinqevaProvisioningClient,
-    input: {
-      peripheralId: string;
-      deviceId: string;
-      serialNumber: string;
-      onProgress: (progress: ProvisioningProgress) => void;
-    },
-  ): Promise<DeviceEntitlement>;
   installFirmware(
     backend: PinqevaProvisioningClient,
     input: {

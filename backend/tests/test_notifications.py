@@ -30,7 +30,7 @@ def job(*, attempt_count: int = 1) -> NotificationJob:
         id=uuid4(),
         user_id=uuid4(),
         device_id=uuid4(),
-        kind="tag_sync_required",
+        kind="renewal_1_day",
         period_end=datetime(2026, 9, 26, tzinfo=UTC),
         cancel_at_period_end=False,
         device_name="Wallet",
@@ -55,7 +55,7 @@ class CapturingWorker(NotificationWorker):
         self.finishes.append(values)
 
 
-def test_notification_copy_covers_renewal_end_expiry_and_tag_update() -> None:
+def test_notification_copy_covers_renewal_end_and_expiry() -> None:
     assert notification_copy(
         "renewal_7_days", device_name="Keys", cancel_at_period_end=False
     ) == (
@@ -66,13 +66,10 @@ def test_notification_copy_covers_renewal_end_expiry_and_tag_update() -> None:
         "renewal_1_day", device_name="Keys", cancel_at_period_end=True
     ) == (
         "Subscription ends tomorrow",
-        "Keys will stop tracking tomorrow unless you resume its subscription.",
+        "Pinkeva cloud services for Keys will pause tomorrow unless you resume its subscription.",
     )
     assert "Cloud location" in notification_copy(
         "expired", device_name="Keys", cancel_at_period_end=True
-    )[1]
-    assert "keeps broadcasting" in notification_copy(
-        "tag_sync_required", device_name="Keys", cancel_at_period_end=False
     )[1]
 
 

@@ -96,16 +96,6 @@ function parseStatus(value: unknown): SubscriptionStatus {
   return 'unknown';
 }
 
-function parseEntitlementSyncStatus(
-  value: unknown,
-): DeviceSubscription['entitlementSyncStatus'] {
-  if (value === null || value === undefined) return null;
-  if (value === 'pending' || value === 'issued' || value === 'installed') {
-    return value;
-  }
-  throw new BillingApiError('invalid_response');
-}
-
 function parsePlan(value: unknown): BillingPlan | null {
   if (!isRecord(value)) return null;
   const code = nullableString(value.code, 80);
@@ -199,11 +189,6 @@ export function parseDeviceSubscription(
     currentPeriodStart: nullableDate(value.current_period_start),
     currentPeriodEnd: nullableDate(value.current_period_end),
     cancelAtPeriodEnd: value.cancel_at_period_end === true,
-    entitlementSyncStatus: parseEntitlementSyncStatus(
-      value.entitlement_sync_status,
-    ),
-    tagEntitlementExpiresAt: nullableDate(value.tag_entitlement_expires_at),
-    tagEntitlementUpdatedAt: nullableDate(value.tag_entitlement_updated_at),
     availablePlans,
   };
 }

@@ -1,15 +1,15 @@
 # Pinqeva provisioning backend
 
-This service implements the payment-gated key lifecycle and signed firmware
-release portion of protocol v1.6:
+This service implements the payment-gated dual-network identity lifecycle and
+signed firmware release portion of protocol v1.7:
 
 1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
 2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 45 minutes.
 3. The app shows the server-provided plan prices, opens Stripe Checkout, and polls the request status. A signed, idempotent Stripe webhook is the only event that changes the request to `paid`.
-4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate one P-224 key pair with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
-5. The app writes the authorization proof before the one-time tag-control key and advertisement key. Firmware disconnects invalid clients and times out connections that never authorize.
-6. The app reads the tag's 32-byte key fingerprint. `POST /v1/devices/claim/complete` checks it plus a user/session/device-bound capability before creating the one active ownership row.
-7. Claim completion returns `status: claimed` and `next_action: ready`. The public advertisement key is sufficient for tracker operation; normal setup and renewal do not install a subscription packet over BLE.
+4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate Apple P-224 and Google EIK/EID material with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
+5. The app writes the authorization proof before the one-time control key, both public advertising identities, and the write-once network selector. Firmware disconnects invalid clients and times out connections that never authorize.
+6. The app reads both 32-byte fingerprints and the selector. `POST /v1/devices/claim/complete` checks the complete binding plus a user/session/device-bound capability before creating the one active ownership row.
+7. Claim completion returns `status: claimed` and `next_action: ready`. The selected finder identity is sufficient for tracker operation; renewals never install billing state over BLE.
 8. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
 
 ## Run locally
@@ -118,13 +118,16 @@ POST /v1/devices/{device_id}/location/report
 Authorization: Bearer <Supabase access token>
 ```
 
-The backend verifies active ownership, loads the matching `provisioning_session`,
-decrypts the P-224 private scalar with `PINQEVA_KEY_ENCRYPTION_KEY`, and sends
-only that session's advertisement-key hash to Apple's report service. The
-private scalar, hash, Apple payload, and search-party token never leave the
-backend. The response contains only the latest safe coordinate projection; a
-newer report is persisted to `device.last_latitude`, `last_longitude`,
-`last_location_at`, and `last_place`.
+The backend verifies active ownership and routes the request using
+`device.finding_network`. Apple-selected tags use the encrypted P-224 scalar and
+Apple report provider. Google-selected tags use the encrypted 32-byte Find Hub
+identity key and a separately deployed provider bridge configured by
+`PINQEVA_GOOGLE_FINDHUB_BRIDGE_URL` and
+`PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN`. There is deliberately no Apple fallback
+for a Google tag. Google does not publish a general report API, so that bridge
+must be supplied through an approved production integration; loopback is also
+supported for development testing. In both cases the public API returns only
+the safe coordinate projection and persists newer accepted reports.
 
 The server logs `location_report_request_received`,
 `findmy_request_reports_received`, and `location_report_request_completed`
@@ -156,9 +159,9 @@ When Apple returns a valid report, the JSON projection is shaped like this:
 }
 ```
 
-`report_status` is `updated` for a newly accepted Apple report,
-`unchanged` when the stored report is newer, and `no_report` when Apple has
-no usable report; the latter returns the last stored coordinates, or `null`
+`report_status` is `updated` for a newly accepted finder report,
+`unchanged` when the stored report is newer, and `no_report` when the selected
+provider has no usable report; the latter returns the last stored coordinates, or `null`
 coordinates if the tag has never reported. A caller that does not actively own
 the UUID receives a safe 404 response and no coordinates.
 
@@ -215,7 +218,9 @@ Content-Type: application/json
 {
   "serial_number": "PKV-AABBCCDDEEFF",
   "tag_challenge_base64url": "<32-byte challenge read from the tag>",
-  "tag_advertisement_key_sha256_base64url": null
+  "tag_advertisement_key_sha256_base64url": null,
+  "tag_google_advertisement_key_sha256_base64url": null,
+  "tag_finding_network": null
 }
 ```
 
@@ -249,11 +254,19 @@ Content-Type: application/json
   "provisioning_request_id": "<paid request uuid>",
   "serial_number": "PKV-AABBCCDDEEFF",
   "tag_challenge_base64url": "<32-byte challenge read from the tag>",
-  "tag_advertisement_key_sha256_base64url": null
+  "tag_advertisement_key_sha256_base64url": null,
+  "tag_google_advertisement_key_sha256_base64url": null,
+  "finding_network": "google",
+  "tag_finding_network": null
 }
 ```
 
-`null` means the encrypted fingerprint characteristic reports 32 zero bytes. If the tag already contains a key, the app sends its fingerprint instead. The response includes `tag_authorization_proof_base64url` plus either `write_key` or `verify_existing_key`. The proof is valid only for that device's current challenge. A retry always returns the original allocation; it does not generate another key.
+`null` means the corresponding fingerprint or network characteristic is empty.
+The backend allocates both the 28-byte Apple advertisement key and 20-byte
+Google EID once, then binds the selected network. Android selects Google and
+iOS selects Apple. The tag stores both identities but advertises only the one
+selected network. A retry always returns the original allocation; it never
+generates replacement material.
 
 After the tag reports `0x04 0x00` and its fingerprint matches, complete the claim:
 
@@ -266,6 +279,8 @@ Content-Type: application/json
   "session_id": "<session uuid>",
   "serial_number": "PKV-AABBCCDDEEFF",
   "tag_advertisement_key_sha256_base64url": "<value read back from the tag>",
+  "tag_google_advertisement_key_sha256_base64url": "<Google value read back from the tag>",
+  "finding_network": "google",
   "claim_completion_token_base64url": "<capability from claim-start response>"
 }
 ```
@@ -278,50 +293,13 @@ One device can have only one active owner. Transfer rotates the finder key; the 
 
 Subscriptions are also device-scoped: one account may pay for multiple tags, but each tag can have at most one current/nonterminal subscription. `subscription.user_id` identifies the payer/owner account; it is not an account-wide entitlement. Cancelled and ended records are retained as history.
 
-1. The current owner connects to the exact tag and reads its fingerprint.
-2. `POST /v1/devices/{device_id}/release` verifies active ownership and the fingerprint, then returns a nonce plus HMAC reset command.
-3. The tag verifies that HMAC using the control key installed during its original claim, erases both NVS keys, reports an empty fingerprint, and clears BLE bonds on disconnect.
+1. The current owner connects to the exact tag and reads both fingerprints and the selected network.
+2. `POST /v1/devices/{device_id}/release` verifies active ownership and the complete dual-network binding, then returns a nonce plus HMAC reset command.
+3. The tag verifies that HMAC using the control key installed during its original claim, erases both finder identities, network selection, and control key, reports all three public values empty, and clears BLE bonds on disconnect.
 4. `POST /v1/devices/{device_id}/release/complete` atomically ends ownership, revokes the old allocation, clears the device binding, cancels local subscriptions, and creates idempotent payment-provider cancellation outbox rows.
-5. Only then may another authenticated account claim the empty tag, creating an entirely new P-224 key pair and tag-control key.
+5. Only then may another authenticated account claim the empty tag, creating entirely new Apple and Google identities plus a tag-control key.
 
 The outbox is not the payment-provider API. A production worker must process it and the signed provider webhook must confirm that external billing stopped.
-
-## Legacy signed tag activation compatibility
-
-The entitlement routes remain temporarily available for an older mobile or
-firmware build. They are not called by current provisioning or renewal. Current
-firmware advertises whenever its stored 28-byte public key is valid, while the
-backend enforces subscription access for cloud services.
-
-An older client can still request a signed packet while the device has an
-active or trialing subscription:
-
-```http
-POST /v1/devices/{device_id}/entitlements
-Authorization: Bearer <Supabase access token>
-Content-Type: application/json
-
-{"serial_number":"PKV-AABBCCDDEEFF","tag_challenge_base64url":"<fresh tag challenge>"}
-```
-
-The compatibility response contains the historical 135-byte device-bound P-256
-packet, challenge-bound proof, expiry, and counter. New firmware may store a
-valid legacy packet but its expiry never starts or stops finder advertising.
-
-Issuance creates or updates a `device_entitlement_sync` row for the exact
-subscription period and packet digest. After writing, the mobile client reads
-the complete packet back from the ESP32 and acknowledges it with:
-
-```http
-POST /v1/devices/{device_id}/entitlements/acknowledge
-Authorization: Bearer <Supabase access token>
-Content-Type: application/json
-
-{"counter":12,"expires_at":"2026-09-26T12:00:00Z","packet_sha256_base64url":"<SHA-256>"}
-```
-
-Only an exact current counter, period, digest, owner, and device transition the
-legacy row from `issued` to `installed`. No product feature depends on that row.
 
 ## Premium tracker services
 
@@ -363,7 +341,7 @@ than a client-side version constant:
 ```http
 GET  /v1/devices/{device_id}/firmware
 POST /v1/devices/{device_id}/firmware/session
-GET  /v1/devices/{device_id}/firmware/image?version=0.3.1
+GET  /v1/devices/{device_id}/firmware/image?version=0.4.0
 POST /v1/devices/{device_id}/firmware/acknowledge
 ```
 
@@ -373,7 +351,7 @@ application binary and the version must be `major.minor.patch`, with every
 component in `0..255`. Leaving both values empty disables update publication.
 The configured image is loaded at startup, checked for the ESP image marker and
 896 KiB slot limit, hashed, and bound into a fixed manifest signed with
-`PINQEVA_ENTITLEMENT_PRIVATE_KEY`. That key's P-256 public half is embedded in
+`PINQEVA_FIRMWARE_SIGNING_PRIVATE_KEY`. That key's P-256 public half is embedded in
 the tracker; neither the signing key nor an unsigned digest reaches the app as
 a trust root.
 

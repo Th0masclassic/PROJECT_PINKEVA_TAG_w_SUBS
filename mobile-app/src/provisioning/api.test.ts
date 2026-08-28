@@ -33,6 +33,9 @@ test('sends the authenticated two-phase claim contract', async () => {
           tag_action: 'write_key',
           advertisement_key_base64url: 'key',
           advertisement_key_sha256_base64url: 'fingerprint',
+          google_advertisement_key_base64url: 'google-key',
+          google_advertisement_key_sha256_base64url: 'google-fingerprint',
+          finding_network: 'google',
           tag_authorization_proof_base64url: 'proof',
           claim_completion_token_base64url: 'completion',
           tag_control_key_base64url: 'control',
@@ -49,6 +52,7 @@ test('sends the authenticated two-phase claim contract', async () => {
         status: 'claimed',
         claimed_at: '2026-08-24T00:00:00Z',
         next_action: 'ready',
+        finding_network: 'google',
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
@@ -65,10 +69,14 @@ test('sends the authenticated two-phase claim contract', async () => {
       idempotencyKey: 'provision:test-id',
       tagChallengeBase64url: 'challenge',
       tagAdvertisementKeySha256Base64url: null,
+      tagGoogleAdvertisementKeySha256Base64url: null,
+      findingNetwork: 'google',
+      tagFindingNetwork: null,
     });
     const completed = await client.completeDeviceClaim({
       claim: started,
       tagAdvertisementKeySha256Base64url: 'fingerprint',
+      tagGoogleAdvertisementKeySha256Base64url: 'google-fingerprint',
     });
 
     assert.equal(completed.status, 'claimed');
@@ -112,6 +120,9 @@ test('returns only a safe API error code from failed responses', async () => {
         idempotencyKey: 'provision:test-id',
         tagChallengeBase64url: 'challenge',
         tagAdvertisementKeySha256Base64url: null,
+        tagGoogleAdvertisementKeySha256Base64url: null,
+        findingNetwork: 'google',
+        tagFindingNetwork: null,
       }),
       (error: unknown) =>
         error instanceof ProvisioningApiError &&

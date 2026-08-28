@@ -19,8 +19,10 @@ from .crypto import (
     b64url_encode,
     claim_completion_token,
     decrypt_device_bootstrap_key,
+    encrypt_google_identity_key,
     encrypt_private_key,
     generate_finder_key_bundle,
+    generate_google_finder_key_bundle,
     release_completion_token,
     tag_authorization_proof,
     tag_control_key,
@@ -57,6 +59,13 @@ class ProvisioningService:
 
     def _associated_data(self, session_id: UUID, user_id: UUID, device_id: UUID) -> bytes:
         return f"pinqeva:v1:{session_id}:{user_id}:{device_id}".encode("ascii")
+
+    def _google_associated_data(
+        self, session_id: UUID, user_id: UUID, device_id: UUID
+    ) -> bytes:
+        return f"pinqeva:google-eik:v1:{session_id}:{user_id}:{device_id}".encode(
+            "ascii"
+        )
 
     async def start_provisioning_request(
         self,
@@ -115,7 +124,11 @@ class ProvisioningService:
         # challenge, but the proof is deliberately not returned or persisted.
         self._authorization_proof(device, request.tag_challenge_base64url)
 
-        if request.tag_advertisement_key_sha256_base64url is not None:
+        if (
+            request.tag_advertisement_key_sha256_base64url is not None
+            or request.tag_google_advertisement_key_sha256_base64url is not None
+            or request.tag_finding_network is not None
+        ):
             raise ProvisioningError(
                 "RECOVERY_REQUIRED",
                 "The tag contains an unrecognized key and must not be overwritten",
@@ -299,7 +312,9 @@ class ProvisioningService:
         existing_idempotency_query = await connection.execute(
             """
             SELECT id, user_id, device_id, serial_number, advertisement_key,
-                   advertisement_key_sha256, status, expires_at, claim_deadline,
+                   advertisement_key_sha256, google_advertisement_key,
+                   google_advertisement_key_sha256, finding_network,
+                   status, expires_at, claim_deadline,
                    completed_at, provisioning_request_id
               FROM public.provisioning_session
              WHERE user_id = %s AND idempotency_key = %s
@@ -317,6 +332,9 @@ class ProvisioningService:
                     "This idempotency key was already used for a different request",
                     409,
                 )
+            existing = await self._ensure_google_key_material(
+                connection, session=existing
+            )
             await self._bind_existing_session_if_safe(
                 connection, device=device, session=existing
             )
@@ -335,7 +353,9 @@ class ProvisioningService:
             bound_query = await connection.execute(
                 """
                 SELECT id, user_id, device_id, serial_number, advertisement_key,
-                       advertisement_key_sha256, status, expires_at, claim_deadline,
+                       advertisement_key_sha256, google_advertisement_key,
+                       google_advertisement_key_sha256, finding_network,
+                       status, expires_at, claim_deadline,
                        completed_at, provisioning_request_id
                   FROM public.provisioning_session
                  WHERE id = %s
@@ -354,6 +374,9 @@ class ProvisioningService:
                 raise ProvisioningError(
                     "DEVICE_UNAVAILABLE", "The tag is already allocated", 409
                 )
+            bound = await self._ensure_google_key_material(
+                connection, session=bound
+            )
             await self._bind_existing_session_if_safe(
                 connection, device=device, session=bound
             )
@@ -371,7 +394,9 @@ class ProvisioningService:
         historical_query = await connection.execute(
             """
             SELECT id, user_id, device_id, serial_number, advertisement_key,
-                   advertisement_key_sha256, status, expires_at, claim_deadline,
+                   advertisement_key_sha256, google_advertisement_key,
+                   google_advertisement_key_sha256, finding_network,
+                   status, expires_at, claim_deadline,
                    completed_at, provisioning_request_id
               FROM public.provisioning_session
              WHERE device_id = %s
@@ -387,6 +412,9 @@ class ProvisioningService:
                 raise ProvisioningError(
                     "DEVICE_UNAVAILABLE", "The tag is already allocated", 409
                 )
+            historical = await self._ensure_google_key_material(
+                connection, session=historical
+            )
             await self._bind_existing_session_if_safe(
                 connection, device=device, session=historical
             )
@@ -405,7 +433,11 @@ class ProvisioningService:
                 409,
             )
 
-        if request.tag_advertisement_key_sha256_base64url is not None:
+        if (
+            request.tag_advertisement_key_sha256_base64url is not None
+            or request.tag_google_advertisement_key_sha256_base64url is not None
+            or request.tag_finding_network is not None
+        ):
             raise ProvisioningError(
                 "RECOVERY_REQUIRED",
                 "The tag contains an unrecognized key and must not be overwritten",
@@ -422,6 +454,12 @@ class ProvisioningService:
             self.settings.key_encryption_key,
             self._associated_data(session_id, user_id, device["id"]),
         )
+        google_bundle = generate_google_finder_key_bundle()
+        encrypted_google_identity = encrypt_google_identity_key(
+            google_bundle.identity_key,
+            self.settings.key_encryption_key,
+            self._google_associated_data(session_id, user_id, device["id"]),
+        )
 
         try:
             insert_query = await connection.execute(
@@ -431,15 +469,24 @@ class ProvisioningService:
                     provisioning_request_id,
                     protocol_version, private_key_ciphertext, private_key_nonce,
                     private_key_envelope_version, public_key, advertisement_key,
-                    advertisement_key_sha256, status, expires_at, claim_deadline
+                    advertisement_key_sha256,
+                    google_identity_key_ciphertext, google_identity_key_nonce,
+                    google_identity_key_envelope_version,
+                    google_advertisement_key,
+                    google_advertisement_key_sha256, finding_network,
+                    status, expires_at, claim_deadline
                 ) VALUES (
                     %s, %s, %s, %s, %s,
                     %s,
                     1, %s, %s, %s, %s, %s,
-                    %s, 'pending', %s, %s
+                    %s,
+                    %s, %s, %s, %s, %s, %s,
+                    'pending', %s, %s
                 )
                 RETURNING id, user_id, device_id, serial_number,
-                          advertisement_key, advertisement_key_sha256, status,
+                          advertisement_key, advertisement_key_sha256,
+                          google_advertisement_key,
+                          google_advertisement_key_sha256, finding_network, status,
                           expires_at, claim_deadline, completed_at,
                           provisioning_request_id
                 """,
@@ -456,6 +503,12 @@ class ProvisioningService:
                     bundle.public_key,
                     bundle.advertisement_key,
                     bundle.advertisement_key_sha256,
+                    encrypted_google_identity.ciphertext,
+                    encrypted_google_identity.nonce,
+                    encrypted_google_identity.version,
+                    google_bundle.advertisement_key,
+                    google_bundle.advertisement_key_sha256,
+                    request.finding_network,
                     expires_at,
                     claim_deadline,
                 ),
@@ -475,10 +528,11 @@ class ProvisioningService:
             UPDATE public.device
                SET provisioning_session_id = %s,
                    status = 'provisioning',
+                   finding_network = %s,
                    updated_at = %s
              WHERE id = %s AND provisioning_session_id IS NULL
             """,
-            (session_id, now, device["id"]),
+            (session_id, request.finding_network, now, device["id"]),
         )
         await connection.execute(
             """
@@ -502,7 +556,9 @@ class ProvisioningService:
         session_query = await connection.execute(
             """
             SELECT ps.id, ps.device_id, ps.serial_number, ps.status,
-                   ps.advertisement_key_sha256, ps.claim_deadline,
+                   ps.advertisement_key_sha256,
+                   ps.google_advertisement_key_sha256, ps.finding_network,
+                   ps.claim_deadline,
                    ps.completed_at, ps.provisioning_request_id,
                    d.provisioning_session_id
               FROM public.provisioning_session ps
@@ -521,19 +577,29 @@ class ProvisioningService:
         supplied_hash = b64url_decode_exact(
             request.tag_advertisement_key_sha256_base64url, 32
         )
+        supplied_google_hash = b64url_decode_exact(
+            request.tag_google_advertisement_key_sha256_base64url, 32
+        )
         supplied_token = b64url_decode_exact(
             request.claim_completion_token_base64url, 32
         )
         expected_hash = bytes(session["advertisement_key_sha256"])
+        expected_google_hash = bytes(session["google_advertisement_key_sha256"])
         expected_token = self._completion_token(
             session_id=session["id"],
             user_id=user_id,
             device_id=session["device_id"],
             advertisement_key_sha256=expected_hash,
+            google_advertisement_key_sha256=expected_google_hash,
+            finding_network=session["finding_network"],
         )
         if (
             request.serial_number != session["serial_number"]
             or not hmac.compare_digest(supplied_hash, expected_hash)
+            or not hmac.compare_digest(
+                supplied_google_hash, expected_google_hash
+            )
+            or request.finding_network != session["finding_network"]
             or not hmac.compare_digest(supplied_token, expected_token)
         ):
             raise ProvisioningError(
@@ -549,6 +615,7 @@ class ProvisioningService:
                 status="claimed",
                 claimed_at=session["completed_at"],
                 next_action="ready",
+                finding_network=session["finding_network"],
             )
         if session["status"] != "pending" or session["claim_deadline"] <= datetime.now(UTC):
             raise ProvisioningError(
@@ -591,10 +658,16 @@ class ProvisioningService:
             UPDATE public.device
                SET provisioning_session_id = %s,
                    status = 'claimed',
+                   finding_network = %s,
                    updated_at = %s
              WHERE id = %s
             """,
-            (session["id"], claimed_at, session["device_id"]),
+            (
+                session["id"],
+                session["finding_network"],
+                claimed_at,
+                session["device_id"],
+            ),
         )
         await connection.execute(
             """
@@ -625,6 +698,7 @@ class ProvisioningService:
             status="claimed",
             claimed_at=claimed_at,
             next_action="ready",
+            finding_network=session["finding_network"],
         )
 
     async def start_release(
@@ -641,6 +715,7 @@ class ProvisioningService:
             SELECT dr.id, dr.user_id, dr.device_id, dr.provisioning_session_id,
                    dr.serial_number, dr.reset_nonce, dr.status, dr.expires_at,
                    ps.advertisement_key_sha256,
+                   ps.google_advertisement_key_sha256, ps.finding_network,
                    dbc.key_ciphertext AS bootstrap_key_ciphertext,
                    dbc.key_nonce AS bootstrap_key_nonce,
                    dbc.envelope_version AS bootstrap_key_envelope_version
@@ -679,6 +754,7 @@ class ProvisioningService:
             SELECT d.id AS device_id, d.serial_number, d.provisioning_session_id,
                    o.user_id AS owner_user_id, ps.user_id AS session_user_id,
                    ps.status AS session_status, ps.advertisement_key_sha256,
+                   ps.google_advertisement_key_sha256, ps.finding_network,
                    dbc.key_ciphertext AS bootstrap_key_ciphertext,
                    dbc.key_nonce AS bootstrap_key_nonce,
                    dbc.envelope_version AS bootstrap_key_envelope_version
@@ -713,6 +789,7 @@ class ProvisioningService:
             SELECT dr.id, dr.user_id, dr.device_id, dr.provisioning_session_id,
                    dr.serial_number, dr.reset_nonce, dr.status, dr.expires_at,
                    ps.advertisement_key_sha256,
+                   ps.google_advertisement_key_sha256, ps.finding_network,
                    dbc.key_ciphertext AS bootstrap_key_ciphertext,
                    dbc.key_nonce AS bootstrap_key_nonce,
                    dbc.envelope_version AS bootstrap_key_envelope_version
@@ -773,6 +850,10 @@ class ProvisioningService:
             raise RuntimeError("Device-release insert returned no row")
         release = dict(release)
         release["advertisement_key_sha256"] = device["advertisement_key_sha256"]
+        release["google_advertisement_key_sha256"] = device[
+            "google_advertisement_key_sha256"
+        ]
+        release["finding_network"] = device["finding_network"]
         release["bootstrap_key_ciphertext"] = device["bootstrap_key_ciphertext"]
         release["bootstrap_key_nonce"] = device["bootstrap_key_nonce"]
         release["bootstrap_key_envelope_version"] = device[
@@ -908,6 +989,7 @@ class ProvisioningService:
             UPDATE public.device
                SET provisioning_session_id = NULL,
                    status = 'unprovisioned',
+                   finding_network = NULL,
                    updated_at = %s
              WHERE id = %s AND provisioning_session_id = %s
             """,
@@ -961,11 +1043,64 @@ class ProvisioningService:
                            WHEN %s = 'claimed' THEN 'claimed'
                            ELSE 'provisioning'
                        END,
+                       finding_network = %s,
                        updated_at = now()
                  WHERE id = %s AND provisioning_session_id IS NULL
                 """,
-                (session["id"], session["status"], device["id"]),
+                (
+                    session["id"],
+                    session["status"],
+                    session["finding_network"],
+                    device["id"],
+                ),
             )
+
+    async def _ensure_google_key_material(
+        self, connection: AsyncConnection, *, session: dict
+    ) -> dict:
+        if session.get("google_advertisement_key") is not None:
+            if session.get("google_advertisement_key_sha256") is None:
+                raise ProvisioningError(
+                    "RECOVERY_REQUIRED",
+                    "The Google key binding is incomplete and requires operator recovery",
+                    409,
+                )
+            return session
+
+        bundle = generate_google_finder_key_bundle()
+        encrypted = encrypt_google_identity_key(
+            bundle.identity_key,
+            self.settings.key_encryption_key,
+            self._google_associated_data(
+                session["id"], session["user_id"], session["device_id"]
+            ),
+        )
+        await connection.execute(
+            """
+            UPDATE public.provisioning_session
+               SET google_identity_key_ciphertext = %s,
+                   google_identity_key_nonce = %s,
+                   google_identity_key_envelope_version = %s,
+                   google_advertisement_key = %s,
+                   google_advertisement_key_sha256 = %s
+             WHERE id = %s
+               AND google_advertisement_key IS NULL
+            """,
+            (
+                encrypted.ciphertext,
+                encrypted.nonce,
+                encrypted.version,
+                bundle.advertisement_key,
+                bundle.advertisement_key_sha256,
+                session["id"],
+            ),
+        )
+        updated = dict(session)
+        updated["google_advertisement_key"] = bundle.advertisement_key
+        updated["google_advertisement_key_sha256"] = (
+            bundle.advertisement_key_sha256
+        )
+        return updated
 
     async def _resume_claim(
         self,
@@ -982,6 +1117,21 @@ class ProvisioningService:
                 "The previous key allocation requires operator recovery",
                 409,
             )
+        if request.finding_network != session["finding_network"]:
+            raise ProvisioningError(
+                "FINDING_NETWORK_MISMATCH",
+                "This allocation was created for a different finding network",
+                409,
+            )
+        if (
+            request.tag_finding_network is not None
+            and request.tag_finding_network != session["finding_network"]
+        ):
+            raise ProvisioningError(
+                "FINDING_NETWORK_MISMATCH",
+                "The tag is configured for a different finding network",
+                409,
+            )
 
         observed_hash = (
             None
@@ -991,12 +1141,30 @@ class ProvisioningService:
             )
         )
         expected_hash = bytes(session["advertisement_key_sha256"])
+        observed_google_hash = (
+            None
+            if request.tag_google_advertisement_key_sha256_base64url is None
+            else b64url_decode_exact(
+                request.tag_google_advertisement_key_sha256_base64url, 32
+            )
+        )
+        expected_google_hash = bytes(
+            session["google_advertisement_key_sha256"]
+        )
         if observed_hash is not None and not hmac.compare_digest(
             observed_hash, expected_hash
         ):
             raise ProvisioningError(
                 "TAG_KEY_MISMATCH",
                 "The tag contains a different key; automatic replacement is forbidden",
+                409,
+            )
+        if observed_google_hash is not None and not hmac.compare_digest(
+            observed_google_hash, expected_google_hash
+        ):
+            raise ProvisioningError(
+                "TAG_KEY_MISMATCH",
+                "The tag contains a different Google key; automatic replacement is forbidden",
                 409,
             )
 
@@ -1007,9 +1175,13 @@ class ProvisioningService:
                     "The backend is claimed but the tag reports no stored key",
                     409,
                 )
-            return self._start_response(
-                session, user_id, "verify_existing_key", authorization_proof
+            action = (
+                "verify_existing_key"
+                if observed_google_hash is not None
+                and request.tag_finding_network is not None
+                else "write_key"
             )
+            return self._start_response(session, user_id, action, authorization_proof)
 
         now = datetime.now(UTC)
         if session["claim_deadline"] <= now:
@@ -1019,7 +1191,11 @@ class ProvisioningService:
                 409,
             )
 
-        if observed_hash is not None:
+        if (
+            observed_hash is not None
+            and observed_google_hash is not None
+            and request.tag_finding_network is not None
+        ):
             return self._start_response(
                 session, user_id, "verify_existing_key", authorization_proof
             )
@@ -1053,6 +1229,8 @@ class ProvisioningService:
         user_id: UUID,
         device_id: UUID,
         advertisement_key_sha256: bytes,
+        google_advertisement_key_sha256: bytes,
+        finding_network: str,
     ) -> bytes:
         return claim_completion_token(
             self.settings.claim_token_key,
@@ -1060,6 +1238,8 @@ class ProvisioningService:
             user_id=user_id.bytes,
             device_id=device_id.bytes,
             advertisement_key_sha256=advertisement_key_sha256,
+            google_advertisement_key_sha256=google_advertisement_key_sha256,
+            finding_network=finding_network,
         )
 
     async def _require_paid_provisioning_request(
@@ -1147,6 +1327,9 @@ class ProvisioningService:
         authorization_proof: bytes,
     ) -> DeviceClaimStartResponse:
         advertisement_hash = bytes(row["advertisement_key_sha256"])
+        google_advertisement_hash = bytes(
+            row["google_advertisement_key_sha256"]
+        )
         return DeviceClaimStartResponse(
             session_id=row["id"],
             serial_number=row["serial_number"],
@@ -1154,6 +1337,13 @@ class ProvisioningService:
             tag_action=tag_action,
             advertisement_key_base64url=b64url_encode(bytes(row["advertisement_key"])),
             advertisement_key_sha256_base64url=b64url_encode(advertisement_hash),
+            google_advertisement_key_base64url=b64url_encode(
+                bytes(row["google_advertisement_key"])
+            ),
+            google_advertisement_key_sha256_base64url=b64url_encode(
+                google_advertisement_hash
+            ),
+            finding_network=row["finding_network"],
             tag_authorization_proof_base64url=b64url_encode(authorization_proof),
             claim_completion_token_base64url=b64url_encode(
                 self._completion_token(
@@ -1161,6 +1351,8 @@ class ProvisioningService:
                     user_id=user_id,
                     device_id=row["device_id"],
                     advertisement_key_sha256=advertisement_hash,
+                    google_advertisement_key_sha256=google_advertisement_hash,
+                    finding_network=row["finding_network"],
                 )
             ),
             tag_control_key_base64url=(
@@ -1184,15 +1376,23 @@ class ProvisioningService:
         observed_hash = b64url_decode_exact(
             request.tag_advertisement_key_sha256_base64url, 32
         )
+        observed_google_hash = b64url_decode_exact(
+            request.tag_google_advertisement_key_sha256_base64url, 32
+        )
         if (
             request.serial_number != row["serial_number"]
             or not hmac.compare_digest(
                 observed_hash, bytes(row["advertisement_key_sha256"])
             )
+            or not hmac.compare_digest(
+                observed_google_hash,
+                bytes(row["google_advertisement_key_sha256"]),
+            )
+            or request.finding_network != row["finding_network"]
         ):
             raise ProvisioningError(
                 "TAG_KEY_MISMATCH",
-                "The connected tag does not match the owned key binding",
+                "The connected tag does not match the owned dual-network binding",
                 409,
             )
 

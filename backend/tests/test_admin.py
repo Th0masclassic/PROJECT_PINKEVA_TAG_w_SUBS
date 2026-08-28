@@ -203,3 +203,5 @@ def test_admin_mutation_models_reject_unsafe_input() -> None:
     assert AdminDeviceUpdate(status="claimed").status == "claimed"
     with pytest.raises(ValidationError):
         AdminDeviceUpdate(status="active")
+    with pytest.raises(ValidationError):
+        AdminDeviceUpdate(status="suspended")

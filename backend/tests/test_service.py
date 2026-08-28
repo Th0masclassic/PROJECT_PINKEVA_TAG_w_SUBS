@@ -116,6 +116,9 @@ async def test_start_claim_generates_once_binds_immediately_and_returns_no_priva
         "serial_number": device["serial_number"],
         "advertisement_key": os.urandom(28),
         "advertisement_key_sha256": os.urandom(32),
+        "google_advertisement_key": os.urandom(20),
+        "google_advertisement_key_sha256": os.urandom(32),
+        "finding_network": "apple",
         "status": "pending",
         "expires_at": datetime.now(UTC) + timedelta(minutes=10),
         "claim_deadline": datetime.now(UTC) + timedelta(days=1),
@@ -153,7 +156,13 @@ async def test_start_claim_generates_once_binds_immediately_and_returns_no_priva
     assert len(insert_parameters[9]) == 57
     assert len(insert_parameters[10]) == 28
     assert len(insert_parameters[11]) == 32
+    assert len(insert_parameters[12]) == 48  # 32-byte EIK + GCM tag
+    assert len(insert_parameters[13]) == 12
+    assert len(insert_parameters[15]) == 20
+    assert len(insert_parameters[16]) == 32
+    assert insert_parameters[17] == "apple"
     assert response.tag_action == "write_key"
+    assert len(response.google_advertisement_key_base64url) == 27
     assert len(response.claim_completion_token_base64url) == 43
     assert len(response.tag_control_key_base64url) == 43
     assert response.tag_authorization_proof_base64url == b64url_encode(
@@ -393,6 +402,8 @@ async def test_bound_session_is_resumed_without_generating_a_replacement(
     _, device = device_row(settings, session_id=session_id)
     stored_key = os.urandom(28)
     stored_hash = os.urandom(32)
+    google_key = os.urandom(20)
+    google_hash = os.urandom(32)
     bound = {
         "id": session_id,
         "user_id": user_id,
@@ -400,6 +411,9 @@ async def test_bound_session_is_resumed_without_generating_a_replacement(
         "serial_number": device["serial_number"],
         "advertisement_key": stored_key,
         "advertisement_key_sha256": stored_hash,
+        "google_advertisement_key": google_key,
+        "google_advertisement_key_sha256": google_hash,
+        "finding_network": "apple",
         "status": "pending",
         "expires_at": datetime.now(UTC) + timedelta(minutes=5),
         "claim_deadline": datetime.now(UTC) + timedelta(hours=1),
@@ -427,6 +441,7 @@ async def test_bound_session_is_resumed_without_generating_a_replacement(
 
     assert response.session_id == session_id
     assert response.advertisement_key_base64url == b64url_encode(stored_key)
+    assert response.google_advertisement_key_base64url == b64url_encode(google_key)
     assert response.tag_action == "write_key"
     assert not any("INSERT INTO" in query for query, _ in connection.executions)
 
@@ -444,6 +459,9 @@ async def test_tag_with_different_stored_key_fails_closed(settings: Settings) ->
         "serial_number": device["serial_number"],
         "advertisement_key": os.urandom(28),
         "advertisement_key_sha256": os.urandom(32),
+        "google_advertisement_key": os.urandom(20),
+        "google_advertisement_key_sha256": os.urandom(32),
+        "finding_network": "apple",
         "status": "pending",
         "expires_at": datetime.now(UTC) + timedelta(minutes=5),
         "claim_deadline": datetime.now(UTC) + timedelta(hours=1),
@@ -520,12 +538,15 @@ async def test_claim_retry_returns_the_original_result(settings: Settings) -> No
     user_id = uuid.uuid4()
     completed_at = datetime.now(UTC) - timedelta(seconds=2)
     advertisement_hash = os.urandom(32)
+    google_advertisement_hash = os.urandom(32)
     token = claim_completion_token(
         settings.claim_token_key,
         session_id=session_id.bytes,
         user_id=user_id.bytes,
         device_id=device_id.bytes,
         advertisement_key_sha256=advertisement_hash,
+        google_advertisement_key_sha256=google_advertisement_hash,
+        finding_network="google",
     )
     connection = FakeConnection(
         [
@@ -535,6 +556,8 @@ async def test_claim_retry_returns_the_original_result(settings: Settings) -> No
                 "serial_number": "PKV-AABBCCDDEEFF",
                 "status": "claimed",
                 "advertisement_key_sha256": advertisement_hash,
+                "google_advertisement_key_sha256": google_advertisement_hash,
+                "finding_network": "google",
                 "claim_deadline": datetime.now(UTC) + timedelta(hours=1),
                 "completed_at": completed_at,
                 "provisioning_session_id": session_id,
@@ -549,11 +572,16 @@ async def test_claim_retry_returns_the_original_result(settings: Settings) -> No
             session_id=session_id,
             serial_number="PKV-AABBCCDDEEFF",
             tag_advertisement_key_sha256_base64url=b64url_encode(advertisement_hash),
+            tag_google_advertisement_key_sha256_base64url=b64url_encode(
+                google_advertisement_hash
+            ),
+            finding_network="google",
             claim_completion_token_base64url=b64url_encode(token),
         ),
     )
     assert response.device_id == device_id
     assert response.claimed_at == completed_at
+    assert response.finding_network == "google"
     assert len(connection.executions) == 1
 
 
@@ -567,11 +595,14 @@ async def test_start_release_returns_challenge_bound_authorization(
         settings, user_id=user_id, session_id=session_id
     )
     advertisement_hash = os.urandom(32)
+    google_advertisement_hash = os.urandom(32)
     device.update(
         owner_user_id=user_id,
         session_user_id=user_id,
         session_status="claimed",
         advertisement_key_sha256=advertisement_hash,
+        google_advertisement_key_sha256=google_advertisement_hash,
+        finding_network="google",
     )
     release_id = uuid.uuid4()
     release = {
@@ -598,6 +629,10 @@ async def test_start_release_returns_challenge_bound_authorization(
             tag_advertisement_key_sha256_base64url=b64url_encode(
                 advertisement_hash
             ),
+            tag_google_advertisement_key_sha256_base64url=b64url_encode(
+                google_advertisement_hash
+            ),
+            finding_network="google",
         ),
     )
 
@@ -658,6 +693,8 @@ async def test_completed_release_ends_one_owner_and_cancels_subscriptions(
             release_id=release_id,
             serial_number="PKV-AABBCCDDEEFF",
             tag_key_state="empty",
+            tag_google_key_state="empty",
+            tag_finding_network_state="empty",
             release_completion_token_base64url=b64url_encode(token),
         ),
     )

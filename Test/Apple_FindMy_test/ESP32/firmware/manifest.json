@@ -1,11 +1,13 @@
 {
   "target": "esp32",
   "idf_version": "5.4.4",
-  "firmware_version": "0.3.1",
-  "protocol_version": "1.6",
+  "firmware_version": "0.4.0",
+  "protocol_version": "1.7",
   "profile": "development-no-bootstrap-no-bond",
   "requires_factory_bootstrap": false,
-  "warning": "Development image only. Finder advertising starts from the provisioned public key and subscription access is enforced by cloud APIs; this build bypasses factory bootstrap authentication and OS pairing/bonding, so key confidentiality is not production-grade.",
+  "warning": "Development image only. It provisions Apple and Google identities together but advertises exactly one selected network. Google uses a static counter-zero EID pending certified rotating-EID hardware. This build bypasses factory bootstrap authentication and OS pairing/bonding, so key confidentiality is not production-grade.",
+  "finding_networks": ["apple", "google"],
+  "active_network_policy": "write-once-until-authenticated-reset",
   "setup_ble_identity_version": 3,
   "service_uuid": "a6f0f000-3e4d-4b1a-9c2e-72d24c8f0a01",
   "ota": {
@@ -18,7 +20,7 @@
   "application": {
     "file": "Pinkeva-ESP32.bin",
     "offset": "0x20000",
-    "sha256": "2e8c268c812bc2515e3d255f8f38d8895499bc3821872f9f440cbdf1e0e7c718"
+    "sha256": "057ac778312524f5f110a4bdf43b069d76ec7f0b6936acf33a2271ded4ddbec4"
   },
   "bootloader": {
     "file": "bootloader-esp32.bin",

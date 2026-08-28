@@ -98,7 +98,7 @@ class AdminDeviceRegistration(StrictModel):
 class AdminDeviceUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     firmware_version: str | None = Field(default=None, max_length=64)
-    status: Literal["unprovisioned", "claimed", "suspended"] | None = None
+    status: Literal["unprovisioned", "claimed"] | None = None
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
     place: str | None = Field(default=None, max_length=160)
@@ -292,10 +292,10 @@ class AdminService:
                   ) AS claimed_devices_without_active_owner,
                   (
                     SELECT count(*)
-                      FROM public.ownership ownership
+                     FROM public.ownership ownership
                       JOIN public.device device ON device.id = ownership.device_id
                      WHERE ownership.ended_at IS NULL
-                       AND device.status NOT IN ('claimed', 'suspended')
+                       AND device.status <> 'claimed'
                   ) AS active_ownership_device_state_mismatches,
                   (
                     SELECT count(*)

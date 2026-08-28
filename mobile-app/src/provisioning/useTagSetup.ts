@@ -13,7 +13,6 @@ import { safeTagSetupErrorCode, type TagSetupErrorCode } from './setup';
 
 export type TagSetupPhase =
   | 'idle'
-  | 'entitlement_ready'
   | 'starting'
   | 'scanning'
   | 'connecting'
@@ -26,11 +25,8 @@ export type TagSetupPhase =
   | 'success'
   | 'error';
 
-export type TagSetupOperation = 'claim' | 'entitlement';
-
 export type TagSetupState = {
   phase: TagSetupPhase;
-  operation: TagSetupOperation;
   candidates: DiscoveredTag[];
   selected: DiscoveredTag | null;
   claim: DeviceClaim | null;
@@ -42,7 +38,6 @@ export type TagSetupState = {
 
 const IDLE_STATE: TagSetupState = {
   phase: 'idle',
-  operation: 'claim',
   candidates: [],
   selected: null,
   claim: null,
@@ -69,7 +64,6 @@ export function useTagSetup(input: {
   getAccessToken: () => Promise<string | null>;
   apiConfig: ProvisioningApiConfig | null;
   onClaimed: (claim: DeviceClaim) => Promise<void>;
-  onEntitlementInstalled?: (deviceId: string) => Promise<void>;
   onProvisioningCheckout: (
     requestId: string,
     planCode: string,
@@ -81,12 +75,11 @@ export function useTagSetup(input: {
   const sequence = useRef(0);
   const idempotencyKeys = useRef(new Map<string, string>());
   const request = useRef<{
-    operation: TagSetupOperation;
     deviceId?: string;
     serialNumber?: string;
     provisioningRequestId?: string;
     provisioningRequest?: ProvisioningRequest;
-  }>({ operation: 'claim' });
+  }>({});
   const latestInput = useRef(input);
   latestInput.current = input;
 
@@ -101,7 +94,6 @@ export function useTagSetup(input: {
 
   const beginScan = useCallback(
     async (
-      operation: TagSetupOperation = 'claim',
       target?: {
         deviceId: string;
         serialNumber: string;
@@ -110,7 +102,6 @@ export function useTagSetup(input: {
       },
     ) => {
       request.current = {
-        operation,
         deviceId: target?.deviceId,
         serialNumber: target?.serialNumber,
         provisioningRequestId: target?.provisioningRequestId,
@@ -144,7 +135,6 @@ export function useTagSetup(input: {
       setState({
         ...IDLE_STATE,
         phase: 'starting',
-        operation,
         targetDeviceId: target?.deviceId,
         targetSerialNumber: target?.serialNumber,
         provisioningRequest: target?.provisioningRequest ?? null,
@@ -195,30 +185,9 @@ export function useTagSetup(input: {
     [releaseRadio],
   );
 
-  const prepareEntitlement = useCallback(
-    async (deviceId: string, serialNumber: string) => {
-      const currentSequence = ++sequence.current;
-      request.current = {
-        operation: 'entitlement',
-        deviceId,
-        serialNumber,
-      };
-      await releaseRadio();
-      if (currentSequence !== sequence.current) return;
-      setState({
-        ...IDLE_STATE,
-        phase: 'entitlement_ready',
-        operation: 'entitlement',
-        targetDeviceId: deviceId,
-        targetSerialNumber: serialNumber,
-      });
-    },
-    [releaseRadio],
-  );
-
   const close = useCallback(() => {
     sequence.current += 1;
-    request.current = { operation: 'claim' };
+    request.current = {};
     setState(IDLE_STATE);
     void releaseRadio();
   }, [releaseRadio]);
@@ -239,7 +208,7 @@ export function useTagSetup(input: {
           if (currentSequence !== sequence.current) return;
           setState((current) => ({ ...current, provisioningRequest: paymentRequest }));
           if (paymentRequest.status === 'paid' || paymentRequest.status === 'claiming') {
-            await beginScan('claim', {
+            await beginScan({
               deviceId: paymentRequest.device_id,
               serialNumber: paymentRequest.serial_number || serialNumber,
               provisioningRequestId: paymentRequest.request_id,
@@ -317,12 +286,7 @@ export function useTagSetup(input: {
     if (currentStop) await currentStop().catch(() => undefined);
     if (currentSequence !== sequence.current) return;
 
-    const {
-      getAccessToken,
-      apiConfig,
-      onClaimed,
-      onEntitlementInstalled,
-    } = latestInput.current;
+    const { getAccessToken, apiConfig, onClaimed } = latestInput.current;
     const currentRequest = request.current;
     const liveAccessToken = await getAccessToken();
     if (currentSequence !== sequence.current) return;
@@ -353,9 +317,7 @@ export function useTagSetup(input: {
     });
     const idempotencyKey =
       idempotencyKeys.current.get(candidate.serialNumber) ?? `provision:${randomUUID()}`;
-    if (currentRequest.operation === 'claim') {
-      idempotencyKeys.current.set(candidate.serialNumber, idempotencyKey);
-    }
+    idempotencyKeys.current.set(candidate.serialNumber, idempotencyKey);
     setState((current) => ({
       ...current,
       phase: 'connecting',
@@ -365,88 +327,69 @@ export function useTagSetup(input: {
     }));
 
     try {
-      if (currentRequest.operation === 'claim') {
-        if (!currentRequest.provisioningRequestId) {
-          const identity = await currentRadio.inspectTag(backend, {
-            peripheralId: candidate.peripheralId,
-            onProgress: (phase) => {
-              if (currentSequence !== sequence.current) return;
-              setState((current) => ({ ...current, phase }));
-            },
-          });
-          if (identity.serialNumber !== candidate.serialNumber) {
-            throw new Error('Tag identity changed during inspection');
-          }
-          const provisioningRequest = await backend.startProvisioningRequest({
-            serialNumber: identity.serialNumber,
-            idempotencyKey: `request:${idempotencyKey}`,
-            tagChallengeBase64url: identity.tagChallengeBase64url,
-            tagAdvertisementKeySha256Base64url:
-              identity.tagAdvertisementKeySha256Base64url,
-          });
-          if (currentSequence !== sequence.current) return;
-          if (
-            !provisioningRequest.device_id ||
-            provisioningRequest.serial_number !== identity.serialNumber ||
-            provisioningRequest.available_plans.length === 0
-          ) {
-            throw new Error('Invalid provisioning request binding');
-          }
-          request.current = {
-            ...request.current,
-            provisioningRequestId: provisioningRequest.request_id,
-            provisioningRequest,
-            serialNumber: provisioningRequest.serial_number,
-            deviceId: provisioningRequest.device_id,
-          };
-          await releaseRadio();
-          setState((current) => ({
-            ...current,
-            phase: 'payment',
-            selected: candidate,
-            provisioningRequest,
-            claim: null,
-            error: null,
-          }));
-          return;
-        }
-        const claim = await currentRadio.provision(backend, {
+      if (!currentRequest.provisioningRequestId) {
+        const identity = await currentRadio.inspectTag(backend, {
           peripheralId: candidate.peripheralId,
-          idempotencyKey,
-          provisioningRequestId: currentRequest.provisioningRequestId,
           onProgress: (phase) => {
             if (currentSequence !== sequence.current) return;
             setState((current) => ({ ...current, phase }));
           },
         });
+        if (identity.serialNumber !== candidate.serialNumber) {
+          throw new Error('Tag identity changed during inspection');
+        }
+        const provisioningRequest = await backend.startProvisioningRequest({
+          serialNumber: identity.serialNumber,
+          idempotencyKey: `request:${idempotencyKey}`,
+          tagChallengeBase64url: identity.tagChallengeBase64url,
+          tagAdvertisementKeySha256Base64url:
+            identity.tagAdvertisementKeySha256Base64url,
+          tagGoogleAdvertisementKeySha256Base64url:
+            identity.tagGoogleAdvertisementKeySha256Base64url,
+          tagFindingNetwork: identity.findingNetwork,
+        });
         if (currentSequence !== sequence.current) return;
-        idempotencyKeys.current.delete(candidate.serialNumber);
-        await onClaimed(claim).catch(() => undefined);
-        if (currentSequence !== sequence.current) return;
+        if (
+          !provisioningRequest.device_id ||
+          provisioningRequest.serial_number !== identity.serialNumber ||
+          provisioningRequest.available_plans.length === 0
+        ) {
+          throw new Error('Invalid provisioning request binding');
+        }
+        request.current = {
+          ...request.current,
+          provisioningRequestId: provisioningRequest.request_id,
+          provisioningRequest,
+          serialNumber: provisioningRequest.serial_number,
+          deviceId: provisioningRequest.device_id,
+        };
         await releaseRadio();
-        setState((current) => ({ ...current, phase: 'success', claim, error: null }));
+        setState((current) => ({
+          ...current,
+          phase: 'payment',
+          selected: candidate,
+          provisioningRequest,
+          claim: null,
+          error: null,
+        }));
         return;
       }
-
-      if (!currentRequest.deviceId || !currentRequest.serialNumber) {
-        throw new Error('Missing entitlement target');
-      }
-      await currentRadio.installEntitlement(backend, {
+      const claim = await currentRadio.provision(backend, {
         peripheralId: candidate.peripheralId,
-        deviceId: currentRequest.deviceId,
-        serialNumber: currentRequest.serialNumber,
+        idempotencyKey,
+        provisioningRequestId: currentRequest.provisioningRequestId,
         onProgress: (phase) => {
           if (currentSequence !== sequence.current) return;
           setState((current) => ({ ...current, phase }));
         },
       });
       if (currentSequence !== sequence.current) return;
-      if (onEntitlementInstalled) {
-        await onEntitlementInstalled(currentRequest.deviceId).catch(() => undefined);
-      }
+      idempotencyKeys.current.delete(candidate.serialNumber);
+      await onClaimed(claim).catch(() => undefined);
       if (currentSequence !== sequence.current) return;
       await releaseRadio();
-      setState((current) => ({ ...current, phase: 'success', claim: null, error: null }));
+      setState((current) => ({ ...current, phase: 'success', claim, error: null }));
+      return;
     } catch (error) {
       if (currentSequence !== sequence.current) return;
       logDevelopmentSetupFailure('provision', error);
@@ -471,51 +414,23 @@ export function useTagSetup(input: {
     retry: () => {
       const currentRequest = request.current;
       if (
-        currentRequest.operation === 'entitlement' &&
-        currentRequest.deviceId &&
-        currentRequest.serialNumber
-      ) {
-        // The maintenance advertising window is deliberately physical and
-        // bounded. Ask the owner to enable it again rather than rescanning a
-        // tag that may no longer be accepting entitlement delivery.
-        void prepareEntitlement(
-          currentRequest.deviceId,
-          currentRequest.serialNumber,
-        );
-      } else if (
         currentRequest.provisioningRequestId &&
         currentRequest.provisioningRequest &&
         currentRequest.deviceId &&
         currentRequest.serialNumber
       ) {
-        void beginScan('claim', {
+        void beginScan({
           deviceId: currentRequest.deviceId,
           serialNumber: currentRequest.serialNumber,
           provisioningRequestId: currentRequest.provisioningRequestId,
           provisioningRequest: currentRequest.provisioningRequest,
         });
       } else {
-        void beginScan('claim');
+        void beginScan();
       }
     },
     select: (candidate: DiscoveredTag) => void select(candidate),
     chooseProvisioningPlan,
-    beginEntitlementScan: () => {
-      const currentRequest = request.current;
-      if (
-        currentRequest.operation !== 'entitlement' ||
-        !currentRequest.deviceId ||
-        !currentRequest.serialNumber
-      ) {
-        return;
-      }
-      void beginScan('entitlement', {
-        deviceId: currentRequest.deviceId,
-        serialNumber: currentRequest.serialNumber,
-      });
-    },
     close,
-    openForEntitlement: (deviceId: string, serialNumber: string) =>
-      void prepareEntitlement(deviceId, serialNumber),
   };
 }

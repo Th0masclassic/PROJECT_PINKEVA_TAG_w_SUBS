@@ -54,7 +54,8 @@ credential.
 
 ## Signed BLE firmware updates
 
-Firmware `0.3.1` implements protocol `1.6` and advertises capability `0x0080`.
+Firmware `0.4.0` implements protocol `1.7`. Capability `0x0080` identifies
+signed OTA support and `0x0100` identifies dual-network provisioning.
 During the physical two-minute maintenance window, an authorized phone can
 install a newer classic-ESP32 application into the inactive OTA slot. The
 tracker accepts a transfer only when its fixed 115-byte manifest:
@@ -80,20 +81,25 @@ versions can use BLE. The migration keeps the existing NVS range
 `0x9000`-`0xEFFF` unchanged, so tracker identity and provisioning data are
 preserved unless `--erase-nvs` is explicitly supplied.
 
-## Public-key advertising and legacy entitlements
+## Dual-network advertising
 
-A valid committed 28-byte advertisement public key is the complete on-device
-requirement for finder advertising. The firmware configures the finder identity
-immediately after the key is read back from NVS and restores it after every
-reboot. Subscription expiry never stops the BLE payload and a renewal never
-requires a phone-to-tag update.
+Provisioning stores a 28-byte Apple advertisement key, a 20-byte Google Find
+Hub development EID, and a write-once network selector. Both identities must be
+present, but the firmware emits only the selected network's frame. Android
+setup selects Google and iOS setup selects Apple. The selected frame is restored
+after every reboot and is never controlled by billing state.
 
-The protocol-v1.6 entitlement characteristic, signature verifier, and NVS blob
-remain temporarily so older mobile/firmware deployments can be migrated
-without changing the GATT table. A valid legacy packet may still be stored, but
-its timer is deliberately inert and its dates do not select the advertising
-mode. UTC synchronization is retained for authorized maintenance operations,
-not subscription enforcement.
+The former development entitlement characteristic, verifier, timer, and API
+transport have been removed. NVS initialization erases only the exact obsolete
+`entitlement` blob if one exists; this one-time cleanup does not affect the
+bootstrap credential or either finder identity. UTC synchronization remains for
+authorized maintenance and future rotating-identity work, not subscription
+enforcement.
+
+The current Google frame uses the published 20-byte Find Hub EID format with a
+development counter-zero identity. Commercial Find Hub operation still needs
+Google's partner onboarding, Fast Pair/Find Hub Network requirements, rotating
+EIDs, unwanted-tracking protections, ring behavior, and certification.
 
 Normal finder frames use a two-second interval and are non-connectable. Setup
 and maintenance advertisements are connectable only for their bounded setup

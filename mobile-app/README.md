@@ -17,21 +17,20 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
   backend release discovery, transfer progress, reboot verification, and retry.
 - A visible subscription state on every tracker plus a dedicated per-tag plan,
   renewal, cancellation-at-period-end, checkout, and management screen.
-- Native renewal notifications and a durable per-tag update state that remains
-  pending until the app reads the exact signed entitlement back from the tag.
+- Native renewal notifications and a durable per-tag billing inbox. Subscription
+  changes are cloud-only and never require a BLE synchronization with the tag.
 - Account settings that show the authenticated email and allow the owner to
   update their display name without changing provider-managed account details.
 
 ## Connection model
 
-Pinkeva tags are not shown as permanently connected. During normal use a tag is shown as `Nearby`, `Away`, or with its last-reported time. A temporary `Connecting` / `Connected` state appears only while adding a tag, changing its advertising interval, installing tag software, or installing a renewed entitlement.
+Pinkeva tags are not shown as permanently connected. During normal use a tag is shown as `Nearby`, `Away`, or with its last-reported time. A temporary `Connecting` / `Connected` state appears only while adding a tag, changing its advertising interval, or installing tag software.
 
-BLE connections cannot be resumed after they have disconnected. For a renewal,
-hold the configured tag button continuously for five seconds. Firmware then
-opens a connectable maintenance advertisement for two minutes, and the app
-scans and creates a fresh connection. Normal finder advertising is
-non-connectable and resumes after the exact signed packet is persisted and
-verified.
+BLE connections cannot be resumed after they have disconnected. Maintenance
+operations require holding the configured tag button continuously for five
+seconds; firmware then opens a connectable advertisement for two minutes. A
+subscription renewal needs no maintenance connection because the tag advertises
+from its stored finder identity independently of billing.
 
 ## Install tracker firmware
 
@@ -163,12 +162,11 @@ registers an installation-scoped Expo push token with the backend. Web and
 Expo Go are not renewal-notification targets.
 
 The backend schedules one durable notification per subscription period at one
-week before renewal, one day before renewal, and expiry. A separate notice is
-created when a renewed entitlement remains absent from the tag for ten minutes.
-Notification permission can be denied without affecting billing or BLE tag
-updates; the backend inbox retains the event even when no push destination is
-available. **Settings → Notifications** shows that durable inbox, and tapping a
-renewal item refreshes and opens the affected tag’s subscription page.
+week before renewal, one day before renewal, and expiry. Notification permission
+can be denied without affecting billing or finder advertising; the backend inbox
+retains the event even when no push destination is available. **Settings →
+Notifications** shows that durable inbox, and tapping a renewal item refreshes
+and opens the affected tag’s subscription page.
 
 ## Configure Google Maps
 

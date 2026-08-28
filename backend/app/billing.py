@@ -596,12 +596,6 @@ class BillingService:
                 """
                 SELECT s.status, s.plan_code, s.starts_at,
                        s.current_period_end, s.cancel_at_period_end,
-                       sync.status AS entitlement_sync_status,
-                       sync.entitlement_expires_at
-                         AS tag_entitlement_expires_at,
-                       COALESCE(
-                         sync.installed_at, sync.issued_at, sync.created_at
-                       ) AS tag_entitlement_updated_at,
                        p.name AS plan_name,
                        COALESCE(history.duration_months, p.duration_months)
                          AS duration_months,
@@ -623,20 +617,6 @@ class BillingService:
                   LEFT JOIN public.plan_price_history history
                     ON history.plan_code = s.plan_code
                    AND history.provider_price_id = s.provider_price_id
-                  LEFT JOIN LATERAL (
-                    SELECT entitlement.status,
-                           entitlement.entitlement_expires_at,
-                           entitlement.installed_at,
-                           entitlement.issued_at,
-                           entitlement.created_at
-                      FROM public.device_entitlement_sync entitlement
-                     WHERE entitlement.subscription_id = s.id
-                       AND entitlement.device_id = s.device_id
-                       AND entitlement.entitlement_expires_at =
-                           s.current_period_end
-                     ORDER BY entitlement.created_at DESC
-                     LIMIT 1
-                  ) sync ON true
                  WHERE s.device_id = %s
                    AND s.user_id = %s
                    AND s.status NOT IN ('cancelled', 'ended')
@@ -709,12 +689,6 @@ class BillingService:
             cancel_at_period_end=bool(
                 subscription["cancel_at_period_end"]
             ),
-            # Kept as nullable response fields for older app builds. Current
-            # firmware advertises from its public key and does not need a paid
-            # period copied to the tag.
-            entitlement_sync_status=None,
-            tag_entitlement_expires_at=None,
-            tag_entitlement_updated_at=None,
             available_plans=available_plans,
         )
 

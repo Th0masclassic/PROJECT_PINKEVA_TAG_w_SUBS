@@ -5,6 +5,9 @@ export type DeviceClaimStart = {
   tag_action: "write_key" | "verify_existing_key";
   advertisement_key_base64url: string;
   advertisement_key_sha256_base64url: string;
+  google_advertisement_key_base64url: string;
+  google_advertisement_key_sha256_base64url: string;
+  finding_network: "apple" | "google";
   tag_authorization_proof_base64url: string;
   claim_completion_token_base64url: string;
   tag_control_key_base64url: string | null;
@@ -18,6 +21,7 @@ export type DeviceClaim = {
   status: "claimed";
   claimed_at: string;
   next_action: "ready";
+  finding_network: "apple" | "google";
 };
 
 export type DeviceReleaseStart = {
@@ -74,6 +78,9 @@ function isDeviceClaimStart(value: unknown): value is DeviceClaimStart {
       value.tag_action === "verify_existing_key") &&
     hasString(value, "advertisement_key_base64url") &&
     hasString(value, "advertisement_key_sha256_base64url") &&
+    hasString(value, "google_advertisement_key_base64url") &&
+    hasString(value, "google_advertisement_key_sha256_base64url") &&
+    (value.finding_network === "apple" || value.finding_network === "google") &&
     hasString(value, "tag_authorization_proof_base64url") &&
     hasString(value, "claim_completion_token_base64url") &&
     hasNullableString(value, "tag_control_key_base64url") &&
@@ -89,7 +96,8 @@ function isDeviceClaim(value: unknown): value is DeviceClaim {
     hasString(value, "serial_number") &&
     value.status === "claimed" &&
     hasString(value, "claimed_at") &&
-    value.next_action === "ready"
+    value.next_action === "ready" &&
+    (value.finding_network === "apple" || value.finding_network === "google")
   );
 }
 
@@ -146,10 +154,14 @@ export class PinqevaBackendClient {
   ) {}
 
   async startDeviceClaim(input: {
+    provisioningRequestId: string;
     serialNumber: string;
     idempotencyKey: string;
     tagChallengeBase64url: string;
     tagAdvertisementKeySha256Base64url: string | null;
+    tagGoogleAdvertisementKeySha256Base64url: string | null;
+    findingNetwork: "apple" | "google";
+    tagFindingNetwork: "apple" | "google" | null;
   }): Promise<DeviceClaimStart> {
     return this.request<DeviceClaimStart>(
       "/v1/devices/claim",
@@ -158,9 +170,14 @@ export class PinqevaBackendClient {
         headers: { "Idempotency-Key": input.idempotencyKey },
         body: JSON.stringify({
           serial_number: input.serialNumber,
+          provisioning_request_id: input.provisioningRequestId,
           tag_challenge_base64url: input.tagChallengeBase64url,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          finding_network: input.findingNetwork,
+          tag_finding_network: input.tagFindingNetwork,
         }),
       },
       isDeviceClaimStart,
@@ -170,6 +187,7 @@ export class PinqevaBackendClient {
   async completeDeviceClaim(input: {
     claim: DeviceClaimStart;
     tagAdvertisementKeySha256Base64url: string;
+    tagGoogleAdvertisementKeySha256Base64url: string;
   }): Promise<DeviceClaim> {
     return this.request<DeviceClaim>(
       "/v1/devices/claim/complete",
@@ -180,6 +198,9 @@ export class PinqevaBackendClient {
           serial_number: input.claim.serial_number,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          finding_network: input.claim.finding_network,
           claim_completion_token_base64url:
             input.claim.claim_completion_token_base64url,
         }),
@@ -192,6 +213,8 @@ export class PinqevaBackendClient {
     deviceId: string;
     serialNumber: string;
     tagAdvertisementKeySha256Base64url: string;
+    tagGoogleAdvertisementKeySha256Base64url: string;
+    findingNetwork: "apple" | "google";
     tagChallengeBase64url: string;
     idempotencyKey: string;
   }): Promise<DeviceReleaseStart> {
@@ -205,6 +228,9 @@ export class PinqevaBackendClient {
           tag_challenge_base64url: input.tagChallengeBase64url,
           tag_advertisement_key_sha256_base64url:
             input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          finding_network: input.findingNetwork,
         }),
       },
       isDeviceReleaseStart,
@@ -222,6 +248,8 @@ export class PinqevaBackendClient {
           release_id: input.release.release_id,
           serial_number: input.release.serial_number,
           tag_key_state: "empty",
+          tag_google_key_state: "empty",
+          tag_finding_network_state: "empty",
           release_completion_token_base64url:
             input.release.release_completion_token_base64url,
         }),

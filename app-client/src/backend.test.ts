@@ -13,10 +13,14 @@ afterEach(() => {
 
 describe("backend error handling", () => {
   const claimInput = {
+    provisioningRequestId: "33333333-3333-4333-8333-333333333333",
     serialNumber: "PKV-AABBCCDDEEFF",
     idempotencyKey: "provision:test-request-001",
     tagChallengeBase64url: "challenge",
     tagAdvertisementKeySha256Base64url: null,
+    tagGoogleAdvertisementKeySha256Base64url: null,
+    findingNetwork: "google" as const,
+    tagFindingNetwork: null,
   };
   const validClaimStart: DeviceClaimStart = {
     session_id: "claim-session",
@@ -25,6 +29,9 @@ describe("backend error handling", () => {
     tag_action: "write_key",
     advertisement_key_base64url: "advertisement-key",
     advertisement_key_sha256_base64url: "advertisement-key-hash",
+    google_advertisement_key_base64url: "google-advertisement-key",
+    google_advertisement_key_sha256_base64url: "google-advertisement-key-hash",
+    finding_network: "google",
     tag_authorization_proof_base64url: "authorization-proof",
     claim_completion_token_base64url: "completion-token",
     tag_control_key_base64url: "control-key",
@@ -37,6 +44,7 @@ describe("backend error handling", () => {
     status: "claimed",
     claimed_at: "2026-08-24T12:00:00Z",
     next_action: "ready",
+    finding_network: "google",
   };
   const validReleaseStart: DeviceReleaseStart = {
     release_id: "release-id",
@@ -235,6 +243,7 @@ describe("backend error handling", () => {
         client.completeDeviceClaim({
           claim: validClaimStart,
           tagAdvertisementKeySha256Base64url: "advertisement-key-hash",
+          tagGoogleAdvertisementKeySha256Base64url: "google-advertisement-key-hash",
         }),
     },
     {
@@ -245,6 +254,8 @@ describe("backend error handling", () => {
           deviceId: "device-id",
           serialNumber: "PKV-AABBCCDDEEFF",
           tagAdvertisementKeySha256Base64url: "advertisement-key-hash",
+          tagGoogleAdvertisementKeySha256Base64url: "google-advertisement-key-hash",
+          findingNetwork: "google",
           tagChallengeBase64url: "challenge",
           idempotencyKey: "release:test-request-001",
         }),
@@ -278,6 +289,7 @@ describe("backend error handling", () => {
         client.completeDeviceClaim({
           claim: validClaimStart,
           tagAdvertisementKeySha256Base64url: "advertisement-key-hash",
+          tagGoogleAdvertisementKeySha256Base64url: "google-advertisement-key-hash",
         }),
     },
     {
@@ -288,6 +300,8 @@ describe("backend error handling", () => {
           deviceId: "device-id",
           serialNumber: "PKV-AABBCCDDEEFF",
           tagAdvertisementKeySha256Base64url: "advertisement-key-hash",
+          tagGoogleAdvertisementKeySha256Base64url: "google-advertisement-key-hash",
+          findingNetwork: "google",
           tagChallengeBase64url: "challenge",
           idempotencyKey: "release:test-request-001",
         }),

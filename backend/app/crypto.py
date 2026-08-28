@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 
 from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
@@ -14,8 +15,22 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 ADVERTISEMENT_KEY_SIZE = 28
 PRIVATE_KEY_SIZE = 28
 P224_PUBLIC_KEY_SIZE = 57
+GOOGLE_IDENTITY_KEY_SIZE = 32
+GOOGLE_ADVERTISEMENT_KEY_SIZE = 20
 BOOTSTRAP_KEY_SIZE = 32
 ENVELOPE_VERSION = 1
+
+# SEC 2 secp160r1 domain parameters used by Google's 20-byte Find Hub
+# advertisement. This small point-multiplication routine is based on the
+# published curve and protocol specifications, not the GPL research project.
+_SECP160R1_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFFFF
+_SECP160R1_A = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF7FFFFFFC
+_SECP160R1_G = (
+    0x4A96B5688EF573284664698968C38BB913CBFC82,
+    0x23A628553168947D59DCC912042351377AC5FB32,
+)
+_SECP160R1_N = 0x0100000000000000000001F4C8F927AED3CA752257
+_GOOGLE_ROTATION_EXPONENT = 10
 
 
 def b64url_encode(value: bytes) -> str:
@@ -50,6 +65,8 @@ def claim_completion_token(
     user_id: bytes,
     device_id: bytes,
     advertisement_key_sha256: bytes,
+    google_advertisement_key_sha256: bytes,
+    finding_network: str,
 ) -> bytes:
     """Create a session/user/device-bound completion capability.
 
@@ -63,13 +80,19 @@ def claim_completion_token(
     if any(len(identifier) != 16 for identifier in (session_id, user_id, device_id)):
         raise ValueError("Claim-token identifiers must be UUID bytes")
     if len(advertisement_key_sha256) != 32:
-        raise ValueError("Advertisement-key digest must be exactly 32 bytes")
+        raise ValueError("Apple advertisement-key digest must be exactly 32 bytes")
+    if len(google_advertisement_key_sha256) != 32:
+        raise ValueError("Google advertisement-key digest must be exactly 32 bytes")
+    if finding_network not in {"apple", "google"}:
+        raise ValueError("Finding network must be apple or google")
     message = (
-        b"pinqeva:claim-complete:v1\x00"
+        b"pinqeva:claim-complete:v2\x00"
         + session_id
         + user_id
         + device_id
         + advertisement_key_sha256
+        + google_advertisement_key_sha256
+        + finding_network.encode("ascii")
     )
     return hmac.new(key, message, hashlib.sha256).digest()
 
@@ -198,6 +221,97 @@ def generate_finder_key_bundle() -> FinderKeyBundle:
     )
 
 
+def _secp160r1_add(
+    left: tuple[int, int] | None, right: tuple[int, int] | None
+) -> tuple[int, int] | None:
+    if left is None:
+        return right
+    if right is None:
+        return left
+    x1, y1 = left
+    x2, y2 = right
+    if x1 == x2 and (y1 + y2) % _SECP160R1_P == 0:
+        return None
+    if left == right:
+        slope = (
+            (3 * x1 * x1 + _SECP160R1_A)
+            * pow(2 * y1, -1, _SECP160R1_P)
+        ) % _SECP160R1_P
+    else:
+        slope = ((y2 - y1) * pow(x2 - x1, -1, _SECP160R1_P)) % _SECP160R1_P
+    x3 = (slope * slope - x1 - x2) % _SECP160R1_P
+    y3 = (slope * (x1 - x3) - y1) % _SECP160R1_P
+    return x3, y3
+
+
+def _secp160r1_multiply(scalar: int) -> tuple[int, int]:
+    if not 1 <= scalar < _SECP160R1_N:
+        raise ValueError("Google Find Hub scalar is outside secp160r1")
+    result: tuple[int, int] | None = None
+    addend: tuple[int, int] | None = _SECP160R1_G
+    remaining = scalar
+    while remaining:
+        if remaining & 1:
+            result = _secp160r1_add(result, addend)
+        addend = _secp160r1_add(addend, addend)
+        remaining >>= 1
+    if result is None:
+        raise ValueError("Google Find Hub scalar produced infinity")
+    return result
+
+
+def derive_google_advertisement_key(
+    identity_key: bytes, beacon_time_counter: int = 0
+) -> bytes:
+    """Derive one 20-byte Find Hub EID from Google's published algorithm.
+
+    The development firmware initially uses counter zero as a stable EID
+    because the classic ESP32 has no battery-backed wall clock. The encrypted
+    32-byte identity key is retained for certified rotating-EID firmware.
+    """
+
+    if len(identity_key) != GOOGLE_IDENTITY_KEY_SIZE:
+        raise ValueError("Google identity key must be exactly 32 bytes")
+    if not 0 <= beacon_time_counter <= 0xFFFFFFFF:
+        raise ValueError("Google beacon time counter must be uint32")
+    masked_counter = beacon_time_counter & ~(
+        (1 << _GOOGLE_ROTATION_EXPONENT) - 1
+    )
+    timestamp = masked_counter.to_bytes(4, "big")
+    block = (
+        b"\xff" * 11
+        + bytes((_GOOGLE_ROTATION_EXPONENT,))
+        + timestamp
+        + b"\x00" * 11
+        + bytes((_GOOGLE_ROTATION_EXPONENT,))
+        + timestamp
+    )
+    encryptor = Cipher(algorithms.AES(identity_key), modes.ECB()).encryptor()
+    random_value = encryptor.update(block) + encryptor.finalize()
+    scalar = int.from_bytes(random_value, "big") % _SECP160R1_N
+    if scalar == 0:
+        raise ValueError("Google identity key produced an invalid scalar")
+    x_coordinate, _ = _secp160r1_multiply(scalar)
+    return x_coordinate.to_bytes(GOOGLE_ADVERTISEMENT_KEY_SIZE, "big")
+
+
+@dataclass(frozen=True)
+class GoogleFinderKeyBundle:
+    identity_key: bytes
+    advertisement_key: bytes
+    advertisement_key_sha256: bytes
+
+
+def generate_google_finder_key_bundle() -> GoogleFinderKeyBundle:
+    identity_key = os.urandom(GOOGLE_IDENTITY_KEY_SIZE)
+    advertisement_key = derive_google_advertisement_key(identity_key)
+    return GoogleFinderKeyBundle(
+        identity_key=identity_key,
+        advertisement_key=advertisement_key,
+        advertisement_key_sha256=hashlib.sha256(advertisement_key).digest(),
+    )
+
+
 @dataclass(frozen=True)
 class EncryptedSecret:
     version: int
@@ -220,12 +334,40 @@ def encrypt_private_key(private_key: bytes, key: bytes, associated_data: bytes) 
     )
 
 
+def encrypt_google_identity_key(
+    identity_key: bytes, key: bytes, associated_data: bytes
+) -> EncryptedSecret:
+    if len(identity_key) != GOOGLE_IDENTITY_KEY_SIZE:
+        raise ValueError("A Google identity key must be exactly 32 bytes")
+    if len(key) != 32:
+        raise ValueError("The AES-256 key must be exactly 32 bytes")
+    nonce = os.urandom(12)
+    return EncryptedSecret(
+        version=ENVELOPE_VERSION,
+        nonce=nonce,
+        ciphertext=AESGCM(key).encrypt(nonce, identity_key, associated_data),
+    )
+
+
 def decrypt_private_key(
     encrypted: EncryptedSecret, key: bytes, associated_data: bytes
 ) -> bytes:
     if encrypted.version != ENVELOPE_VERSION:
         raise ValueError("Unsupported private-key envelope version")
     return AESGCM(key).decrypt(encrypted.nonce, encrypted.ciphertext, associated_data)
+
+
+def decrypt_google_identity_key(
+    encrypted: EncryptedSecret, key: bytes, associated_data: bytes
+) -> bytes:
+    if encrypted.version != ENVELOPE_VERSION:
+        raise ValueError("Unsupported Google identity-key envelope version")
+    identity_key = AESGCM(key).decrypt(
+        encrypted.nonce, encrypted.ciphertext, associated_data
+    )
+    if len(identity_key) != GOOGLE_IDENTITY_KEY_SIZE:
+        raise ValueError("Decrypted Google identity key has an invalid size")
+    return identity_key
 
 
 def encrypt_device_bootstrap_key(

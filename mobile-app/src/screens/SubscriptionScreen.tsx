@@ -23,10 +23,8 @@ import {
   localizedBillingPlanName,
 } from '../billing/format';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
-import { useRenewalCopy } from '../billing/renewalCopy';
 import {
   canStartCheckout,
-  canInstallEntitlement,
   isCurrentSubscription,
   type BillingActionResult,
   type BillingErrorCode,
@@ -60,7 +58,6 @@ export function SubscriptionScreen({
   onRetry,
   onCheckout,
   onPortal,
-  onInstallEntitlement,
   onNotice,
 }: {
   tracker: Tracker;
@@ -73,14 +70,12 @@ export function SubscriptionScreen({
   onRetry: () => Promise<void>;
   onCheckout: (planCode: string) => Promise<BillingActionResult>;
   onPortal: (action: BillingPortalAction) => Promise<BillingActionResult>;
-  onInstallEntitlement: () => void | Promise<void>;
   onNotice: (message: string) => void;
 }) {
   const { language } = useI18n();
   const copy = useBillingCopy();
-  const renewalCopy = useRenewalCopy();
   const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
-  const [actionBusy, setActionBusy] = useState<'primary' | 'cancel' | 'entitlement' | null>(null);
+  const [actionBusy, setActionBusy] = useState<'primary' | 'cancel' | null>(null);
   const [cancelVisible, setCancelVisible] = useState(false);
   const plans = subscription?.availablePlans ?? EMPTY_PLANS;
 
@@ -94,9 +89,6 @@ export function SubscriptionScreen({
 
   const current = subscription ? isCurrentSubscription(subscription) : false;
   const canCheckout = subscription ? canStartCheckout(subscription) : false;
-  const entitlementAvailable =
-    mode === 'live' && subscription ? canInstallEntitlement(subscription) : false;
-  const entitlementPending = subscription?.entitlementSyncStatus !== 'installed';
   const primaryLabel = subscription?.cancelAtPeriodEnd
     ? purchasesEnabled
       ? copy.renew
@@ -141,21 +133,8 @@ export function SubscriptionScreen({
     }
   };
 
-  const installEntitlement = async () => {
-    setActionBusy('entitlement');
-    try {
-      await onInstallEntitlement();
-    } finally {
-      setActionBusy(null);
-    }
-  };
-
   const periodStart = formatBillingDate(subscription?.currentPeriodStart ?? null, language);
   const periodEnd = formatBillingDate(subscription?.currentPeriodEnd ?? null, language);
-  const tagEntitlementEnd = formatBillingDate(
-    subscription?.tagEntitlementExpiresAt ?? subscription?.currentPeriodEnd ?? null,
-    language,
-  );
   const currentPrice = formatBillingMoney(
     subscription?.amountMinor ?? null,
     subscription?.currency ?? null,
@@ -273,36 +252,6 @@ export function SubscriptionScreen({
               ) : null}
             </Surface>
 
-            {current && subscription.entitlementSyncStatus ? (
-              <Surface
-                style={[
-                  styles.entitlementStatus,
-                  entitlementPending ? styles.entitlementStatusPending : {},
-                ]}
-              >
-                <View style={styles.entitlementStatusIcon}>
-                  <Ionicons
-                    name={entitlementPending ? 'download-outline' : 'shield-checkmark-outline'}
-                    size={24}
-                    color={entitlementPending ? '#9A5A00' : colors.blue}
-                  />
-                </View>
-                <View style={styles.entitlementStatusCopy}>
-                  <Text style={styles.entitlementStatusTitle}>
-                    {entitlementPending ? renewalCopy.pendingTitle : renewalCopy.installedTitle}
-                  </Text>
-                  <Text style={styles.entitlementStatusBody}>
-                    {interpolateBillingCopy(
-                      entitlementPending
-                        ? renewalCopy.pendingBody
-                        : renewalCopy.installedBody,
-                      { date: tagEntitlementEnd ?? '—' },
-                    )}
-                  </Text>
-                </View>
-              </Surface>
-            ) : null}
-
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>{copy.plans}</Text>
               {!current ? <Text style={styles.sectionBody}>{copy.choosePlan}</Text> : null}
@@ -345,17 +294,6 @@ export function SubscriptionScreen({
               }
               testID="subscription-primary-action"
             />
-            {entitlementAvailable ? (
-              <OutlineButton
-                label={
-                  actionBusy === 'entitlement' ? copy.loading : renewalCopy.updateTag
-                }
-                onPress={() => void installEntitlement()}
-                disabled={actionBusy !== null || loading}
-                style={styles.entitlementButton}
-                testID="subscription-activate-action"
-              />
-            ) : null}
             {current && !subscription.cancelAtPeriodEnd ? (
               <Pressable
                 accessibilityRole="button"
@@ -514,25 +452,6 @@ const styles = StyleSheet.create({
   detailLabel: { color: colors.mutedDark, fontSize: 14, flex: 1 },
   detailValue: { color: colors.text, fontSize: 14, fontWeight: '700', textAlign: 'right', flex: 1.25 },
   detailWarning: { color: '#9A5A00' },
-  entitlementStatus: {
-    padding: 16,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    backgroundColor: '#F5F8FF',
-  },
-  entitlementStatusPending: { backgroundColor: '#FFF8E8', borderWidth: 1, borderColor: '#F4D89B' },
-  entitlementStatusIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  entitlementStatusCopy: { flex: 1, gap: 4 },
-  entitlementStatusTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  entitlementStatusBody: { color: colors.mutedDark, fontSize: 14, lineHeight: 20 },
   planStack: { gap: 10 },
   planCard: { minHeight: 82, borderWidth: 1.5, borderColor: colors.border, borderRadius: radii.medium, backgroundColor: colors.surface, padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 },
   planCardSelected: { borderColor: colors.blue, backgroundColor: '#F5F8FF' },
@@ -549,7 +468,6 @@ const styles = StyleSheet.create({
   policyText: { color: colors.mutedDark, flex: 1, fontSize: 13, lineHeight: 19 },
   secureNotice: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 6, marginTop: 2 },
   secureText: { color: colors.muted, flex: 1, fontSize: 12, lineHeight: 18 },
-  entitlementButton: { marginTop: -4 },
   cancelAction: { minHeight: 54, borderWidth: 1.5, borderColor: '#FFC8CA', borderRadius: 15, backgroundColor: '#FFF8F8', paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 },
   cancelActionDisabled: { opacity: 0.5 },
   cancelActionText: { color: colors.danger, fontSize: 16, fontWeight: '800' },

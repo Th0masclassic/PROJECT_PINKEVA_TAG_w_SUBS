@@ -274,16 +274,16 @@ function HelpContent() {
           <View style={styles.flowContent}>
             <Text style={styles.cardTitle}>When a subscription renews</Text>
             <Step number={1} title="The period renews">Your subscription renews according to the plan shown on the tracker’s subscription page. Pinkeva sends a reminder when notification delivery is enabled.</Step>
-            <Step number={2} title="Pinkeva prepares the tag update">The new access period is securely prepared for that individual tracker.</Step>
-            <Step number={3} title="Sync while nearby">Open the subscription notice, hold the tag button for about five seconds, and keep it near your phone. Pinkeva installs and verifies the new period.</Step>
+            <Step number={2} title="Cloud access continues">Pinkeva updates location access, history, sharing, safe zones, and smart alerts automatically after the verified payment event.</Step>
+            <Step number={3} title="No tag sync needed">The physical tag keeps advertising its selected finder identity. You do not need Bluetooth, the tag button, or a nearby phone for renewal.</Step>
           </View>
         </Surface>
       ) : null}
       {tab === 'faq' ? (
         <View style={styles.stack}>
           {[
-            ['Why can’t I see my tag?', 'Make sure Bluetooth is on, keep the tag close, and refresh the Trackers screen. If it was recently renewed, open its subscription notice to sync the new access period to the physical tag.'],
-            ['Does a renewal update the physical tag?', 'Yes. The subscription renews online first, then Pinkeva securely syncs the new period to your nearby tag. The tracker page will guide you if a sync is still needed.'],
+            ['Why can’t I see my tag?', 'Refresh the Trackers screen and check the last-report time. Bluetooth is needed only for nearby setup, maintenance, and firmware updates; finder reports can arrive later when a compatible phone observes the tag.'],
+            ['Does a renewal update the physical tag?', 'No. Renewal changes Pinkeva cloud access only. The tag keeps advertising its installed finder identity without receiving a billing period or expiry date.'],
             ['What should I do if an update stops?', 'Keep the tag close, reopen Pinkeva, and start the update again from the tracker page. The tag verifies every update and will not accept an incomplete or unverified package.'],
             ['Can I turn permissions off later?', 'Yes. Use App Permissions to stop Pinkeva notification delivery or open your phone settings to change Bluetooth, location, or notification access.'],
           ].map(([question, answer]) => {
@@ -332,8 +332,8 @@ function FirmwareContent() {
       <Surface style={styles.releaseHero}>
         <View>
           <Text style={styles.releaseEyebrow}>CURRENT STABLE RELEASE</Text>
-          <Text style={styles.releaseVersion}>Pinkeva Tag 0.3.0</Text>
-          <Text style={styles.releaseBody}>A more resilient foundation for secure tracker updates and renewal syncing.</Text>
+          <Text style={styles.releaseVersion}>Pinkeva Tag 0.4.0</Text>
+          <Text style={styles.releaseBody}>Dual Apple/Google identity provisioning with cloud-only subscription access.</Text>
         </View>
         <View style={styles.releaseIcon}><Ionicons name="shield-checkmark" size={32} color="#FFFFFF" /></View>
       </Surface>
@@ -341,7 +341,7 @@ function FirmwareContent() {
         <Surface style={styles.card}>
           <Bullet>Verified, signed firmware packages before installation.</Bullet>
           <Bullet>Rollback-aware update flow so a tag does not accept an incomplete update.</Bullet>
-          <Bullet>Secure per-tag access-period sync after subscription renewal.</Bullet>
+          <Bullet>One selected Apple or Google finder advertisement, restored after reboot.</Bullet>
           <Bullet>Clearer maintenance and recovery checks during sensitive tag operations.</Bullet>
         </Surface>
       </Section>

@@ -10,6 +10,11 @@ import {
   ADVERTISEMENT_KEY_UUID,
   AUTHENTICATED_RESET_UUID,
   DEVICE_IDENTIFIER_UUID,
+  DUAL_FINDING_NETWORK_CAPABILITY,
+  FINDING_NETWORK_UUID,
+  GOOGLE_ADVERTISEMENT_KEY_LENGTH,
+  GOOGLE_ADVERTISEMENT_KEY_UUID,
+  GOOGLE_KEY_FINGERPRINT_UUID,
   KEY_FINGERPRINT_UUID,
   PINQEVA_SERVICE_UUID,
   PROTOCOL_INFO_UUID,
@@ -27,16 +32,22 @@ import {
   decodeBase64Url,
   decodeBleBase64,
   decodeDeviceIdentifier,
+  decodeFindingNetwork,
+  decodeGoogleKeyFingerprint,
   decodeTagKeyFingerprint,
+  encodeFindingNetwork,
   encodeBase64Url,
   parseProtocolInformation,
   provisioningStatusIsReady,
   toBleBase64,
+  type FindingNetwork,
 } from "./protocol.js";
 
 export type ProvisionTagInput = {
   peripheralId: string;
   idempotencyKey: string;
+  provisioningRequestId: string;
+  findingNetwork: FindingNetwork;
   timeoutMs?: number;
 };
 
@@ -68,17 +79,25 @@ export class TagProvisioner {
         protocolCharacteristic,
         identifierCharacteristic,
         fingerprintCharacteristic,
+        googleFingerprintCharacteristic,
+        findingNetworkCharacteristic,
         challengeCharacteristic,
       ] = await Promise.all([
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, PROTOCOL_INFO_UUID),
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, DEVICE_IDENTIFIER_UUID),
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+        device.readCharacteristicForService(
+          PINQEVA_SERVICE_UUID,
+          GOOGLE_KEY_FINGERPRINT_UUID,
+        ),
+        device.readCharacteristicForService(PINQEVA_SERVICE_UUID, FINDING_NETWORK_UUID),
         device.readCharacteristicForService(PINQEVA_SERVICE_UUID, TAG_CHALLENGE_UUID),
       ]);
       const protocol = parseProtocolInformation(decodeBleBase64(protocolCharacteristic.value));
       if (
         protocol.protocolMajor !== 1 ||
-        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
+        (protocol.capabilities & DUAL_FINDING_NETWORK_CAPABILITY) === 0
       ) {
         throw new ProvisioningClientError(
           "UNSUPPORTED_PROTOCOL",
@@ -100,14 +119,40 @@ export class TagProvisioner {
       const initialFingerprint = decodeTagKeyFingerprint(
         decodeBleBase64(fingerprintCharacteristic.value),
       );
+      const initialGoogleFingerprint = decodeGoogleKeyFingerprint(
+        decodeBleBase64(googleFingerprintCharacteristic.value),
+      );
+      const initialFindingNetwork = decodeFindingNetwork(
+        decodeBleBase64(findingNetworkCharacteristic.value),
+      );
+      if (
+        initialFindingNetwork !== null &&
+        initialFindingNetwork !== input.findingNetwork
+      ) {
+        throw new ProvisioningClientError(
+          "FINDING_NETWORK_MISMATCH",
+          "Tag is already configured for another finding network",
+        );
+      }
       const claim = await this.backend.startDeviceClaim({
+        provisioningRequestId: input.provisioningRequestId,
         serialNumber,
         idempotencyKey: input.idempotencyKey,
         tagChallengeBase64url: encodeBase64Url(tagChallenge),
         tagAdvertisementKeySha256Base64url:
           initialFingerprint === null ? null : encodeBase64Url(initialFingerprint),
+        tagGoogleAdvertisementKeySha256Base64url:
+          initialGoogleFingerprint === null
+            ? null
+            : encodeBase64Url(initialGoogleFingerprint),
+        findingNetwork: input.findingNetwork,
+        tagFindingNetwork: initialFindingNetwork,
       });
-      if (claim.serial_number !== serialNumber || claim.protocol_version !== 1) {
+      if (
+        claim.serial_number !== serialNumber ||
+        claim.protocol_version !== 1 ||
+        claim.finding_network !== input.findingNetwork
+      ) {
         throw new ProvisioningClientError(
           "BACKEND_BINDING_MISMATCH",
           "The claim is bound to a different tag or protocol",
@@ -127,6 +172,15 @@ export class TagProvisioner {
         throw new ProvisioningClientError(
           "INVALID_BACKEND_KEY",
           "Expected a 32-byte advertisement-key fingerprint",
+        );
+      }
+      const expectedGoogleFingerprint = decodeBase64Url(
+        claim.google_advertisement_key_sha256_base64url,
+      );
+      if (expectedGoogleFingerprint.length !== 32) {
+        throw new ProvisioningClientError(
+          "INVALID_BACKEND_KEY",
+          "Expected a 32-byte Google advertisement-key fingerprint",
         );
       }
 
@@ -150,30 +204,48 @@ export class TagProvisioner {
         tagChallenge.fill(0);
       }
 
+      if (
+        (initialFingerprint !== null &&
+          !bytesEqual(initialFingerprint, expectedFingerprint)) ||
+        (initialGoogleFingerprint !== null &&
+          !bytesEqual(initialGoogleFingerprint, expectedGoogleFingerprint))
+      ) {
+        throw new ProvisioningClientError(
+          "TAG_KEY_MISMATCH",
+          "A stored tag key does not match the backend allocation",
+        );
+      }
+
       if (claim.tag_action === "write_key") {
-        if (initialFingerprint !== null) {
-          throw new ProvisioningClientError(
-            "BACKEND_BINDING_MISMATCH",
-            "Backend requested a write although the tag already contains a key",
-          );
-        }
         const advertisementKey = decodeBase64Url(claim.advertisement_key_base64url);
+        const googleAdvertisementKey = decodeBase64Url(
+          claim.google_advertisement_key_base64url,
+        );
         if (claim.tag_control_key_base64url === null) {
           advertisementKey.fill(0);
+          googleAdvertisementKey.fill(0);
           throw new ProvisioningClientError(
             "MISSING_BACKEND_CONTROL_KEY",
             "Backend omitted the control key for an empty tag",
           );
         }
         const controlKey = decodeBase64Url(claim.tag_control_key_base64url);
-        if (advertisementKey.length !== ADVERTISEMENT_KEY_LENGTH) {
+        if (
+          advertisementKey.length !== ADVERTISEMENT_KEY_LENGTH ||
+          googleAdvertisementKey.length !== GOOGLE_ADVERTISEMENT_KEY_LENGTH
+        ) {
+          advertisementKey.fill(0);
+          googleAdvertisementKey.fill(0);
+          controlKey.fill(0);
           throw new ProvisioningClientError(
             "INVALID_BACKEND_KEY",
-            `Expected ${ADVERTISEMENT_KEY_LENGTH} advertisement-key bytes`,
+            "Backend returned invalid finding-network key material",
           );
         }
         if (controlKey.length !== TAG_CONTROL_KEY_LENGTH) {
           advertisementKey.fill(0);
+          googleAdvertisementKey.fill(0);
+          controlKey.fill(0);
           throw new ProvisioningClientError(
             "INVALID_BACKEND_CONTROL_KEY",
             `Expected ${TAG_CONTROL_KEY_LENGTH} tag-control bytes`,
@@ -188,22 +260,36 @@ export class TagProvisioner {
           },
         );
         cancelReadyWait = readyWait.cancel;
-        // Install the reset-control secret first. Firmware permits an identical
-        // retry but rejects replacement. The advertisement key is committed only
-        // after this succeeds, so every normally provisioned tag is transferable.
         try {
           await device.writeCharacteristicWithResponseForService(
             PINQEVA_SERVICE_UUID,
             TAG_CONTROL_KEY_UUID,
             toBleBase64(controlKey),
           );
-          await device.writeCharacteristicWithResponseForService(
-            PINQEVA_SERVICE_UUID,
-            ADVERTISEMENT_KEY_UUID,
-            toBleBase64(advertisementKey),
-          );
+          if (initialGoogleFingerprint === null) {
+            await device.writeCharacteristicWithResponseForService(
+              PINQEVA_SERVICE_UUID,
+              GOOGLE_ADVERTISEMENT_KEY_UUID,
+              toBleBase64(googleAdvertisementKey),
+            );
+          }
+          if (initialFindingNetwork === null) {
+            await device.writeCharacteristicWithResponseForService(
+              PINQEVA_SERVICE_UUID,
+              FINDING_NETWORK_UUID,
+              toBleBase64(encodeFindingNetwork(input.findingNetwork)),
+            );
+          }
+          if (initialFingerprint === null) {
+            await device.writeCharacteristicWithResponseForService(
+              PINQEVA_SERVICE_UUID,
+              ADVERTISEMENT_KEY_UUID,
+              toBleBase64(advertisementKey),
+            );
+          }
         } finally {
           advertisementKey.fill(0);
+          googleAdvertisementKey.fill(0);
           controlKey.fill(0);
         }
         const currentStatus = await device
@@ -217,7 +303,8 @@ export class TagProvisioner {
         }
       } else if (
         initialFingerprint === null ||
-        !bytesEqual(initialFingerprint, expectedFingerprint)
+        initialGoogleFingerprint === null ||
+        initialFindingNetwork !== input.findingNetwork
       ) {
         throw new ProvisioningClientError(
           "TAG_KEY_MISMATCH",
@@ -232,9 +319,26 @@ export class TagProvisioner {
       const confirmedFingerprint = decodeTagKeyFingerprint(
         decodeBleBase64(confirmedFingerprintCharacteristic.value),
       );
+      const confirmedGoogleCharacteristic = await device.readCharacteristicForService(
+        PINQEVA_SERVICE_UUID,
+        GOOGLE_KEY_FINGERPRINT_UUID,
+      );
+      const confirmedGoogleFingerprint = decodeGoogleKeyFingerprint(
+        decodeBleBase64(confirmedGoogleCharacteristic.value),
+      );
+      const confirmedNetworkCharacteristic = await device.readCharacteristicForService(
+        PINQEVA_SERVICE_UUID,
+        FINDING_NETWORK_UUID,
+      );
+      const confirmedFindingNetwork = decodeFindingNetwork(
+        decodeBleBase64(confirmedNetworkCharacteristic.value),
+      );
       if (
         confirmedFingerprint === null ||
-        !bytesEqual(confirmedFingerprint, expectedFingerprint)
+        !bytesEqual(confirmedFingerprint, expectedFingerprint) ||
+        confirmedGoogleFingerprint === null ||
+        !bytesEqual(confirmedGoogleFingerprint, expectedGoogleFingerprint) ||
+        confirmedFindingNetwork !== input.findingNetwork
       ) {
         throw new ProvisioningClientError(
           "TAG_KEY_MISMATCH",
@@ -245,6 +349,9 @@ export class TagProvisioner {
       return await this.backend.completeDeviceClaim({
         claim,
         tagAdvertisementKeySha256Base64url: encodeBase64Url(confirmedFingerprint),
+        tagGoogleAdvertisementKeySha256Base64url: encodeBase64Url(
+          confirmedGoogleFingerprint,
+        ),
       });
     } finally {
       cancelReadyWait?.();
@@ -266,12 +373,19 @@ export class TagProvisioner {
         protocolCharacteristic,
         identifierCharacteristic,
         fingerprintCharacteristic,
+        googleFingerprintCharacteristic,
+        findingNetworkCharacteristic,
         challengeCharacteristic,
       ] =
         await Promise.all([
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, PROTOCOL_INFO_UUID),
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, DEVICE_IDENTIFIER_UUID),
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+          device.readCharacteristicForService(
+            PINQEVA_SERVICE_UUID,
+            GOOGLE_KEY_FINGERPRINT_UUID,
+          ),
+          device.readCharacteristicForService(PINQEVA_SERVICE_UUID, FINDING_NETWORK_UUID),
           device.readCharacteristicForService(PINQEVA_SERVICE_UUID, TAG_CHALLENGE_UUID),
         ]);
       const protocol = parseProtocolInformation(
@@ -280,7 +394,8 @@ export class TagProvisioner {
       if (
         protocol.protocolMajor !== 1 ||
         (protocol.capabilities & 0x08) === 0 ||
-        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
+        (protocol.capabilities & DUAL_FINDING_NETWORK_CAPABILITY) === 0
       ) {
         throw new ProvisioningClientError(
           "AUTHENTICATED_RESET_UNSUPPORTED",
@@ -299,6 +414,12 @@ export class TagProvisioner {
       const fingerprint = decodeTagKeyFingerprint(
         decodeBleBase64(fingerprintCharacteristic.value),
       );
+      const googleFingerprint = decodeGoogleKeyFingerprint(
+        decodeBleBase64(googleFingerprintCharacteristic.value),
+      );
+      const findingNetwork = decodeFindingNetwork(
+        decodeBleBase64(findingNetworkCharacteristic.value),
+      );
       const tagChallenge = decodeBleBase64(challengeCharacteristic.value);
       if (tagChallenge.length !== TAG_CHALLENGE_LENGTH) {
         throw new ProvisioningClientError(
@@ -306,10 +427,10 @@ export class TagProvisioner {
           `Expected ${TAG_CHALLENGE_LENGTH} challenge bytes`,
         );
       }
-      if (fingerprint === null) {
+      if (fingerprint === null || googleFingerprint === null || findingNetwork === null) {
         throw new ProvisioningClientError(
           "RECOVERY_REQUIRED",
-          "The backend owns this tag but the tag contains no key",
+          "The backend owns this tag but its dual-network identity is incomplete",
         );
       }
 
@@ -317,6 +438,8 @@ export class TagProvisioner {
         deviceId: input.deviceId,
         serialNumber,
         tagAdvertisementKeySha256Base64url: encodeBase64Url(fingerprint),
+        tagGoogleAdvertisementKeySha256Base64url: encodeBase64Url(googleFingerprint),
+        findingNetwork,
         tagChallengeBase64url: encodeBase64Url(tagChallenge),
         idempotencyKey: input.idempotencyKey,
       });
@@ -368,16 +491,28 @@ export class TagProvisioner {
         resetCommand.fill(0);
       }
 
-      const emptyFingerprintCharacteristic = await device.readCharacteristicForService(
-        PINQEVA_SERVICE_UUID,
-        KEY_FINGERPRINT_UUID,
-      );
+      const [
+        emptyFingerprintCharacteristic,
+        emptyGoogleFingerprintCharacteristic,
+        emptyFindingNetworkCharacteristic,
+      ] = await Promise.all([
+        device.readCharacteristicForService(PINQEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+        device.readCharacteristicForService(
+          PINQEVA_SERVICE_UUID,
+          GOOGLE_KEY_FINGERPRINT_UUID,
+        ),
+        device.readCharacteristicForService(PINQEVA_SERVICE_UUID, FINDING_NETWORK_UUID),
+      ]);
       if (
-        decodeTagKeyFingerprint(decodeBleBase64(emptyFingerprintCharacteristic.value)) !== null
+        decodeTagKeyFingerprint(decodeBleBase64(emptyFingerprintCharacteristic.value)) !== null ||
+        decodeGoogleKeyFingerprint(
+          decodeBleBase64(emptyGoogleFingerprintCharacteristic.value),
+        ) !== null ||
+        decodeFindingNetwork(decodeBleBase64(emptyFindingNetworkCharacteristic.value)) !== null
       ) {
         throw new ProvisioningClientError(
           "TAG_RESET_FAILED",
-          "The tag did not confirm erasure of its advertisement key",
+          "The tag did not confirm erasure of both identities and its network selection",
         );
       }
       return await this.backend.completeDeviceRelease({ release });

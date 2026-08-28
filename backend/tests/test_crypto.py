@@ -11,10 +11,14 @@ from app.crypto import (
     b64url_encode,
     claim_completion_token,
     decrypt_device_bootstrap_key,
+    decrypt_google_identity_key,
     decrypt_private_key,
+    derive_google_advertisement_key,
     encrypt_device_bootstrap_key,
+    encrypt_google_identity_key,
     encrypt_private_key,
     generate_finder_key_bundle,
+    generate_google_finder_key_bundle,
     tag_authorization_proof,
     tag_control_key,
     tag_reset_command,
@@ -59,6 +63,25 @@ def test_private_key_envelope_binds_ciphertext_to_session() -> None:
         decrypt_private_key(tampered, key, aad)
 
 
+def test_google_find_hub_eid_matches_independent_reference_vector() -> None:
+    assert derive_google_advertisement_key(bytes(range(32)), 0).hex() == (
+        "e6cec9ca5505f86e82781bcbe75984acb3ce5e03"
+    )
+
+
+def test_google_identity_key_envelope_binds_ciphertext_to_session() -> None:
+    bundle = generate_google_finder_key_bundle()
+    key = os.urandom(32)
+    aad = b"pinqeva:google-eik:v1:session:user:device"
+    encrypted = encrypt_google_identity_key(bundle.identity_key, key, aad)
+
+    assert len(bundle.identity_key) == 32
+    assert len(bundle.advertisement_key) == 20
+    assert decrypt_google_identity_key(encrypted, key, aad) == bundle.identity_key
+    with pytest.raises(InvalidTag):
+        decrypt_google_identity_key(encrypted, key, b"another-session")
+
+
 def test_bootstrap_key_is_encrypted_and_proof_is_challenge_bound() -> None:
     bootstrap_key = os.urandom(32)
     envelope_key = os.urandom(32)
@@ -100,12 +123,15 @@ def test_claim_and_tag_control_domains_are_separated() -> None:
     user_id = uuid.uuid4().bytes
     device_id = uuid.uuid4().bytes
     digest = os.urandom(32)
+    google_digest = os.urandom(32)
     claim_token = claim_completion_token(
         root,
         session_id=session_id,
         user_id=user_id,
         device_id=device_id,
         advertisement_key_sha256=digest,
+        google_advertisement_key_sha256=google_digest,
+        finding_network="google",
     )
     control_key = tag_control_key(
         root,

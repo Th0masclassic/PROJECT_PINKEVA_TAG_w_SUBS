@@ -81,9 +81,9 @@ function relativeLastSeen(value: string | null): string {
 
 function mapHostedStatus(value: unknown): Tracker['status'] {
   const status = parseNullableText(value, 48)?.toLowerCase();
-  // Database lifecycle states such as "active" or "suspended" do not prove
-  // that a tag is physically close to this phone. Only an explicit proximity
-  // state may be presented as Nearby.
+  // Database lifecycle states such as "claimed" do not prove that a tag is
+  // physically close to this phone. Only an explicit proximity state may be
+  // presented as Nearby.
   return status === 'nearby' ? 'nearby' : 'away';
 }
 

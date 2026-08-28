@@ -11,9 +11,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { interpolateBillingCopy, useBillingCopy } from '../billing/copy';
+import { useBillingCopy } from '../billing/copy';
 import { billingIntervalLabel, formatBillingMoney } from '../billing/format';
-import { useRenewalCopy } from '../billing/renewalCopy';
 import { OutlineButton, PrimaryButton } from '../components';
 import { useI18n, type TranslationKey } from '../i18n';
 import { colors, radii, shadow } from '../theme';
@@ -75,17 +74,7 @@ function CandidateRow({
 
 function ProgressContent({ state }: { state: TagSetupState }) {
   const { t } = useI18n();
-  const renewalCopy = useRenewalCopy();
-  const steps =
-    state.operation === 'entitlement'
-      ? [
-          { phase: 'connecting' as const, label: t('pairing.stepConnecting') },
-          { phase: 'verifying' as const, label: t('pairing.stepVerifying') },
-          { phase: 'authorizing' as const, label: renewalCopy.stepAuthorizing },
-          { phase: 'installing' as const, label: renewalCopy.stepInstalling },
-          { phase: 'associating' as const, label: renewalCopy.stepConfirming },
-        ]
-      : progressSteps.map((step) => ({ phase: step.phase, label: t(step.key) }));
+  const steps = progressSteps.map((step) => ({ phase: step.phase, label: t(step.key) }));
   const activeIndex = steps.findIndex((step) => step.phase === state.phase);
   const targetName = state.targetSerialNumber ?? state.selected?.serialNumber ?? t('common.tracker');
   return (
@@ -94,14 +83,10 @@ function ProgressContent({ state }: { state: TagSetupState }) {
         <Ionicons name="bluetooth" size={38} color="#FFFFFF" />
       </LinearGradient>
       <Text style={styles.title}>
-        {state.operation === 'entitlement'
-          ? renewalCopy.secureUpdateTitle
-          : t('pairing.settingUpTitle')}
+        {t('pairing.settingUpTitle')}
       </Text>
       <Text style={styles.body}>
-        {state.operation === 'entitlement'
-          ? interpolateBillingCopy(renewalCopy.secureUpdateBody, { name: targetName })
-          : t('pairing.settingUpBody', { name: targetName })}
+        {t('pairing.settingUpBody', { name: targetName })}
       </Text>
       <View style={styles.progressCard}>
         {steps.map((step, index) => {
@@ -134,26 +119,22 @@ export function TagSetupModal({
   state,
   onSelect,
   onChoosePlan,
-  onBeginEntitlementScan,
   onRetry,
   onClose,
 }: {
   state: TagSetupState;
   onSelect: (tag: DiscoveredTag) => void;
   onChoosePlan: (plan: ProvisioningPlan) => void;
-  onBeginEntitlementScan: () => void;
   onRetry: () => void;
   onClose: () => void;
 }) {
   const { language, t } = useI18n();
   const billingCopy = useBillingCopy();
-  const renewalCopy = useRenewalCopy();
   const visible = state.phase !== 'idle';
   const scanning = state.phase === 'starting' || state.phase === 'scanning';
   const progressing = progressSteps.some((step) => step.phase === state.phase);
   const paymentRequest = state.provisioningRequest;
   const targetName = state.targetSerialNumber ?? state.selected?.serialNumber ?? t('common.tracker');
-  const renewalOperation = state.operation === 'entitlement';
 
   return (
     <Modal
@@ -185,14 +166,8 @@ export function TagSetupModal({
                 <LinearGradient colors={['#72A5FF', colors.blue]} style={styles.heroIcon}>
                   <Ionicons name="bluetooth" size={38} color="#FFFFFF" />
                 </LinearGradient>
-                <Text style={styles.title}>
-                  {renewalOperation ? renewalCopy.scanTitle : t('pairing.scanTitle')}
-                </Text>
-                <Text style={styles.body}>
-                  {renewalOperation
-                    ? interpolateBillingCopy(renewalCopy.scanBody, { name: targetName })
-                    : t('pairing.scanBody')}
-                </Text>
+                <Text style={styles.title}>{t('pairing.scanTitle')}</Text>
+                <Text style={styles.body}>{t('pairing.scanBody')}</Text>
 
                 <View style={styles.scanState} accessibilityLiveRegion="polite">
                   <ActivityIndicator color={colors.blue} />
@@ -205,7 +180,7 @@ export function TagSetupModal({
                       <CandidateRow
                         key={tag.peripheralId}
                         tag={tag}
-                        actionLabel={renewalOperation ? renewalCopy.updateTag : t('pairing.connect')}
+                        actionLabel={t('pairing.connect')}
                         onPress={() => onSelect(tag)}
                       />
                     ))}
@@ -213,43 +188,13 @@ export function TagSetupModal({
                 ) : (
                   <View style={styles.emptyState}>
                     <Text style={styles.emptyTitle}>
-                      {renewalOperation
-                        ? renewalCopy.scanNoTagsTitle
-                        : t('pairing.noTagsTitle')}
+                      {t('pairing.noTagsTitle')}
                     </Text>
                     <Text style={styles.emptyBody}>
-                      {renewalOperation
-                        ? renewalCopy.scanNoTagsBody
-                        : t('pairing.noTagsBody')}
+                      {t('pairing.noTagsBody')}
                     </Text>
                   </View>
                 )}
-              </ScrollView>
-            ) : state.phase === 'entitlement_ready' ? (
-              <ScrollView contentContainerStyle={styles.sheetContent}>
-                <View style={[styles.heroIcon, styles.renewalIcon]}>
-                  <Ionicons name="download-outline" size={38} color="#FFFFFF" />
-                </View>
-                <Text style={styles.title}>{renewalCopy.holdButtonTitle}</Text>
-                <Text style={styles.body}>
-                  {interpolateBillingCopy(renewalCopy.holdButtonBody, { name: targetName })}
-                </Text>
-                <View style={styles.renewalDetail}>
-                  <Ionicons name="shield-checkmark-outline" size={22} color={colors.blue} />
-                  <Text style={styles.renewalDetailText}>{renewalCopy.holdButtonDetail}</Text>
-                </View>
-                <PrimaryButton
-                  label={renewalCopy.readyToScan}
-                  icon="bluetooth"
-                  onPress={onBeginEntitlementScan}
-                  style={styles.fullButton}
-                  testID="entitlement-button-held"
-                />
-                <OutlineButton
-                  label={t('common.cancel')}
-                  onPress={onClose}
-                  style={styles.fullButton}
-                />
               </ScrollView>
             ) : progressing ? (
               <ScrollView contentContainerStyle={styles.sheetContent}>
@@ -324,15 +269,11 @@ export function TagSetupModal({
                 <View style={[styles.heroIcon, styles.successIcon]}>
                   <Ionicons name="checkmark" size={42} color="#FFFFFF" />
                 </View>
-                <Text style={styles.title}>
-                  {renewalOperation ? renewalCopy.completeTitle : t('pairing.setupCompleteTitle')}
-                </Text>
+                <Text style={styles.title}>{t('pairing.setupCompleteTitle')}</Text>
                 <Text style={styles.body}>
-                  {renewalOperation
-                    ? interpolateBillingCopy(renewalCopy.completeBody, { name: targetName })
-                    : t('pairing.setupCompleteBody', {
-                        name: state.claim?.serial_number ?? state.selected?.serialNumber ?? '',
-                      })}
+                  {t('pairing.setupCompleteBody', {
+                    name: state.claim?.serial_number ?? state.selected?.serialNumber ?? '',
+                  })}
                 </Text>
                 <PrimaryButton
                   label={t('common.done')}
@@ -428,7 +369,6 @@ const styles = StyleSheet.create({
   },
   successIcon: { backgroundColor: colors.blue },
   paymentIcon: { backgroundColor: colors.blue },
-  renewalIcon: { backgroundColor: colors.blue },
   errorIcon: { backgroundColor: '#FFF0F1', shadowOpacity: 0 },
   title: { color: colors.text, fontSize: 29, fontWeight: '800', textAlign: 'center', marginTop: 20 },
   body: { color: colors.mutedDark, fontSize: 17, lineHeight: 25, textAlign: 'center', marginTop: 10 },
@@ -482,17 +422,6 @@ const styles = StyleSheet.create({
   planName: { color: colors.text, fontSize: 17, fontWeight: '800' },
   planTerms: { color: colors.mutedDark, fontSize: 14 },
   secureText: { color: colors.muted, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 18 },
-  renewalDetail: {
-    width: '100%',
-    marginTop: 22,
-    borderRadius: radii.medium,
-    backgroundColor: colors.bluePale,
-    padding: 15,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-  },
-  renewalDetailText: { color: colors.blueDark, flex: 1, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   selectedSerial: { marginTop: 20, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#F6F8FC', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 9 },
   selectedSerialText: { color: colors.text, fontSize: 14, fontWeight: '700' },
   fullButton: { width: '100%', marginTop: 18 },

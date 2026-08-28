@@ -41,7 +41,6 @@ export function safeTagSetupErrorCode(error: unknown): TagSetupErrorCode {
     if (code === 'DEVICE_AUTHORIZATION_REJECTED') return 'tag-rejected';
     if (code === 'DEVICE_UNAVAILABLE') return 'tag-unavailable';
     if (code === 'SUBSCRIPTION_REQUIRED') return 'tag-rejected';
-    if (code === 'ENTITLEMENT_UNAVAILABLE') return 'unavailable';
     if (code === 'FIRMWARE_UNAVAILABLE' || code === 'FIRMWARE_NOT_FOUND') return 'unavailable';
     if (code === 'FIRMWARE_UP_TO_DATE') return 'tag-busy';
     if (code === 'FIRMWARE_ACK_REJECTED') return 'recovery-required';

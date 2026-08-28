@@ -10,15 +10,22 @@ export const TAG_CONTROL_KEY_UUID = "a6f0f006-3e4d-4b1a-9c2e-72d24c8f0a01";
 export const AUTHENTICATED_RESET_UUID = "a6f0f007-3e4d-4b1a-9c2e-72d24c8f0a01";
 export const TAG_CHALLENGE_UUID = "a6f0f008-3e4d-4b1a-9c2e-72d24c8f0a01";
 export const TAG_AUTHORIZATION_PROOF_UUID = "a6f0f009-3e4d-4b1a-9c2e-72d24c8f0a01";
+export const GOOGLE_ADVERTISEMENT_KEY_UUID = "a6f0f00a-3e4d-4b1a-9c2e-72d24c8f0a01";
+export const GOOGLE_KEY_FINGERPRINT_UUID = "a6f0f011-3e4d-4b1a-9c2e-72d24c8f0a01";
+export const FINDING_NETWORK_UUID = "a6f0f012-3e4d-4b1a-9c2e-72d24c8f0a01";
 
 export const ADVERTISEMENT_KEY_LENGTH = 28;
 export const KEY_FINGERPRINT_LENGTH = 32;
 export const TAG_CONTROL_KEY_LENGTH = 32;
 export const TAG_CHALLENGE_LENGTH = 32;
 export const TAG_AUTHORIZATION_PROOF_LENGTH = 32;
+export const GOOGLE_ADVERTISEMENT_KEY_LENGTH = 20;
+export const GOOGLE_KEY_FINGERPRINT_LENGTH = 32;
 export const RESET_COMMAND_LENGTH = 64;
 export const TAG_AUTHORIZATION_CAPABILITY = 0x0010;
+export const DUAL_FINDING_NETWORK_CAPABILITY = 0x0100;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
+export type FindingNetwork = "apple" | "google";
 
 export type ProtocolInformation = {
   protocolMajor: number;
@@ -103,6 +110,36 @@ export function decodeTagKeyFingerprint(value: Uint8Array): Uint8Array | null {
   }
   if (value.every((byte) => byte === 0)) return null;
   return value;
+}
+
+export function decodeGoogleKeyFingerprint(value: Uint8Array): Uint8Array | null {
+  if (value.length !== GOOGLE_KEY_FINGERPRINT_LENGTH) {
+    throw new ProvisioningClientError(
+      "INVALID_TAG_FINGERPRINT",
+      `Expected ${GOOGLE_KEY_FINGERPRINT_LENGTH} Google fingerprint bytes`,
+    );
+  }
+  return value.every((byte) => byte === 0) ? null : value;
+}
+
+export function encodeFindingNetwork(value: FindingNetwork): Uint8Array {
+  return Uint8Array.of(value === "apple" ? 1 : 2);
+}
+
+export function decodeFindingNetwork(value: Uint8Array): FindingNetwork | null {
+  if (value.length !== 1) {
+    throw new ProvisioningClientError(
+      "INVALID_FINDING_NETWORK",
+      "Tag returned an invalid finding-network value",
+    );
+  }
+  if (value[0] === 0) return null;
+  if (value[0] === 1) return "apple";
+  if (value[0] === 2) return "google";
+  throw new ProvisioningClientError(
+    "INVALID_FINDING_NETWORK",
+    "Tag returned an unknown finding network",
+  );
 }
 
 export function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {

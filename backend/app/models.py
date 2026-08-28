@@ -12,6 +12,7 @@ from .crypto import b64url_decode_exact
 
 SERIAL_PATTERN = re.compile(r"^PKV-[0-9A-F]{12}$")
 IDEMPOTENCY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
+FindingNetwork = Literal["apple", "google"]
 
 
 class StrictModel(BaseModel):
@@ -25,6 +26,11 @@ class DeviceClaimStart(StrictModel):
     tag_advertisement_key_sha256_base64url: str | None = Field(
         default=None, min_length=43, max_length=43
     )
+    tag_google_advertisement_key_sha256_base64url: str | None = Field(
+        default=None, min_length=43, max_length=43
+    )
+    finding_network: FindingNetwork = "apple"
+    tag_finding_network: FindingNetwork | None = None
 
     @field_validator("serial_number")
     @classmethod
@@ -37,6 +43,7 @@ class DeviceClaimStart(StrictModel):
     @field_validator(
         "tag_challenge_base64url",
         "tag_advertisement_key_sha256_base64url",
+        "tag_google_advertisement_key_sha256_base64url",
     )
     @classmethod
     def valid_tag_key_hash(cls, value: str | None) -> str | None:
@@ -52,6 +59,11 @@ class DeviceClaimStartResponse(StrictModel):
     tag_action: Literal["write_key", "verify_existing_key"]
     advertisement_key_base64url: str
     advertisement_key_sha256_base64url: str
+    google_advertisement_key_base64url: str = Field(min_length=27, max_length=27)
+    google_advertisement_key_sha256_base64url: str = Field(
+        min_length=43, max_length=43
+    )
+    finding_network: FindingNetwork
     tag_authorization_proof_base64url: str
     claim_completion_token_base64url: str
     tag_control_key_base64url: str | None
@@ -63,6 +75,10 @@ class DeviceClaimComplete(StrictModel):
     session_id: UUID
     serial_number: str = Field(min_length=16, max_length=16)
     tag_advertisement_key_sha256_base64url: str = Field(min_length=43, max_length=43)
+    tag_google_advertisement_key_sha256_base64url: str = Field(
+        min_length=43, max_length=43
+    )
+    finding_network: FindingNetwork
     claim_completion_token_base64url: str = Field(min_length=43, max_length=43)
 
     @field_validator("serial_number")
@@ -75,6 +91,7 @@ class DeviceClaimComplete(StrictModel):
 
     @field_validator(
         "tag_advertisement_key_sha256_base64url",
+        "tag_google_advertisement_key_sha256_base64url",
         "claim_completion_token_base64url",
     )
     @classmethod
@@ -89,54 +106,7 @@ class DeviceClaimResponse(StrictModel):
     status: Literal["claimed"]
     claimed_at: datetime
     next_action: Literal["ready"]
-
-
-class DeviceEntitlementRequest(StrictModel):
-    serial_number: str = Field(min_length=16, max_length=16)
-    tag_challenge_base64url: str = Field(min_length=43, max_length=43)
-
-    @field_validator("serial_number")
-    @classmethod
-    def valid_serial(cls, value: str) -> str:
-        normalized = value.upper()
-        if not SERIAL_PATTERN.fullmatch(normalized):
-            raise ValueError("serial_number must be PKV- followed by 12 hexadecimal digits")
-        return normalized
-
-    @field_validator("tag_challenge_base64url")
-    @classmethod
-    def valid_challenge(cls, value: str) -> str:
-        b64url_decode_exact(value, 32)
-        return value
-
-
-class DeviceEntitlementResponse(StrictModel):
-    device_id: UUID
-    serial_number: str
-    entitlement_base64url: str = Field(min_length=180, max_length=180)
-    tag_authorization_proof_base64url: str = Field(min_length=43, max_length=43)
-    packet_sha256_base64url: str = Field(min_length=43, max_length=43)
-    expires_at: datetime
-    counter: int = Field(ge=1)
-
-
-class DeviceEntitlementAcknowledge(StrictModel):
-    counter: int = Field(ge=1)
-    expires_at: datetime
-    packet_sha256_base64url: str = Field(min_length=43, max_length=43)
-
-    @field_validator("packet_sha256_base64url")
-    @classmethod
-    def valid_packet_digest(cls, value: str) -> str:
-        b64url_decode_exact(value, 32)
-        return value
-
-
-class DeviceEntitlementAcknowledgeResponse(StrictModel):
-    device_id: UUID
-    counter: int = Field(ge=1)
-    expires_at: datetime
-    status: Literal["installed"]
+    finding_network: FindingNetwork
 
 
 FIRMWARE_VERSION_PATTERN = r"^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$"
@@ -208,6 +178,10 @@ class DeviceProvisioningRequestStart(StrictModel):
     tag_advertisement_key_sha256_base64url: str | None = Field(
         default=None, min_length=43, max_length=43
     )
+    tag_google_advertisement_key_sha256_base64url: str | None = Field(
+        default=None, min_length=43, max_length=43
+    )
+    tag_finding_network: FindingNetwork | None = None
 
     @field_validator("serial_number")
     @classmethod
@@ -220,6 +194,7 @@ class DeviceProvisioningRequestStart(StrictModel):
     @field_validator(
         "tag_challenge_base64url",
         "tag_advertisement_key_sha256_base64url",
+        "tag_google_advertisement_key_sha256_base64url",
     )
     @classmethod
     def valid_tag_key_hash(cls, value: str | None) -> str | None:
@@ -258,6 +233,10 @@ class DeviceReleaseStart(StrictModel):
     serial_number: str = Field(min_length=16, max_length=16)
     tag_challenge_base64url: str = Field(min_length=43, max_length=43)
     tag_advertisement_key_sha256_base64url: str = Field(min_length=43, max_length=43)
+    tag_google_advertisement_key_sha256_base64url: str = Field(
+        min_length=43, max_length=43
+    )
+    finding_network: FindingNetwork
 
     @field_validator("serial_number")
     @classmethod
@@ -270,6 +249,7 @@ class DeviceReleaseStart(StrictModel):
     @field_validator(
         "tag_challenge_base64url",
         "tag_advertisement_key_sha256_base64url",
+        "tag_google_advertisement_key_sha256_base64url",
     )
     @classmethod
     def valid_tag_key_hash(cls, value: str) -> str:
@@ -291,6 +271,8 @@ class DeviceReleaseComplete(StrictModel):
     release_id: UUID
     serial_number: str = Field(min_length=16, max_length=16)
     tag_key_state: Literal["empty"]
+    tag_google_key_state: Literal["empty"]
+    tag_finding_network_state: Literal["empty"]
     release_completion_token_base64url: str = Field(min_length=43, max_length=43)
 
     @field_validator("serial_number")
@@ -569,9 +551,6 @@ class DeviceSubscriptionResponse(StrictModel):
     current_period_start: datetime | None = None
     current_period_end: datetime | None = None
     cancel_at_period_end: bool = False
-    entitlement_sync_status: Literal["pending", "issued", "installed"] | None = None
-    tag_entitlement_expires_at: datetime | None = None
-    tag_entitlement_updated_at: datetime | None = None
     available_plans: list[PlanSummary]
 
 
@@ -615,7 +594,6 @@ NotificationKind = Literal[
     "renewal_7_days",
     "renewal_1_day",
     "expired",
-    "tag_sync_required",
     "admin_message",
     "safe_zone_enter",
     "safe_zone_exit",

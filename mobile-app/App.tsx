@@ -105,9 +105,6 @@ function AppContent() {
   const [pairingContext, setPairingContext] = useState<PairingContext>({ kind: 'add' });
   const [removeTrackerId, setRemoveTrackerId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const refreshBillingDevice = useRef<(deviceId: string) => Promise<void>>(
-    async () => undefined,
-  );
   const provisioningCheckout = useRef<
     (
       requestId: string,
@@ -155,10 +152,6 @@ function AppContent() {
     getAccessToken: auth.getAccessToken,
     apiConfig: PROVISIONING_API_CONFIG,
     onClaimed: handleTagClaimed,
-    onEntitlementInstalled: async (deviceId) => {
-      await refreshBillingDevice.current(deviceId);
-      showNotice(t('pairing.setupCompleteTitle'));
-    },
     onProvisioningCheckout: (requestId, planCode) =>
       provisioningCheckout.current(requestId, planCode),
   });
@@ -272,7 +265,6 @@ function AppContent() {
     auth.session?.access_token ?? null,
     demoPreviewActive && __DEV__,
   );
-  refreshBillingDevice.current = billing.refreshDevice;
   provisioningCheckout.current = billing.startProvisioningCheckout;
   const openSubscriptionFromNotification = useCallback(
     (deviceId: string) => {
@@ -283,12 +275,25 @@ function AppContent() {
     },
     [billing.refreshDevice, notificationInbox.refresh],
   );
+  const openTrackerFromNotification = useCallback(
+    (deviceId: string) => {
+      void notificationInbox.refresh();
+      setTrackerPreferences((current) => ({
+        ...current,
+        recentTrackerIds: recordTrackerOpened(current.recentTrackerIds, deviceId),
+      }));
+      setActiveTab('trackers');
+      setRoute({ name: 'tracker', trackerId: deviceId });
+    },
+    [notificationInbox.refresh],
+  );
   useRenewalPushRegistration({
     enabled: Boolean(auth.session) && notificationDeliveryEnabled,
     userId: auth.user?.id ?? null,
     apiConfig: PROVISIONING_API_CONFIG,
     getAccessToken: auth.getAccessToken,
     onOpenSubscription: openSubscriptionFromNotification,
+    onOpenTracker: openTrackerFromNotification,
   });
   const updateNotificationDelivery = useCallback(
     async (enabled: boolean) => {
@@ -617,13 +622,6 @@ function AppContent() {
           onRetry={() => billing.refreshDevice(selectedTracker.id)}
           onCheckout={(planCode) => billing.startCheckout(selectedTracker.id, planCode)}
           onPortal={(action) => billing.openPortal(selectedTracker.id, action)}
-          onInstallEntitlement={() => {
-            if (!selectedTracker.serialNumber) {
-              showNotice(t('pairing.errorUnavailable'));
-              return;
-            }
-            tagSetup.openForEntitlement(selectedTracker.id, selectedTracker.serialNumber);
-          }}
           onNotice={showNotice}
         />
       );
@@ -702,6 +700,7 @@ function AppContent() {
           onBack={() => changeTab('settings')}
           onRetry={notificationInbox.refresh}
           onOpenSubscription={openSubscriptionFromNotification}
+          onOpenTracker={openTrackerFromNotification}
           onMarkRead={notificationInbox.markRead}
         />
       );
@@ -924,7 +923,6 @@ function AppContent() {
         state={tagSetup.state}
         onSelect={tagSetup.select}
         onChoosePlan={tagSetup.chooseProvisioningPlan}
-        onBeginEntitlementScan={tagSetup.beginEntitlementScan}
         onRetry={tagSetup.retry}
         onClose={tagSetup.close}
       />

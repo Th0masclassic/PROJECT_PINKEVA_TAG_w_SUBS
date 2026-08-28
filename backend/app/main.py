@@ -19,7 +19,6 @@ from .auth import AccountAccessError, AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
 from .database import Database
-from .entitlement import EntitlementService
 from .firmware import FirmwareError, FirmwareService
 from .location import LocationError, LocationService
 from .notifications import (
@@ -39,10 +38,6 @@ from .models import (
     DeviceClaimResponse,
     DeviceClaimStart,
     DeviceClaimStartResponse,
-    DeviceEntitlementRequest,
-    DeviceEntitlementResponse,
-    DeviceEntitlementAcknowledge,
-    DeviceEntitlementAcknowledgeResponse,
     FirmwareAvailabilityResponse,
     FirmwareUpdateAcknowledge,
     FirmwareUpdateAcknowledgeResponse,
@@ -113,6 +108,7 @@ SAFE_PROVISIONING_MESSAGES = {
     "SESSION_NOT_FOUND": "This setup session is no longer available.",
     "RECOVERY_REQUIRED": "This tag needs support before setup can continue.",
     "SUBSCRIPTION_REQUIRED": "An active subscription is required before setup can continue.",
+    "FINDING_NETWORK_MISMATCH": "The tag is configured for a different finding network.",
 }
 
 SAFE_BILLING_MESSAGES = {
@@ -122,8 +118,6 @@ SAFE_BILLING_MESSAGES = {
     "SUBSCRIPTION_REQUIRED": "An active subscription is required for this tag.",
     "PROVISIONING_REQUEST_NOT_FOUND": "This setup request is no longer available.",
     "PROVISIONING_REQUEST_EXPIRED": "This setup request expired. Start again to continue.",
-    "ENTITLEMENT_UNAVAILABLE": "Tag activation is temporarily unavailable. Please try again.",
-    "ENTITLEMENT_ACK_REJECTED": "The tag update could not be confirmed. Please try the update again.",
     "PLAN_UNAVAILABLE": "This subscription plan is unavailable.",
     "SUBSCRIPTION_EXISTS": "This tag already has a current subscription.",
     "CHECKOUT_IN_PROGRESS": "A checkout is already in progress for this tag.",
@@ -265,7 +259,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         opened_database = database
         app.state.database = database
         app.state.service = ProvisioningService(settings)
-        app.state.entitlement = EntitlementService(settings)
         app.state.firmware = FirmwareService(settings)
         app.state.findmy_auth = findmy_auth
         app.state.location = LocationService(settings, auth_manager=findmy_auth)
@@ -781,43 +774,6 @@ async def subscription_portal(
         device_id=device_id,
         action=request.action if request else "update",
     )
-
-
-@app.post(
-    "/v1/devices/{device_id}/entitlements",
-    response_model=DeviceEntitlementResponse,
-    status_code=201,
-)
-async def issue_device_entitlement(
-    device_id: UUID,
-    request: DeviceEntitlementRequest,
-    principal: AuthenticatedPrincipal,
-) -> DeviceEntitlementResponse:
-    async with app.state.database.transaction() as connection:
-        return await app.state.entitlement.issue(
-            connection,
-            user_id=principal.user_id,
-            device_id=device_id,
-            request=request,
-        )
-
-
-@app.post(
-    "/v1/devices/{device_id}/entitlements/acknowledge",
-    response_model=DeviceEntitlementAcknowledgeResponse,
-)
-async def acknowledge_device_entitlement(
-    device_id: UUID,
-    request: DeviceEntitlementAcknowledge,
-    principal: AuthenticatedPrincipal,
-) -> DeviceEntitlementAcknowledgeResponse:
-    async with app.state.database.transaction() as connection:
-        return await app.state.entitlement.acknowledge(
-            connection,
-            user_id=principal.user_id,
-            device_id=device_id,
-            request=request,
-        )
 
 
 @app.get(

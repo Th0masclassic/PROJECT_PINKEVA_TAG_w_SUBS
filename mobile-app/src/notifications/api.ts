@@ -8,7 +8,6 @@ export type NotificationKind =
   | 'renewal_7_days'
   | 'renewal_1_day'
   | 'expired'
-  | 'tag_sync_required'
   | 'admin_message'
   | 'safe_zone_enter'
   | 'safe_zone_exit'
@@ -69,7 +68,6 @@ function parseKind(value: unknown): NotificationKind | null {
   return value === 'renewal_7_days' ||
     value === 'renewal_1_day' ||
     value === 'expired' ||
-    value === 'tag_sync_required' ||
     value === 'admin_message' ||
     value === 'safe_zone_enter' ||
     value === 'safe_zone_exit' ||
@@ -94,9 +92,17 @@ export function parseUserNotifications(value: unknown): UserNotification[] {
     const createdAt = parseDate(item.created_at);
     const readAt = item.read_at === null ? null : parseDate(item.read_at);
     const isAdminMessage = kind === 'admin_message';
+    const isBillingMessage =
+      kind === 'renewal_7_days' || kind === 'renewal_1_day' || kind === 'expired';
+    const isPremiumTrackerAlert =
+      kind === 'safe_zone_enter' ||
+      kind === 'safe_zone_exit' ||
+      kind === 'lost_mode_location' ||
+      kind === 'movement_detected';
     if (!id || !kind || !title || !body || !createdAt || readAt === null && item.read_at !== null ||
       (isAdminMessage && (deviceId !== null || periodEnd !== null)) ||
-      (!isAdminMessage && (!deviceId || !periodEnd))) {
+      (isBillingMessage && (!deviceId || !periodEnd)) ||
+      (isPremiumTrackerAlert && (!deviceId || periodEnd !== null))) {
       throw new NotificationApiError('invalid_response');
     }
     return { id, deviceId, kind, periodEnd, title, body, createdAt, readAt };

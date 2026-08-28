@@ -16,13 +16,10 @@
 #include "esp_mac.h"
 #include "esp_random.h"
 #include "esp_timer.h"
-#include "mbedtls/ecdsa.h"
-#include "mbedtls/ecp.h"
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
 #include "nvs_driver.hpp"
 #include "ota_update.hpp"
-#include "release_signing_key.hpp"
 #include "sdkconfig.h"
 
 #ifndef CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
@@ -44,23 +41,21 @@ constexpr uint8_t TAG_CHALLENGE_SIZE = 32;
 constexpr uint8_t TAG_AUTHORIZATION_PROOF_SIZE = 32;
 constexpr uint8_t UTC_TIME_SIZE = 8;
 constexpr uint8_t RESET_COMMAND_SIZE = 64;
-constexpr size_t ENTITLEMENT_BODY_SIZE = 62;
-constexpr size_t ENTITLEMENT_SIGNATURE_OFFSET = 63;
-constexpr size_t ENTITLEMENT_SIGNATURE_MAX_SIZE = 72;
-constexpr size_t ENTITLEMENT_SIGNATURE_MIN_SIZE = 70;
-constexpr uint8_t ENTITLEMENT_FINDER_CAPABILITY = 0x01;
 constexpr uint64_t AUTHORIZATION_TIMEOUT_MICROSECONDS = 30ULL * 1000ULL * 1000ULL;
 constexpr uint64_t MAINTENANCE_WINDOW_MICROSECONDS =
     2ULL * 60ULL * 1000ULL * 1000ULL;
 constexpr uint64_t CLOCK_SYNC_SKEW_TOLERANCE_SECONDS = 5ULL * 60ULL;
-constexpr size_t MAX_STAGED_VALUE_SIZE = SUBSCRIPTION_ENTITLEMENT_SIZE;
+constexpr size_t MAX_STAGED_VALUE_SIZE = FIRMWARE_MANIFEST_SIZE;
 constexpr uint8_t ADV_CONFIG_FLAG = 1U << 0;
 constexpr uint8_t SCAN_RSP_CONFIG_FLAG = 1U << 1;
 constexpr uint16_t TAG_AUTHORIZATION_CAPABILITY = 0x0010;
 constexpr uint16_t NON_BONDING_SETUP_CAPABILITY = 0x0020;
 constexpr uint16_t UTC_TIME_SYNC_CAPABILITY = 0x0040;
 constexpr uint16_t FIRMWARE_UPDATE_CAPABILITY = 0x0080;
-constexpr size_t FINDER_ADV_DATA_SIZE = 31;
+constexpr uint16_t DUAL_FINDING_NETWORK_CAPABILITY = 0x0100;
+constexpr size_t APPLE_FINDER_ADV_DATA_SIZE = 31;
+constexpr size_t GOOGLE_FINDER_ADV_DATA_SIZE = 28;
+constexpr size_t FINDER_ADV_DATA_SIZE = APPLE_FINDER_ADV_DATA_SIZE;
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
 // canonical string next to the wire representation so the mobile app,
@@ -108,7 +103,7 @@ constexpr uint8_t TAG_AUTHORIZATION_PROOF_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x09, 0xF0, 0xF0, 0xA6,
 };
-constexpr uint8_t SUBSCRIPTION_ENTITLEMENT_UUID[ESP_UUID_LEN_128] = {
+constexpr uint8_t GOOGLE_ADVERTISEMENT_KEY_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x0A, 0xF0, 0xF0, 0xA6,
 };
@@ -136,6 +131,14 @@ constexpr uint8_t FIRMWARE_VERSION_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x10, 0xF0, 0xF0, 0xA6,
 };
+constexpr uint8_t GOOGLE_KEY_FINGERPRINT_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x11, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t FINDING_NETWORK_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x12, 0xF0, 0xF0, 0xA6,
+};
 
 enum AttributeIndex : uint8_t {
     SERVICE,
@@ -158,8 +161,12 @@ enum AttributeIndex : uint8_t {
     TAG_CHALLENGE_VALUE,
     TAG_AUTHORIZATION_PROOF_DECLARATION,
     TAG_AUTHORIZATION_PROOF_VALUE,
-    SUBSCRIPTION_ENTITLEMENT_DECLARATION,
-    SUBSCRIPTION_ENTITLEMENT_VALUE,
+    GOOGLE_ADVERTISEMENT_KEY_DECLARATION,
+    GOOGLE_ADVERTISEMENT_KEY_VALUE,
+    GOOGLE_KEY_FINGERPRINT_DECLARATION,
+    GOOGLE_KEY_FINGERPRINT_VALUE,
+    FINDING_NETWORK_DECLARATION,
+    FINDING_NETWORK_VALUE,
     UTC_TIME_DECLARATION,
     UTC_TIME_VALUE,
     FIRMWARE_MANIFEST_DECLARATION,
@@ -187,28 +194,30 @@ constexpr uint8_t WRITE_WITHOUT_RESPONSE_PROPERTY =
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 
-// Protocol 1.6, firmware 0.3. Capability bit 0x10 requires a backend-issued,
+// Protocol 1.7, firmware 0.4. Capability bit 0x10 requires a backend-issued,
 // nonce-bound authorization proof before any provisioning/reset write. The
 // checked-in development profile also advertises bit 0x20: setup deliberately
 // avoids OS pairing/bonding and therefore must never be shipped as the final
 // production transport until application-layer key confidentiality is added.
 // Bit 0x40 asks an authorized phone to provide Unix UTC on each connection.
 // Bit 0x80 supports signed, rollback-safe BLE OTA through dual app partitions.
+// Bit 0x100 provisions Apple and Google identities together while selecting
+// exactly one finding network for advertising, as required by both networks.
+constexpr uint16_t PROTOCOL_CAPABILITIES =
+    0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
+    FIRMWARE_UPDATE_CAPABILITY | DUAL_FINDING_NETWORK_CAPABILITY |
+#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
+    NON_BONDING_SETUP_CAPABILITY;
+#else
+    0x0000;
+#endif
 uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
     1,
-    6,
+    7,
     0,
-    3,
-    static_cast<uint8_t>(
-        0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
-        FIRMWARE_UPDATE_CAPABILITY |
-#if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
-        NON_BONDING_SETUP_CAPABILITY
-#else
-        0x0000
-#endif
-        ),
-    0x00,
+    4,
+    static_cast<uint8_t>(PROTOCOL_CAPABILITIES & 0xFFU),
+    static_cast<uint8_t>((PROTOCOL_CAPABILITIES >> 8U) & 0xFFU),
 };
 
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
@@ -243,13 +252,15 @@ uint8_t control_key_attribute[TAG_CONTROL_KEY_SIZE] = {};
 uint8_t reset_command_attribute[RESET_COMMAND_SIZE] = {};
 uint8_t tag_challenge_attribute[TAG_CHALLENGE_SIZE] = {};
 uint8_t tag_authorization_proof_attribute[TAG_AUTHORIZATION_PROOF_SIZE] = {};
-uint8_t subscription_entitlement_attribute[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
+uint8_t google_advertisement_key_attribute[GOOGLE_ADVERTISEMENT_KEY_SIZE] = {};
+uint8_t google_key_fingerprint_attribute[KEY_FINGERPRINT_SIZE] = {};
+uint8_t finding_network_attribute[1] = {};
 uint8_t utc_time_attribute[UTC_TIME_SIZE] = {};
 uint8_t firmware_manifest_attribute[FIRMWARE_MANIFEST_SIZE] = {};
 uint8_t firmware_data_attribute[512] = {};
 uint8_t firmware_control_attribute[1] = {};
 uint8_t firmware_status_attribute[FIRMWARE_STATUS_SIZE] = {};
-uint8_t firmware_version_attribute[3] = {0, 3, 1};
+uint8_t firmware_version_attribute[3] = {0, 4, 0};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
@@ -261,14 +272,10 @@ std::atomic_bool service_started{false};
 bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
-esp_timer_handle_t entitlement_expiry_timer = nullptr;
 esp_timer_handle_t maintenance_window_timer = nullptr;
-uint64_t entitlement_issued_epoch = 0;
-uint64_t entitlement_expires_epoch = 0;
 uint64_t trusted_clock_epoch = 0;
-int64_t entitlement_time_started_microseconds = 0;
-uint64_t current_entitlement_counter = 0;
-bool entitlement_time_trusted = false;
+int64_t trusted_clock_started_microseconds = 0;
+bool trusted_clock_is_set = false;
 uint8_t pending_adv_configuration = 0;
 bool random_address_change_pending = false;
 bool advertising_active = false;
@@ -300,6 +307,7 @@ uint8_t setup_adv_data[3 + 18] = {
 };
 uint8_t setup_scan_response[2 + (DEVICE_ID_LEN - 1)] = {};
 uint8_t finder_adv_data[FINDER_ADV_DATA_SIZE] = {};
+size_t finder_adv_data_length = 0;
 
 esp_ble_adv_params_t setup_adv_params = {
     .adv_int_min = 0x00A0,  // 100 ms while actively setting up.
@@ -312,7 +320,7 @@ esp_ble_adv_params_t setup_adv_params = {
     .adv_filter_policy = ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY,
 };
 
-esp_ble_adv_params_t suspended_adv_params = {
+esp_ble_adv_params_t maintenance_adv_params = {
     .adv_int_min = 0x0190,  // 250 ms during a user-requested maintenance window.
     .adv_int_max = 0x0280,  // 400 ms.
     .adv_type = ADV_TYPE_IND,
@@ -505,7 +513,41 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           0,
           tag_authorization_proof_attribute}},
 
-    [SUBSCRIPTION_ENTITLEMENT_DECLARATION] =
+    [GOOGLE_ADVERTISEMENT_KEY_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [GOOGLE_ADVERTISEMENT_KEY_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(GOOGLE_ADVERTISEMENT_KEY_UUID),
+          SETUP_WRITE_PERMISSION,
+          sizeof(google_advertisement_key_attribute),
+          0,
+          google_advertisement_key_attribute}},
+
+    [GOOGLE_KEY_FINGERPRINT_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&READ_PROPERTY)}},
+    [GOOGLE_KEY_FINGERPRINT_VALUE] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(GOOGLE_KEY_FINGERPRINT_UUID),
+          SETUP_READ_PERMISSION,
+          sizeof(google_key_fingerprint_attribute),
+          sizeof(google_key_fingerprint_attribute),
+          google_key_fingerprint_attribute}},
+
+    [FINDING_NETWORK_DECLARATION] =
         {{ESP_GATT_AUTO_RSP},
          {ESP_UUID_LEN_16,
           reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
@@ -513,14 +555,14 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           sizeof(uint8_t),
           sizeof(uint8_t),
           const_cast<uint8_t *>(&READ_WRITE_PROPERTY)}},
-    [SUBSCRIPTION_ENTITLEMENT_VALUE] =
+    [FINDING_NETWORK_VALUE] =
         {{ESP_GATT_RSP_BY_APP},
          {ESP_UUID_LEN_128,
-          const_cast<uint8_t *>(SUBSCRIPTION_ENTITLEMENT_UUID),
+          const_cast<uint8_t *>(FINDING_NETWORK_UUID),
           static_cast<uint16_t>(SETUP_READ_PERMISSION | SETUP_WRITE_PERMISSION),
-          SUBSCRIPTION_ENTITLEMENT_SIZE,
-          0,
-          subscription_entitlement_attribute}},
+          sizeof(finding_network_attribute),
+          sizeof(finding_network_attribute),
+          finding_network_attribute}},
 
     [UTC_TIME_DECLARATION] =
         {{ESP_GATT_AUTO_RSP},
@@ -699,22 +741,38 @@ void update_status(ProvisioningState state, ProvisioningResult result) {
     }
 }
 
-esp_err_t update_key_fingerprint(const uint8_t *key) {
+esp_err_t update_fingerprint(const uint8_t *key,
+                             size_t key_length,
+                             uint8_t *fingerprint,
+                             size_t fingerprint_length,
+                             AttributeIndex attribute_index) {
+    if (fingerprint == nullptr || fingerprint_length != KEY_FINGERPRINT_SIZE) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (key == nullptr) {
-        std::memset(key_fingerprint_attribute, 0,
-                    sizeof(key_fingerprint_attribute));
-    } else if (mbedtls_sha256(key, PUBLIC_KEY_SIZE,
-                              key_fingerprint_attribute, 0) != 0) {
-        std::memset(key_fingerprint_attribute, 0,
-                    sizeof(key_fingerprint_attribute));
+        std::memset(fingerprint, 0, fingerprint_length);
+    } else if (mbedtls_sha256(key, key_length, fingerprint, 0) != 0) {
+        std::memset(fingerprint, 0, fingerprint_length);
         return ESP_FAIL;
     }
-    if (attribute_handles[KEY_FINGERPRINT_VALUE] != 0) {
+    if (attribute_handles[attribute_index] != 0) {
         return esp_ble_gatts_set_attr_value(
-            attribute_handles[KEY_FINGERPRINT_VALUE],
-            sizeof(key_fingerprint_attribute), key_fingerprint_attribute);
+            attribute_handles[attribute_index], fingerprint_length, fingerprint);
     }
     return ESP_OK;
+}
+
+esp_err_t update_key_fingerprint(const uint8_t *key) {
+    return update_fingerprint(key, PUBLIC_KEY_SIZE, key_fingerprint_attribute,
+                              sizeof(key_fingerprint_attribute),
+                              KEY_FINGERPRINT_VALUE);
+}
+
+esp_err_t update_google_key_fingerprint(const uint8_t *key) {
+    return update_fingerprint(key, GOOGLE_ADVERTISEMENT_KEY_SIZE,
+                              google_key_fingerprint_attribute,
+                              sizeof(google_key_fingerprint_attribute),
+                              GOOGLE_KEY_FINGERPRINT_VALUE);
 }
 
 void log_received_advertisement_key(const uint8_t *key, size_t length) {
@@ -750,7 +808,8 @@ void erase_all_bonds() {
     }
 }
 
-esp_err_t configure_finder_advertisement(const uint8_t *key, size_t length) {
+esp_err_t configure_apple_finder_advertisement(const uint8_t *key,
+                                                size_t length) {
     if (!advertisement_key_is_valid(key, length)) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -774,9 +833,47 @@ esp_err_t configure_finder_advertisement(const uint8_t *key, size_t length) {
     std::memcpy(finder_adv_data + 7, key + 6, 22);
     finder_adv_data[29] = static_cast<uint8_t>(key[0] >> 6);
     finder_adv_data[30] = 0x00;  // Hint.
+    finder_adv_data_length = APPLE_FINDER_ADV_DATA_SIZE;
 
     ESP_LOGI(LOG_TAG,
-             "Finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
+             "Apple finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
+             finder_ble_address[0], finder_ble_address[1], finder_ble_address[2],
+             finder_ble_address[3], finder_ble_address[4], finder_ble_address[5]);
+    return ESP_OK;
+}
+
+esp_err_t configure_google_finder_advertisement(const uint8_t *eid,
+                                                 size_t length) {
+    if (!google_advertisement_key_is_valid(eid, length)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // This development frame is the counter-zero FMDN EID generated by the
+    // backend. Certified hardware must rotate the EID and BLE address using a
+    // battery-backed clock. Hashing here gives this development identity a
+    // deterministic non-resolvable private address (NRPA) without exposing
+    // more key material.
+    uint8_t address_digest[KEY_FINGERPRINT_SIZE] = {};
+    if (mbedtls_sha256(eid, length, address_digest, 0) != 0) {
+        return ESP_FAIL;
+    }
+    std::memcpy(finder_ble_address, address_digest, sizeof(finder_ble_address));
+    finder_ble_address[0] = static_cast<uint8_t>(finder_ble_address[0] & 0x3FU);
+    std::memset(address_digest, 0, sizeof(address_digest));
+
+    // Google Find Hub Network legacy service-data frame:
+    // Flags + UUID 0xFEAA + frame type 0x40 + 20-byte ephemeral identifier.
+    std::memset(finder_adv_data, 0, sizeof(finder_adv_data));
+    constexpr uint8_t GOOGLE_FRAME_PREFIX[] = {
+        0x02, 0x01, 0x06, 0x18, 0x16, 0xAA, 0xFE, 0x40,
+    };
+    std::memcpy(finder_adv_data, GOOGLE_FRAME_PREFIX,
+                sizeof(GOOGLE_FRAME_PREFIX));
+    std::memcpy(finder_adv_data + sizeof(GOOGLE_FRAME_PREFIX), eid, length);
+    finder_adv_data_length = GOOGLE_FINDER_ADV_DATA_SIZE;
+
+    ESP_LOGI(LOG_TAG,
+             "Google finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
              finder_ble_address[0], finder_ble_address[1], finder_ble_address[2],
              finder_ble_address[3], finder_ble_address[4], finder_ble_address[5]);
     return ESP_OK;
@@ -789,13 +886,6 @@ void configure_advertising_for_mode() {
     const bool maintenance_frame =
         maintenance_window_open && ble_mode != BLEMode::SETUP;
     const bool setup_frame = ble_mode == BLEMode::SETUP || maintenance_frame;
-    if (ble_mode == BLEMode::SUSPENDED && !maintenance_frame) {
-        pending_adv_configuration = 0;
-        advertising_configuration_failed = false;
-        random_address_change_pending = false;
-        return;
-    }
-
     pending_adv_configuration =
         ADV_CONFIG_FLAG | (setup_frame ? SCAN_RSP_CONFIG_FLAG : 0);
     advertising_configuration_failed = false;
@@ -819,7 +909,13 @@ void configure_advertising_for_mode() {
 
     uint8_t *advertisement_data = setup_frame ? setup_adv_data : finder_adv_data;
     size_t advertisement_data_size =
-        setup_frame ? sizeof(setup_adv_data) : sizeof(finder_adv_data);
+        setup_frame ? sizeof(setup_adv_data) : finder_adv_data_length;
+    if (!setup_frame && advertisement_data_size == 0) {
+        advertising_configuration_failed = true;
+        pending_adv_configuration = 0;
+        ESP_LOGE(LOG_TAG, "Finder advertisement was not initialized");
+        return;
+    }
     esp_err_t error = esp_ble_gap_config_adv_data_raw(
         advertisement_data, advertisement_data_size);
     if (error != ESP_OK) {
@@ -845,14 +941,11 @@ void try_start_advertising() {
         !advertising_configuration_failed && !random_address_change_pending) {
         const bool maintenance_frame =
             maintenance_window_open && ble_mode != BLEMode::SETUP;
-        if (ble_mode == BLEMode::SUSPENDED && !maintenance_frame) {
-            return;
-        }
         esp_ble_adv_params_t *parameters = &finder_adv_params;
         if (ble_mode == BLEMode::SETUP) {
             parameters = &setup_adv_params;
         } else if (maintenance_frame) {
-            parameters = &suspended_adv_params;
+            parameters = &maintenance_adv_params;
         }
         esp_err_t error = esp_ble_gap_start_advertising(parameters);
         if (error != ESP_OK) {
@@ -887,133 +980,66 @@ uint64_t read_uint64_be(const uint8_t *value) {
     return result;
 }
 
-uint32_t read_uint32_be(const uint8_t *value) {
-    return (static_cast<uint32_t>(value[0]) << 24U) |
-           (static_cast<uint32_t>(value[1]) << 16U) |
-           (static_cast<uint32_t>(value[2]) << 8U) |
-           static_cast<uint32_t>(value[3]);
-}
-
-bool verify_entitlement_signature(const uint8_t *entitlement,
-                                  size_t signature_length) {
-    uint8_t digest[32] = {};
-    if (mbedtls_sha256(entitlement, ENTITLEMENT_BODY_SIZE, digest, 0) != 0) {
-        return false;
-    }
-
-    mbedtls_ecdsa_context context;
-    mbedtls_ecdsa_init(&context);
-    int result = mbedtls_ecp_group_load(
-        &context.MBEDTLS_PRIVATE(grp), MBEDTLS_ECP_DP_SECP256R1);
-    if (result == 0) {
-        result = mbedtls_ecp_point_read_binary(
-            &context.MBEDTLS_PRIVATE(grp), &context.MBEDTLS_PRIVATE(Q),
-            PINKEVA_RELEASE_PUBLIC_KEY,
-            sizeof(PINKEVA_RELEASE_PUBLIC_KEY));
-    }
-    if (result == 0) {
-        result = mbedtls_ecdsa_read_signature(
-            &context, digest, sizeof(digest),
-            entitlement + ENTITLEMENT_SIGNATURE_OFFSET, signature_length);
-    }
-    mbedtls_ecdsa_free(&context);
-    std::memset(digest, 0, sizeof(digest));
-    return result == 0;
-}
-
-bool validate_entitlement(const uint8_t *entitlement,
-                          size_t length,
-                          uint64_t *issued_epoch,
-                          uint64_t *expires_epoch,
-                          uint64_t *counter) {
-    if (entitlement == nullptr || length != SUBSCRIPTION_ENTITLEMENT_SIZE ||
-        entitlement[0] != 1 ||
-        (entitlement[1] & ENTITLEMENT_FINDER_CAPABILITY) == 0 ||
-        std::memcmp(entitlement + 2, device_id, DEVICE_ID_LEN - 1) != 0 ||
-        read_uint32_be(entitlement + 58) != ENTITLEMENT_FINDER_CAPABILITY) {
-        return false;
-    }
-
-    const uint8_t signature_length = entitlement[ENTITLEMENT_BODY_SIZE];
-    if (signature_length < ENTITLEMENT_SIGNATURE_MIN_SIZE ||
-        signature_length > ENTITLEMENT_SIGNATURE_MAX_SIZE) {
-        return false;
-    }
-    for (size_t index = ENTITLEMENT_SIGNATURE_OFFSET + signature_length;
-         index < SUBSCRIPTION_ENTITLEMENT_SIZE; ++index) {
-        if (entitlement[index] != 0) {
-            return false;
-        }
-    }
-
-    const uint64_t issued = read_uint64_be(entitlement + 34);
-    const uint64_t expires = read_uint64_be(entitlement + 42);
-    const uint64_t sequence = read_uint64_be(entitlement + 50);
-    if (issued == 0 || expires <= issued || sequence == 0 ||
-        !verify_entitlement_signature(entitlement, signature_length)) {
-        return false;
-    }
-    if (issued_epoch != nullptr) *issued_epoch = issued;
-    if (expires_epoch != nullptr) *expires_epoch = expires;
-    if (counter != nullptr) *counter = sequence;
-    return true;
-}
-
-uint64_t trusted_entitlement_now() {
-    if (!entitlement_time_trusted) return 0;
-    const int64_t elapsed = esp_timer_get_time() - entitlement_time_started_microseconds;
+uint64_t trusted_clock_now() {
+    if (!trusted_clock_is_set) return 0;
+    const int64_t elapsed = esp_timer_get_time() - trusted_clock_started_microseconds;
     if (elapsed < 0) return trusted_clock_epoch;
     return trusted_clock_epoch + static_cast<uint64_t>(elapsed / 1000000LL);
 }
 
-void schedule_entitlement_expiry() {
-    if (entitlement_expiry_timer == nullptr) return;
-    esp_timer_stop(entitlement_expiry_timer);
-    // Legacy entitlement packets remain readable/writable for compatibility
-    // with older mobile builds, but their dates never control advertising.
-}
+esp_err_t restore_finder_configuration(bool *complete) {
+    if (complete == nullptr) return ESP_ERR_INVALID_ARG;
+    *complete = false;
 
-bool activate_stored_entitlement(uint64_t current_epoch) {
-    uint8_t stored_entitlement[SUBSCRIPTION_ENTITLEMENT_SIZE] = {};
-    uint64_t stored_issued_epoch = 0;
-    uint64_t stored_expires_epoch = 0;
-    uint64_t stored_counter = 0;
-    const bool valid =
-        load_subscription_entitlement(stored_entitlement,
-                                      sizeof(stored_entitlement)) == ESP_OK &&
-        validate_entitlement(stored_entitlement, sizeof(stored_entitlement),
-                             &stored_issued_epoch, &stored_expires_epoch,
-                             &stored_counter);
-    if (valid) {
-        current_entitlement_counter = stored_counter;
-        std::memcpy(subscription_entitlement_attribute, stored_entitlement,
-                    sizeof(subscription_entitlement_attribute));
-    }
-    std::memset(stored_entitlement, 0, sizeof(stored_entitlement));
-    if (!valid || current_epoch < stored_issued_epoch ||
-        current_epoch >= stored_expires_epoch) {
-        return false;
-    }
+    uint8_t apple_key[PUBLIC_KEY_SIZE] = {};
+    uint8_t google_key[GOOGLE_ADVERTISEMENT_KEY_SIZE] = {};
+    uint8_t control_key[TAG_CONTROL_KEY_SIZE] = {};
+    FindingNetwork network = FindingNetwork::APPLE;
+    const esp_err_t apple_result =
+        load_advertisement_key(apple_key, sizeof(apple_key));
+    const esp_err_t google_result =
+        load_google_advertisement_key(google_key, sizeof(google_key));
+    const esp_err_t control_result =
+        load_tag_control_key(control_key, sizeof(control_key));
+    const esp_err_t network_result = load_finding_network(&network);
 
-    uint8_t advertisement_key[PUBLIC_KEY_SIZE] = {};
-    const esp_err_t key_result =
-        load_advertisement_key(advertisement_key, sizeof(advertisement_key));
-    const esp_err_t advertising_result =
-        key_result == ESP_OK
-            ? configure_finder_advertisement(advertisement_key,
-                                             sizeof(advertisement_key))
-            : key_result;
-    std::memset(advertisement_key, 0, sizeof(advertisement_key));
-    if (advertising_result != ESP_OK) {
-        return false;
+    esp_err_t result = update_key_fingerprint(
+        apple_result == ESP_OK ? apple_key : nullptr);
+    if (result == ESP_OK) {
+        result = update_google_key_fingerprint(
+            google_result == ESP_OK ? google_key : nullptr);
+    }
+    finding_network_attribute[0] =
+        network_result == ESP_OK ? static_cast<uint8_t>(network) : 0;
+    if (result == ESP_OK && attribute_handles[FINDING_NETWORK_VALUE] != 0) {
+        result = esp_ble_gatts_set_attr_value(
+            attribute_handles[FINDING_NETWORK_VALUE],
+            sizeof(finding_network_attribute), finding_network_attribute);
     }
 
-    entitlement_issued_epoch = stored_issued_epoch;
-    entitlement_expires_epoch = stored_expires_epoch;
-    ble_mode = BLEMode::TRACKER;
-    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    schedule_entitlement_expiry();
-    return true;
+    const bool has_everything = apple_result == ESP_OK &&
+                                google_result == ESP_OK &&
+                                control_result == ESP_OK &&
+                                network_result == ESP_OK;
+    if (result == ESP_OK && has_everything) {
+        result = network == FindingNetwork::APPLE
+                     ? configure_apple_finder_advertisement(
+                           apple_key, sizeof(apple_key))
+                     : configure_google_finder_advertisement(
+                           google_key, sizeof(google_key));
+    }
+
+    std::memset(apple_key, 0, sizeof(apple_key));
+    std::memset(google_key, 0, sizeof(google_key));
+    std::memset(control_key, 0, sizeof(control_key));
+    if (result != ESP_OK) return result;
+
+    *complete = has_everything;
+    ble_mode = has_everything ? BLEMode::TRACKER : BLEMode::SETUP;
+    update_status(has_everything ? ProvisioningState::READY
+                                 : ProvisioningState::UNPROVISIONED,
+                  ProvisioningResult::SUCCESS);
+    return ESP_OK;
 }
 
 esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
@@ -1023,9 +1049,9 @@ esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
         return ESP_GATT_INVALID_ATTR_LEN;
     }
     const uint64_t requested_epoch = read_uint64_be(value);
-    const uint64_t current_epoch = trusted_entitlement_now();
+    const uint64_t current_epoch = trusted_clock_now();
     const uint64_t rollback_floor =
-        entitlement_time_trusted ? current_epoch : trusted_clock_epoch;
+        trusted_clock_is_set ? current_epoch : trusted_clock_epoch;
     if (requested_epoch == 0 ||
         (rollback_floor > requested_epoch &&
          rollback_floor - requested_epoch > CLOCK_SYNC_SKEW_TOLERANCE_SECONDS)) {
@@ -1051,18 +1077,11 @@ esp_gatt_status_t persist_trusted_utc(const uint8_t *value, size_t length) {
                                     utc_time_attribute);
     }
     trusted_clock_epoch = accepted_epoch;
-    entitlement_time_started_microseconds = esp_timer_get_time();
-    entitlement_time_trusted = true;
+    trusted_clock_started_microseconds = esp_timer_get_time();
+    trusted_clock_is_set = true;
 
     ESP_LOGI(LOG_TAG, "UTC clock synchronized and persisted");
     return ESP_GATT_OK;
-}
-
-void entitlement_expiry_callback(void *) {
-    // Deliberately no-op. Kept so upgrades from builds that created this timer
-    // remain structurally simple and legacy packets can still be inspected.
-    ESP_LOGI(LOG_TAG,
-             "Legacy entitlement timer ignored; finder advertising continues");
 }
 
 void maintenance_window_timeout_callback(void *) {
@@ -1111,85 +1130,117 @@ esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
         return ESP_GATT_ERR_UNLIKELY;
     }
 
-    if (configure_finder_advertisement(key, length) != ESP_OK) {
+    bool complete = false;
+    if (restore_finder_configuration(&complete) != ESP_OK) {
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::INTERNAL_ERROR);
         return ESP_GATT_ERR_UNLIKELY;
     }
-    ble_mode = BLEMode::TRACKER;
-    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    request_advertising_refresh();
-    ESP_LOGI(LOG_TAG,
-             "Advertisement key committed; finder advertising enabled");
+    if (complete) {
+        request_advertising_refresh();
+        ESP_LOGI(LOG_TAG,
+                 "Both finding identities committed; selected network enabled");
+    } else {
+        ESP_LOGI(LOG_TAG,
+                 "Apple advertisement key committed; dual setup is incomplete");
+    }
     return ESP_GATT_OK;
 }
 
-esp_gatt_status_t persist_entitlement(const uint8_t *entitlement, size_t length) {
-    if (ble_mode != BLEMode::SUSPENDED && ble_mode != BLEMode::TRACKER) {
+esp_gatt_status_t persist_google_key(const uint8_t *key, size_t length) {
+    if (ble_mode != BLEMode::SETUP) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::ALREADY_PROVISIONED);
         return ESP_GATT_WRITE_NOT_PERMIT;
     }
-    if (length != SUBSCRIPTION_ENTITLEMENT_SIZE) {
+    if (length != GOOGLE_ADVERTISEMENT_KEY_SIZE) {
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::INVALID_LENGTH);
         return ESP_GATT_INVALID_ATTR_LEN;
     }
-
     update_status(ProvisioningState::VALIDATING, ProvisioningResult::SUCCESS);
-    uint64_t issued_epoch = 0;
-    uint64_t expires_epoch = 0;
-    uint64_t counter = 0;
-    const uint64_t current_epoch = trusted_entitlement_now();
-    if (!validate_entitlement(entitlement, length, &issued_epoch,
-                              &expires_epoch, &counter) ||
-        counter <= current_entitlement_counter || current_epoch < issued_epoch ||
-        current_epoch >= expires_epoch) {
-        update_status(ProvisioningState::ERROR,
-                      ProvisioningResult::ENTITLEMENT_REJECTED);
-        return ESP_GATT_INSUF_AUTHORIZATION;
+    if (!google_advertisement_key_is_valid(key, length)) {
+        update_status(ProvisioningState::ERROR, ProvisioningResult::INVALID_VALUE);
+        return ESP_GATT_INVALID_PDU;
     }
-
     update_status(ProvisioningState::PERSISTING, ProvisioningResult::SUCCESS);
-    esp_err_t error = save_subscription_entitlement(entitlement, length);
+    esp_err_t error = save_google_advertisement_key(key, length);
+    if (error == ESP_ERR_INVALID_STATE) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::ALREADY_PROVISIONED);
+        return ESP_GATT_WRITE_NOT_PERMIT;
+    }
     if (error != ESP_OK) {
-        ESP_LOGE(LOG_TAG, "Entitlement persistence failed: %s",
+        ESP_LOGE(LOG_TAG, "Google identity persistence failed: %s",
                  esp_err_to_name(error));
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::STORAGE_FAILURE);
         return ESP_GATT_ERR_UNLIKELY;
     }
-    std::memcpy(subscription_entitlement_attribute, entitlement,
-                SUBSCRIPTION_ENTITLEMENT_SIZE);
-    if (attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE] != 0) {
-        esp_ble_gatts_set_attr_value(
-            attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE],
-            SUBSCRIPTION_ENTITLEMENT_SIZE, subscription_entitlement_attribute);
-    }
-
-    uint8_t advertisement_key[PUBLIC_KEY_SIZE] = {};
-    error = load_advertisement_key(advertisement_key, sizeof(advertisement_key));
-    if (error != ESP_OK ||
-        configure_finder_advertisement(advertisement_key,
-                                       sizeof(advertisement_key)) != ESP_OK) {
-        std::memset(advertisement_key, 0, sizeof(advertisement_key));
+    if (update_google_key_fingerprint(key) != ESP_OK) {
         update_status(ProvisioningState::ERROR,
                       ProvisioningResult::INTERNAL_ERROR);
         return ESP_GATT_ERR_UNLIKELY;
     }
-    std::memset(advertisement_key, 0, sizeof(advertisement_key));
-
-    current_entitlement_counter = counter;
-    entitlement_issued_epoch = issued_epoch;
-    entitlement_expires_epoch = expires_epoch;
-    ble_mode = BLEMode::TRACKER;
-    maintenance_window_open = false;
-    if (maintenance_window_timer != nullptr) {
-        esp_timer_stop(maintenance_window_timer);
+    bool complete = false;
+    if (restore_finder_configuration(&complete) != ESP_OK) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INTERNAL_ERROR);
+        return ESP_GATT_ERR_UNLIKELY;
     }
-    schedule_entitlement_expiry();
-    update_status(ProvisioningState::READY, ProvisioningResult::SUCCESS);
-    request_advertising_refresh();
+    if (complete) {
+        request_advertising_refresh();
+    }
     ESP_LOGI(LOG_TAG,
-             "Legacy signed entitlement stored; advertising remains key-based");
+             "Google advertisement identity committed%s",
+             complete ? "; selected network enabled" : "");
+    return ESP_GATT_OK;
+}
+
+esp_gatt_status_t persist_finding_network(const uint8_t *value, size_t length) {
+    if (ble_mode != BLEMode::SETUP) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::ALREADY_PROVISIONED);
+        return ESP_GATT_WRITE_NOT_PERMIT;
+    }
+    if (value == nullptr || length != sizeof(finding_network_attribute)) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INVALID_LENGTH);
+        return ESP_GATT_INVALID_ATTR_LEN;
+    }
+    if (value[0] != static_cast<uint8_t>(FindingNetwork::APPLE) &&
+        value[0] != static_cast<uint8_t>(FindingNetwork::GOOGLE)) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::NETWORK_REJECTED);
+        return ESP_GATT_INVALID_PDU;
+    }
+
+    update_status(ProvisioningState::PERSISTING, ProvisioningResult::SUCCESS);
+    const FindingNetwork network = static_cast<FindingNetwork>(value[0]);
+    const esp_err_t save_result = save_finding_network(network);
+    if (save_result == ESP_ERR_INVALID_STATE) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::ALREADY_PROVISIONED);
+        return ESP_GATT_WRITE_NOT_PERMIT;
+    }
+    if (save_result != ESP_OK) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::STORAGE_FAILURE);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+
+    bool complete = false;
+    if (restore_finder_configuration(&complete) != ESP_OK) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INTERNAL_ERROR);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+    if (complete) {
+        request_advertising_refresh();
+    }
+    ESP_LOGI(LOG_TAG, "%s finding network selected%s",
+             network == FindingNetwork::APPLE ? "Apple" : "Google",
+             complete ? " and enabled" : "");
     return ESP_GATT_OK;
 }
 
@@ -1211,13 +1262,19 @@ esp_gatt_status_t persist_control_key(const uint8_t *key, size_t length) {
                       ProvisioningResult::STORAGE_FAILURE);
         return ESP_GATT_ERR_UNLIKELY;
     }
+    bool complete = false;
+    if (restore_finder_configuration(&complete) != ESP_OK) {
+        update_status(ProvisioningState::ERROR,
+                      ProvisioningResult::INTERNAL_ERROR);
+        return ESP_GATT_ERR_UNLIKELY;
+    }
+    if (complete) {
+        request_advertising_refresh();
+    }
     return ESP_GATT_OK;
 }
 
 esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
-    if (ble_mode != BLEMode::SUSPENDED && ble_mode != BLEMode::TRACKER) {
-        return ESP_GATT_WRITE_NOT_PERMIT;
-    }
     if (command == nullptr || length != RESET_COMMAND_SIZE) {
         return ESP_GATT_INVALID_ATTR_LEN;
     }
@@ -1264,19 +1321,23 @@ esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
         return ESP_GATT_ERR_UNLIKELY;
     }
     update_key_fingerprint(nullptr);
-    std::memset(subscription_entitlement_attribute, 0,
-                sizeof(subscription_entitlement_attribute));
-    current_entitlement_counter = 0;
-    entitlement_issued_epoch = 0;
-    entitlement_expires_epoch = 0;
+    update_google_key_fingerprint(nullptr);
+    finding_network_attribute[0] = 0;
+    if (attribute_handles[FINDING_NETWORK_VALUE] != 0) {
+        esp_ble_gatts_set_attr_value(attribute_handles[FINDING_NETWORK_VALUE],
+                                    sizeof(finding_network_attribute),
+                                    finding_network_attribute);
+    }
+    std::memset(finder_adv_data, 0, sizeof(finder_adv_data));
+    finder_adv_data_length = 0;
     ble_mode = BLEMode::SETUP;
     maintenance_window_open = false;
-    schedule_entitlement_expiry();
     bond_cleanup_pending = true;
     update_status(ProvisioningState::UNPROVISIONED,
                   ProvisioningResult::SUCCESS);
     request_advertising_refresh();
-    ESP_LOGI(LOG_TAG, "Authenticated reset completed; key material erased");
+    ESP_LOGI(LOG_TAG,
+             "Authenticated reset completed; both finding identities erased");
     return ESP_GATT_OK;
 }
 
@@ -1357,14 +1418,17 @@ size_t secure_value_length(uint16_t handle) {
     if (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE]) {
         return PUBLIC_KEY_SIZE;
     }
+    if (handle == attribute_handles[GOOGLE_ADVERTISEMENT_KEY_VALUE]) {
+        return GOOGLE_ADVERTISEMENT_KEY_SIZE;
+    }
+    if (handle == attribute_handles[FINDING_NETWORK_VALUE]) {
+        return sizeof(finding_network_attribute);
+    }
     if (handle == attribute_handles[CONTROL_KEY_VALUE]) {
         return TAG_CONTROL_KEY_SIZE;
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
         return RESET_COMMAND_SIZE;
-    }
-    if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
-        return SUBSCRIPTION_ENTITLEMENT_SIZE;
     }
     if (handle == attribute_handles[UTC_TIME_VALUE]) {
         return UTC_TIME_SIZE;
@@ -1389,21 +1453,18 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
         return true;
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
-        return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
-    }
-    if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
-        return ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER;
+        return true;
     }
     if (handle == attribute_handles[FIRMWARE_MANIFEST_VALUE]) {
-        return maintenance_window_open &&
-               (ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER);
+        return maintenance_window_open && ble_mode == BLEMode::TRACKER;
     }
     if (handle == attribute_handles[FIRMWARE_CONTROL_VALUE]) {
         return ota_update_active() ||
-               (maintenance_window_open &&
-                (ble_mode == BLEMode::SUSPENDED || ble_mode == BLEMode::TRACKER));
+               (maintenance_window_open && ble_mode == BLEMode::TRACKER);
     }
     return (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE] ||
+            handle == attribute_handles[GOOGLE_ADVERTISEMENT_KEY_VALUE] ||
+            handle == attribute_handles[FINDING_NETWORK_VALUE] ||
             handle == attribute_handles[CONTROL_KEY_VALUE]) &&
            ble_mode == BLEMode::SETUP;
 }
@@ -1422,14 +1483,17 @@ esp_gatt_status_t process_secure_write(uint16_t handle,
     if (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE]) {
         return persist_key(value, length);
     }
+    if (handle == attribute_handles[GOOGLE_ADVERTISEMENT_KEY_VALUE]) {
+        return persist_google_key(value, length);
+    }
+    if (handle == attribute_handles[FINDING_NETWORK_VALUE]) {
+        return persist_finding_network(value, length);
+    }
     if (handle == attribute_handles[CONTROL_KEY_VALUE]) {
         return persist_control_key(value, length);
     }
     if (handle == attribute_handles[AUTHENTICATED_RESET_VALUE]) {
         return authenticated_reset(value, length);
-    }
-    if (handle == attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE]) {
-        return persist_entitlement(value, length);
     }
     if (handle == attribute_handles[UTC_TIME_VALUE]) {
         return persist_trusted_utc(value, length);
@@ -1570,12 +1634,6 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             std::memcpy(attribute_handles, param->add_attr_tab.handles,
                         sizeof(attribute_handles));
-            if (current_entitlement_counter > 0) {
-                esp_ble_gatts_set_attr_value(
-                    attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE],
-                    SUBSCRIPTION_ENTITLEMENT_SIZE,
-                    subscription_entitlement_attribute);
-            }
             esp_err_t error = esp_ble_gatts_start_service(attribute_handles[SERVICE]);
             if (error != ESP_OK) {
                 ESP_LOGE(LOG_TAG, "Could not start Pinkeva GATT service %s: %s",
@@ -1620,9 +1678,6 @@ void gatts_callback(esp_gatts_cb_event_t event,
             if (bond_cleanup_pending) {
                 erase_all_bonds();
                 bond_cleanup_pending = false;
-            } else if (ble_mode == BLEMode::SUSPENDED) {
-                update_status(ProvisioningState::SUSPENDED,
-                              ProvisioningResult::ENTITLEMENT_REJECTED);
             } else if (ble_mode == BLEMode::SETUP) {
                 update_status(ProvisioningState::UNPROVISIONED,
                               ProvisioningResult::SUCCESS);
@@ -1653,20 +1708,18 @@ void gatts_callback(esp_gatts_cb_event_t event,
                     read_status = ESP_GATT_OK;
                 }
             } else if (param->read.handle ==
-                    attribute_handles[SUBSCRIPTION_ENTITLEMENT_VALUE] &&
-                connection_authorized) {
-                if (param->read.offset > SUBSCRIPTION_ENTITLEMENT_SIZE) {
+                       attribute_handles[FINDING_NETWORK_VALUE]) {
+                if (param->read.offset > sizeof(finding_network_attribute)) {
                     read_status = ESP_GATT_INVALID_OFFSET;
                 } else {
                     const size_t remaining =
-                        SUBSCRIPTION_ENTITLEMENT_SIZE - param->read.offset;
+                        sizeof(finding_network_attribute) - param->read.offset;
                     response.attr_value.handle = param->read.handle;
                     response.attr_value.offset = param->read.offset;
                     response.attr_value.len = static_cast<uint16_t>(remaining);
-                    std::memcpy(
-                        response.attr_value.value,
-                        subscription_entitlement_attribute + param->read.offset,
-                        remaining);
+                    std::memcpy(response.attr_value.value,
+                                finding_network_attribute + param->read.offset,
+                                remaining);
                     read_status = ESP_GATT_OK;
                 }
             }
@@ -1930,18 +1983,6 @@ std::optional<ERROR_TAG> ble_init() {
     if (error != ESP_OK) {
         return ERROR_TAG("Authorization timer initialization failed", LOG_TAG);
     }
-    const esp_timer_create_args_t entitlement_timer_arguments = {
-        .callback = &entitlement_expiry_callback,
-        .arg = nullptr,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "entitlement_expiry",
-        .skip_unhandled_events = false,
-    };
-    error = esp_timer_create(&entitlement_timer_arguments,
-                             &entitlement_expiry_timer);
-    if (error != ESP_OK) {
-        return ERROR_TAG("Entitlement timer initialization failed", LOG_TAG);
-    }
     const esp_timer_create_args_t maintenance_timer_arguments = {
         .callback = &maintenance_window_timeout_callback,
         .arg = nullptr,
@@ -1963,11 +2004,11 @@ std::optional<ERROR_TAG> ble_init() {
         ESP_LOGI(LOG_TAG, "Restored UTC rollback floor from NVS");
     }
     trusted_clock_epoch = stored_clock_epoch;
-    entitlement_time_started_microseconds = esp_timer_get_time();
+    trusted_clock_started_microseconds = esp_timer_get_time();
     // The ESP32 has no battery-backed wall clock. Never infer elapsed wall
-    // time across a reset. Fresh authorized UTC is used only to validate a
-    // legacy entitlement packet and never gates finder advertising.
-    entitlement_time_trusted = false;
+    // time across a reset. The stored value is only a rollback floor until a
+    // freshly authorized phone synchronizes UTC during this boot.
+    trusted_clock_is_set = false;
 
     error = initialize_firmware_version();
     if (error != ESP_OK) {
@@ -1978,29 +2019,21 @@ std::optional<ERROR_TAG> ble_init() {
         return ERROR_TAG("Device ID initialization failed", "DEVICE_ID");
     }
 
-    uint8_t existing_key[PUBLIC_KEY_SIZE] = {};
-    if (load_advertisement_key(existing_key, sizeof(existing_key)) == ESP_OK) {
-        ESP_LOGI(LOG_TAG, "Existing advertisement key found; skipping setup");
-        if (configure_finder_advertisement(
-                existing_key, sizeof(existing_key)) != ESP_OK) {
-            std::memset(existing_key, 0, sizeof(existing_key));
-            return ERROR_TAG("Finder advertisement initialization failed",
-                             LOG_TAG);
-        }
-        ble_mode = BLEMode::TRACKER;
-        status_value[0] = static_cast<uint8_t>(ProvisioningState::READY);
-        status_value[1] = static_cast<uint8_t>(ProvisioningResult::SUCCESS);
-        ESP_LOGI(LOG_TAG,
-                 "Finder advertising enabled from stored public key");
-        if (update_key_fingerprint(existing_key) != ESP_OK) {
-            std::memset(existing_key, 0, sizeof(existing_key));
-            return ERROR_TAG("Key fingerprint initialization failed", "NVS");
-        }
-    } else {
-        ble_mode = BLEMode::SETUP;
-        update_key_fingerprint(nullptr);
+    bool finder_configuration_complete = false;
+    error = restore_finder_configuration(&finder_configuration_complete);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Finding-network configuration restore failed", LOG_TAG);
     }
-    std::memset(existing_key, 0, sizeof(existing_key));
+    if (finder_configuration_complete) {
+        ESP_LOGI(LOG_TAG, "%s finder advertising restored from NVS",
+                 finding_network_attribute[0] ==
+                         static_cast<uint8_t>(FindingNetwork::APPLE)
+                     ? "Apple"
+                     : "Google");
+    } else {
+        ESP_LOGI(LOG_TAG,
+                 "Dual finding-network setup incomplete; setup advertising enabled");
+    }
 
     error = esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT);
     if (error != ESP_OK) {
@@ -2049,11 +2082,6 @@ std::optional<ERROR_TAG> ble_init() {
         error = esp_ble_gap_set_rand_addr(finder_ble_address);
         if (error != ESP_OK) {
             return ERROR_TAG("Finder BLE identity configuration failed", LOG_TAG);
-        }
-    } else {
-        error = esp_ble_gatts_app_register(APP_ID);
-        if (error != ESP_OK) {
-            return ERROR_TAG("GATT application registration failed", LOG_TAG);
         }
     }
 

@@ -61,9 +61,6 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
       currentPeriodStart: DEMO_PERIOD_START,
       currentPeriodEnd: DEMO_MONTH_END,
       cancelAtPeriodEnd: false,
-      entitlementSyncStatus: 'installed',
-      tagEntitlementExpiresAt: DEMO_MONTH_END,
-      tagEntitlementUpdatedAt: DEMO_PERIOD_START,
       availablePlans,
     };
   }
@@ -83,9 +80,6 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
       currentPeriodStart: '2025-12-14T12:00:00.000Z',
       currentPeriodEnd: DEMO_YEAR_END,
       cancelAtPeriodEnd: true,
-      entitlementSyncStatus: 'installed',
-      tagEntitlementExpiresAt: DEMO_YEAR_END,
-      tagEntitlementUpdatedAt: DEMO_PERIOD_START,
       availablePlans,
     };
   }
@@ -103,9 +97,6 @@ export function createDemoSubscription(deviceId: string): DeviceSubscription {
     currentPeriodStart: null,
     currentPeriodEnd: null,
     cancelAtPeriodEnd: false,
-    entitlementSyncStatus: null,
-    tagEntitlementExpiresAt: null,
-    tagEntitlementUpdatedAt: null,
     availablePlans,
   };
 }
