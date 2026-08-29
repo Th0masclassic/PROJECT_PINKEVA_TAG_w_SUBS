@@ -25,13 +25,14 @@ import type {
 } from '../location/api';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
+import type { PremiumFeatureAccess } from '../premium/api';
 import { colors, radii, shadow } from '../theme';
 
 const LONG_PRESS_DURATION_MS = 3000;
 
 export function MapScreen({
   trackers,
-  cloudPlusActive,
+  premiumFeatures,
   requestedHistoryTrackerId,
   onHistoryRequestHandled,
   onRequestTrackerLocation,
@@ -40,7 +41,7 @@ export function MapScreen({
   onNotice,
 }: {
   trackers: Tracker[];
-  cloudPlusActive: boolean;
+  premiumFeatures: Record<string, PremiumFeatureAccess>;
   requestedHistoryTrackerId?: string;
   onHistoryRequestHandled: () => void;
   onRequestTrackerLocation: (trackerId: string) => Promise<DeviceLocationReport>;
@@ -77,6 +78,17 @@ export function MapScreen({
   const sheetTranslateY = useRef(new Animated.Value(0)).current;
   const sheetGestureStart = useRef(0);
   const sheetRestingOffset = useRef(0);
+  const canUseHistory = useCallback((trackerId: string, range: LocationHistoryRange = '24h') => {
+    const access = premiumFeatures[trackerId];
+    return Boolean(
+      access?.subscriptionActive &&
+      access.locationHistoryDays >= (range === '30d' ? 30 : 1),
+    );
+  }, [premiumFeatures]);
+  const hasHistoryAccess = useMemo(
+    () => mapTrackers.some((tracker) => canUseHistory(tracker.id)),
+    [canUseHistory, mapTrackers],
+  );
 
   useEffect(() => {
     return () => {
@@ -113,7 +125,7 @@ export function MapScreen({
   }, []);
 
   const startHoldCountdown = useCallback((trackerId: string) => {
-    if (!cloudPlusActive) return;
+    if (!canUseHistory(trackerId)) return;
     if (holdCountdownTimer.current) clearInterval(holdCountdownTimer.current);
     const deadline = Date.now() + LONG_PRESS_DURATION_MS;
     setHoldCountdown({ trackerId, seconds: 3 });
@@ -134,7 +146,7 @@ export function MapScreen({
           : current,
       );
     }, 100);
-  }, [cloudPlusActive]);
+  }, [canUseHistory]);
 
   const sheetPanResponder = useMemo(
     () =>
@@ -164,7 +176,7 @@ export function MapScreen({
     trackerId: string,
     range: LocationHistoryRange = historyRange,
   ) => {
-    if (!cloudPlusActive) {
+    if (!canUseHistory(trackerId, range)) {
       stopHoldCountdown();
       onNotice(cloudCopy.historyLocked);
       return;
@@ -203,7 +215,7 @@ export function MapScreen({
     }
   }, [
     cloudCopy,
-    cloudPlusActive,
+    canUseHistory,
     collapsedSheetOffset,
     historyRange,
     onNotice,
@@ -214,7 +226,7 @@ export function MapScreen({
 
   const handleRowLongPress = useCallback((trackerId: string) => {
     stopHoldCountdown();
-    if (!cloudPlusActive) {
+    if (!canUseHistory(trackerId)) {
       onNotice(cloudCopy.historyLocked);
       return;
     }
@@ -224,7 +236,7 @@ export function MapScreen({
       if (rowLongPressId.current === trackerId) rowLongPressId.current = null;
     }, 1000);
     void showTrackerHistory(trackerId);
-  }, [cloudCopy.historyLocked, cloudPlusActive, onNotice, showTrackerHistory, stopHoldCountdown]);
+  }, [canUseHistory, cloudCopy.historyLocked, onNotice, showTrackerHistory, stopHoldCountdown]);
 
   const requestAndFocusTracker = useCallback(async (trackerId: string) => {
     stopHoldCountdown();
@@ -270,7 +282,7 @@ export function MapScreen({
   useEffect(() => {
     if (!requestedHistoryTrackerId) return;
     onHistoryRequestHandled();
-    if (!cloudPlusActive) {
+    if (!canUseHistory(requestedHistoryTrackerId)) {
       setFocusedTrackerId(requestedHistoryTrackerId);
       setHistoryTrackerId(null);
       setHistoryPoints([]);
@@ -281,7 +293,7 @@ export function MapScreen({
     void showTrackerHistory(requestedHistoryTrackerId, '24h');
   }, [
     cloudCopy.historyLocked,
-    cloudPlusActive,
+    canUseHistory,
     onHistoryRequestHandled,
     onNotice,
     requestedHistoryTrackerId,
@@ -297,13 +309,13 @@ export function MapScreen({
   }, []);
 
   useEffect(() => {
-    if (cloudPlusActive) return;
+    if (!historyTrackerId || canUseHistory(historyTrackerId, historyRange)) return;
     closeHistory();
     stopHoldCountdown();
-  }, [cloudPlusActive, closeHistory, stopHoldCountdown]);
+  }, [canUseHistory, closeHistory, historyRange, historyTrackerId, stopHoldCountdown]);
 
   const displayedMapTrackers = useMemo(() => {
-    if (!cloudPlusActive || !historyTrackerId || historyPoints.length === 0) return mapTrackers;
+    if (!historyTrackerId || !canUseHistory(historyTrackerId, historyRange) || historyPoints.length === 0) return mapTrackers;
     const tracker = mapTrackers.find((candidate) => candidate.id === historyTrackerId);
     const latestPoint = historyPoints[historyPoints.length - 1];
     if (!tracker || !latestPoint) return mapTrackers;
@@ -312,7 +324,7 @@ export function MapScreen({
       latitude: latestPoint.latitude,
       longitude: latestPoint.longitude,
     }];
-  }, [cloudPlusActive, historyPoints, historyTrackerId, mapTrackers]);
+  }, [canUseHistory, historyPoints, historyRange, historyTrackerId, mapTrackers]);
 
   return (
     <AppSafeArea style={styles.safeArea}>
@@ -322,7 +334,11 @@ export function MapScreen({
           mapType={mapType}
           recenterToken={recenterToken}
           focusTrackerId={focusedTrackerId ?? historyTrackerId ?? undefined}
-          pathCoordinates={cloudPlusActive ? historyPoints : []}
+          pathCoordinates={
+            historyTrackerId && canUseHistory(historyTrackerId, historyRange)
+              ? historyPoints
+              : []
+          }
           onPressInTracker={startHoldCountdown}
           onPressOutTracker={stopHoldCountdown}
           onLongPressTracker={handleRowLongPress}
@@ -330,7 +346,7 @@ export function MapScreen({
         />
         <View style={styles.mapWash} pointerEvents="none" />
 
-        {cloudPlusActive && historyTrackerId ? (
+        {historyTrackerId && canUseHistory(historyTrackerId, historyRange) ? (
           <View style={[styles.historyPanel, shadow]} testID="map-history-filter">
             <View style={styles.historyPanelHeader}>
               <View style={styles.historyPanelTitleRow}>
@@ -372,7 +388,7 @@ export function MapScreen({
               })}
             </View>
           </View>
-        ) : cloudPlusActive ? (
+        ) : hasHistoryAccess ? (
           <View pointerEvents="none" style={[styles.historyHint, shadow]}>
             <Ionicons name="sparkles" size={17} color={colors.blue} />
             <Text numberOfLines={3} style={styles.historyHintText}>{cloudCopy.historyHint}</Text>

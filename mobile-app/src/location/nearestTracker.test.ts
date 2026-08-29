@@ -15,7 +15,6 @@ function tracker(id: string, latitude?: number, longitude?: number): Tracker {
     place: '—',
     address: '—',
     intervalMs: 1000,
-    isLost: false,
     firmwareVersion: '—',
     ...(latitude !== undefined && longitude !== undefined ? { latitude, longitude } : {}),
   };

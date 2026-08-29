@@ -157,7 +157,9 @@ export function SubscriptionScreen({
         showsVerticalScrollIndicator={false}
         testID="subscription-screen"
       >
-        <Text style={styles.subtitle}>{copy.subtitle}</Text>
+        <Text style={styles.subtitle}>
+          {interpolateBillingCopy(copy.subtitle, { name: tracker.name })}
+        </Text>
 
         <Surface style={styles.cloudHero}>
           <View style={styles.heroTop}>

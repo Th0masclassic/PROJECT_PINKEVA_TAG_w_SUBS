@@ -28,6 +28,7 @@ import { colors, radii, shadow } from '../theme';
 import { subscriptionStatusLabel, useBillingCopy } from '../billing/copy';
 import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import type { DeviceSubscription } from '../billing/types';
+import { useProtectionCopy } from '../premium/copy';
 import { useTrackerCloudCopy } from '../trackers/copy';
 
 const iconChoices: { kind: TrackerKind; labelKey: 'tracker.iconCard' | 'tracker.iconKeys' | 'tracker.iconBag' | 'tracker.iconCar' }[] = [
@@ -42,9 +43,11 @@ export function TrackerDetailScreen({
   onBack,
   onRename,
   onChangeIcon,
-  cloudPlusActive,
+  premiumActive,
+  premiumLoading,
   subscription,
   subscriptionLoading,
+  onOpenProtection,
   onOpenSubscription,
   onOpenInterval,
   onOpenFirmware,
@@ -54,9 +57,11 @@ export function TrackerDetailScreen({
   onBack: () => void;
   onRename: (name: string) => void;
   onChangeIcon: (kind: TrackerKind) => void;
-  cloudPlusActive: boolean;
+  premiumActive: boolean;
+  premiumLoading: boolean;
   subscription?: DeviceSubscription;
   subscriptionLoading: boolean;
+  onOpenProtection: () => void;
   onOpenSubscription: () => void;
   onOpenInterval: () => void;
   onOpenFirmware: () => void;
@@ -66,14 +71,15 @@ export function TrackerDetailScreen({
   const { t } = useI18n();
   const billingCopy = useBillingCopy();
   const cloudCopy = useCloudPlusCopy();
+  const protectionCopy = useProtectionCopy();
   const trackerCloudCopy = useTrackerCloudCopy();
   const [renameVisible, setRenameVisible] = useState(false);
   const [iconVisible, setIconVisible] = useState(false);
   const [draftName, setDraftName] = useState(tracker.name);
 
   useEffect(() => {
-    if (!cloudPlusActive) setIconVisible(false);
-  }, [cloudPlusActive]);
+    if (!premiumActive) setIconVisible(false);
+  }, [premiumActive]);
 
   const saveName = () => {
     const trimmed = draftName.trim();
@@ -117,17 +123,30 @@ export function TrackerDetailScreen({
               </View>
             </Surface>
           ) : (
-            <Surface style={styles.settingCard}>
-              <SettingRow
-                icon="card-outline"
-                title={billingCopy.subscription}
-                subtitle={billingCopy.subscriptionSubtitle}
-                value={subscriptionLoading ? billingCopy.loading : subscriptionStatusLabel(billingCopy, subscription)}
-                onPress={onOpenSubscription}
-                isLast
-                testID="tracker-subscription"
-              />
-            </Surface>
+            <>
+              <Surface style={styles.settingCard}>
+                <SettingRow
+                  icon="card-outline"
+                  title={billingCopy.subscription}
+                  subtitle={billingCopy.subscriptionSubtitle}
+                  value={subscriptionLoading ? billingCopy.loading : subscriptionStatusLabel(billingCopy, subscription)}
+                  onPress={onOpenSubscription}
+                  isLast
+                  testID="tracker-subscription"
+                />
+              </Surface>
+              <Surface style={styles.settingCard}>
+                <SettingRow
+                  icon={premiumActive ? 'shield-checkmark-outline' : 'lock-closed-outline'}
+                  title={protectionCopy.title}
+                  subtitle={premiumActive ? protectionCopy.activeBody : protectionCopy.lockedBody}
+                  value={premiumLoading ? protectionCopy.loading : premiumActive ? cloudCopy.active : cloudCopy.locked}
+                  onPress={onOpenProtection}
+                  isLast
+                  testID="tracker-protection"
+                />
+              </Surface>
+            </>
           )}
           <Surface style={styles.settingCard}>
             <SettingRow
@@ -145,11 +164,11 @@ export function TrackerDetailScreen({
           </Surface>
           <Surface style={styles.settingCard}>
             <SettingRow
-              icon={cloudPlusActive ? 'images-outline' : 'lock-closed-outline'}
+              icon={premiumActive ? 'images-outline' : 'lock-closed-outline'}
               title={t('tracker.icon')}
-              subtitle={cloudPlusActive ? t('tracker.iconSubtitle') : cloudCopy.iconLocked}
-              value={cloudPlusActive ? iconLabel : cloudCopy.locked}
-              onPress={cloudPlusActive ? () => setIconVisible(true) : onOpenSubscription}
+              subtitle={premiumActive ? t('tracker.iconSubtitle') : cloudCopy.iconLocked}
+              value={premiumActive ? iconLabel : cloudCopy.locked}
+              onPress={premiumActive ? () => setIconVisible(true) : onOpenSubscription}
               isLast
               testID="tracker-icon"
             />
@@ -216,7 +235,7 @@ export function TrackerDetailScreen({
         </View>
       </Modal>
 
-      <Modal transparent visible={cloudPlusActive && iconVisible} animationType="slide" onRequestClose={() => setIconVisible(false)}>
+      <Modal transparent visible={premiumActive && iconVisible} animationType="slide" onRequestClose={() => setIconVisible(false)}>
         <View style={styles.iconScrim}>
           <Pressable onPress={() => setIconVisible(false)} style={StyleSheet.absoluteFill} />
           <SafeAreaView edges={['bottom']} style={styles.iconSheetSafe}>

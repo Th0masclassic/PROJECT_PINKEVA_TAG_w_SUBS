@@ -127,7 +127,6 @@ function parseOwnedTrackerRow(value: unknown, expectedUserId: string): Tracker {
     place: lastPlace ?? '—',
     address: lastPlace ?? '—',
     intervalMs: 1000,
-    isLost: false,
     firmwareVersion,
     ...(latitude !== undefined && longitude !== undefined
       ? { latitude, longitude }

@@ -21,7 +21,6 @@ export type Tracker = {
   place: string;
   address: string;
   intervalMs: number;
-  isLost: boolean;
   firmwareVersion: string;
   firmwareUpdateVersion?: string;
   latitude?: number;
@@ -42,6 +41,7 @@ export type AppRoute =
   | { name: 'main' }
   | { name: 'map'; historyTrackerId?: string }
   | { name: 'tracker'; trackerId: string }
+  | { name: 'protection'; trackerId: string }
   | { name: 'subscription'; trackerId: string }
   | { name: 'interval'; trackerId: string }
   | { name: 'firmware'; trackerId: string }
@@ -74,7 +74,6 @@ export const CARD_TRACKER: Tracker = {
   place: 'Wallet',
   address: '123 Pinkeva Lane, San Francisco, CA',
   intervalMs: 1000,
-  isLost: false,
   firmwareVersion: '1.0.4',
   firmwareUpdateVersion: '1.1.0',
   latitude: 37.7749,
@@ -93,7 +92,6 @@ export const DEMO_TRACKERS: Tracker[] = [
     place: '451 Market St',
     address: '451 Market St, San Francisco, CA',
     intervalMs: 1000,
-    isLost: false,
     firmwareVersion: '1.1.0',
     latitude: 37.7936,
     longitude: -122.3965,
@@ -108,7 +106,6 @@ export const DEMO_TRACKERS: Tracker[] = [
     place: '888 Mission St',
     address: '888 Mission St, San Francisco, CA',
     intervalMs: 1000,
-    isLost: false,
     firmwareVersion: '1.1.0',
     latitude: 37.7786,
     longitude: -122.4147,

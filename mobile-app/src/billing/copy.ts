@@ -83,107 +83,6 @@ const copies: Record<Language, BillingCopy> = {
   },
 };
 
-const accountCopyOverrides: Record<Language, Partial<BillingCopy>> = {
-  en: {
-    title: 'Pinkeva Cloud +',
-    subtitle: 'Membership and billing for your account',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: 'Protection and premium account features',
-    perTag: 'One Cloud + membership unlocks premium features across your Pinkeva account.',
-    plans: 'Cloud + plans',
-    choosePlan: 'Choose a plan before continuing to secure checkout.',
-    subscribe: 'Get Pinkeva Cloud +',
-    renew: 'Renew Cloud +',
-    cancelConfirmTitle: 'Cancel Pinkeva Cloud +?',
-    cancelConfirmBody: 'Your account will keep Cloud + access until the end of the paid period.',
-  },
-  pt: {
-    title: 'Pinkeva Cloud +',
-    subtitle: 'Subscrição e faturação da sua conta',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: 'Proteção e funcionalidades premium da conta',
-    perTag: 'Uma subscrição Cloud + desbloqueia funcionalidades premium em toda a sua conta Pinkeva.',
-    plans: 'Planos Cloud +',
-    choosePlan: 'Escolha um plano antes de continuar para o checkout seguro.',
-    subscribe: 'Obter Pinkeva Cloud +',
-    renew: 'Renovar Cloud +',
-    cancelConfirmTitle: 'Cancelar o Pinkeva Cloud +?',
-    cancelConfirmBody: 'A sua conta mantém o acesso Cloud + até ao fim do período pago.',
-  },
-  fr: {
-    title: 'Pinkeva Cloud +',
-    subtitle: 'Abonnement et facturation de votre compte',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: 'Protection et fonctions premium du compte',
-    perTag: 'Un abonnement Cloud + débloque les fonctions premium sur votre compte Pinkeva.',
-    plans: 'Forfaits Cloud +',
-    choosePlan: 'Choisissez un forfait avant de continuer vers le paiement sécurisé.',
-    subscribe: 'Obtenir Pinkeva Cloud +',
-    renew: 'Renouveler Cloud +',
-    cancelConfirmTitle: 'Annuler Pinkeva Cloud + ?',
-    cancelConfirmBody: 'Votre compte gardera l’accès Cloud + jusqu’à la fin de la période payée.',
-  },
-  de: {
-    title: 'Pinkeva Cloud +',
-    subtitle: 'Mitgliedschaft und Abrechnung für Ihr Konto',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: 'Schutz und Premium-Kontofunktionen',
-    perTag: 'Eine Cloud + Mitgliedschaft schaltet Premium-Funktionen für Ihr Pinkeva-Konto frei.',
-    plans: 'Cloud + Tarife',
-    choosePlan: 'Wählen Sie vor dem sicheren Checkout einen Tarif.',
-    subscribe: 'Pinkeva Cloud + erhalten',
-    renew: 'Cloud + verlängern',
-    cancelConfirmTitle: 'Pinkeva Cloud + kündigen?',
-    cancelConfirmBody: 'Ihr Konto behält Cloud + bis zum Ende des bezahlten Zeitraums.',
-  },
-  zh: {
-    title: 'Pinkeva Cloud +',
-    subtitle: '账户会员与账单',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: '账户保护与高级功能',
-    perTag: '一份 Cloud + 会员即可为整个 Pinkeva 账户解锁高级功能。',
-    plans: 'Cloud + 套餐',
-    choosePlan: '请选择套餐，然后前往安全结账页面。',
-    subscribe: '开通 Pinkeva Cloud +',
-    renew: '续订 Cloud +',
-    cancelConfirmTitle: '取消 Pinkeva Cloud +？',
-    cancelConfirmBody: '你的账户可使用 Cloud + 至已付费周期结束。',
-  },
-  it: {
-    title: 'Pinkeva Cloud +',
-    subtitle: 'Abbonamento e fatturazione del tuo account',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: 'Protezione e funzioni premium dell’account',
-    perTag: 'Un abbonamento Cloud + sblocca le funzioni premium in tutto il tuo account Pinkeva.',
-    plans: 'Piani Cloud +',
-    choosePlan: 'Scegli un piano prima del checkout sicuro.',
-    subscribe: 'Ottieni Pinkeva Cloud +',
-    renew: 'Rinnova Cloud +',
-    cancelConfirmTitle: 'Annullare Pinkeva Cloud +?',
-    cancelConfirmBody: 'Il tuo account manterrà Cloud + fino alla fine del periodo pagato.',
-  },
-  es: {
-    title: 'Pinkeva Cloud +',
-    subtitle: 'Suscripción y facturación de tu cuenta',
-    subscription: 'Pinkeva Cloud +',
-    subscriptionSubtitle: 'Protección y funciones premium de la cuenta',
-    perTag: 'Una suscripción Cloud + desbloquea funciones premium en toda tu cuenta Pinkeva.',
-    plans: 'Planes Cloud +',
-    choosePlan: 'Elige un plan antes de continuar al pago seguro.',
-    subscribe: 'Obtener Pinkeva Cloud +',
-    renew: 'Renovar Cloud +',
-    cancelConfirmTitle: '¿Cancelar Pinkeva Cloud +?',
-    cancelConfirmBody: 'Tu cuenta mantendrá Cloud + hasta el final del periodo pagado.',
-  },
-};
-
-const cloudPlusCopies = Object.fromEntries(
-  Object.entries(copies).map(([language, copy]) => [
-    language,
-    { ...copy, ...accountCopyOverrides[language as Language] },
-  ]),
-) as Record<Language, BillingCopy>;
-
 export function interpolateBillingCopy(template: string, values: Record<string, string>): string {
   return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => values[key] ?? `{{${key}}}`);
 }
@@ -227,7 +126,7 @@ export function billingErrorMessage(copy: BillingCopy, code: BillingErrorCode): 
 
 export function useBillingCopy(): BillingCopy {
   const { language } = useI18n();
-  return cloudPlusCopies[language];
+  return copies[language];
 }
 
 export type { BillingCopy };

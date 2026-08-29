@@ -23,16 +23,18 @@ import { selectClosestLocatedTracker } from '../location/nearestTracker';
 import { useUserLocation } from '../location/useUserLocation';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
+import type { PremiumFeatureAccess } from '../premium/api';
+import { useProtectionCopy } from '../premium/copy';
 import { colors, radii, shadow } from '../theme';
 
 export function HomeScreen({
   trackers,
   mainTracker,
-  cloudPlusActive,
+  premiumFeatures,
   onOpenTracker,
   onAddTracker,
   onOpenHistory,
-  onToggleLost,
+  onOpenProtection,
   onOpenCloudPlus,
   onOpenNotifications,
   unreadNotificationCount,
@@ -40,11 +42,11 @@ export function HomeScreen({
 }: {
   trackers: Tracker[];
   mainTracker?: Tracker;
-  cloudPlusActive: boolean;
+  premiumFeatures: Record<string, PremiumFeatureAccess>;
   onOpenTracker: (trackerId: string) => void;
   onAddTracker: () => void;
   onOpenHistory: (trackerId: string) => void;
-  onToggleLost: (trackerId: string) => void;
+  onOpenProtection: (trackerId: string) => void;
   onOpenCloudPlus: (trackerId: string) => void;
   onOpenNotifications: () => void;
   unreadNotificationCount: number;
@@ -53,6 +55,7 @@ export function HomeScreen({
   const { width } = useWindowDimensions();
   const { t } = useI18n();
   const cloudCopy = useCloudPlusCopy();
+  const protectionCopy = useProtectionCopy();
   const userCoordinate = useUserLocation(trackers.length > 0);
   const closestLocatedTracker = useMemo(
     () => selectClosestLocatedTracker(trackers, userCoordinate, mainTracker?.id),
@@ -62,6 +65,9 @@ export function HomeScreen({
   const mapTrackers = useMemo(
     () => (focusedTracker ? [focusedTracker] : []),
     [focusedTracker],
+  );
+  const cloudPlusActive = Boolean(
+    focusedTracker && premiumFeatures[focusedTracker.id]?.subscriptionActive,
   );
 
   if (!focusedTracker) {
@@ -126,21 +132,11 @@ export function HomeScreen({
 
           <View style={[styles.actionGrid, width < 360 && styles.actionGridStacked]}>
             <ActionCard
-              icon={cloudPlusActive ? 'shield-outline' : 'lock-closed-outline'}
-              title={focusedTracker.isLost ? t('home.markedLost') : t('home.markLost')}
-              body={
-                cloudPlusActive
-                  ? focusedTracker.isLost
-                    ? t('home.lostEnabledBody')
-                    : t('home.lostHelpBody')
-                  : cloudCopy.lostLocked
-              }
+              icon={cloudPlusActive ? 'shield-checkmark-outline' : 'lock-closed-outline'}
+              title={protectionCopy.homeTitle}
+              body={cloudPlusActive ? protectionCopy.homeBody : protectionCopy.homeLocked}
               locked={!cloudPlusActive}
-              onPress={() =>
-                cloudPlusActive
-                  ? onToggleLost(focusedTracker.id)
-                  : onOpenCloudPlus(focusedTracker.id)
-              }
+              onPress={() => onOpenProtection(focusedTracker.id)}
             />
             <ActionCard
               icon={cloudPlusActive ? 'time-outline' : 'lock-closed-outline'}

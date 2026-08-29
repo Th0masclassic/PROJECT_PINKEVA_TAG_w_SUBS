@@ -40,7 +40,6 @@ test('maps an active owned device to a hosted Tracker with its canonical UUID', 
       place: '—',
       address: '—',
       intervalMs: 1000,
-      isLost: false,
       firmwareVersion: '1.2.3',
     },
   ]);

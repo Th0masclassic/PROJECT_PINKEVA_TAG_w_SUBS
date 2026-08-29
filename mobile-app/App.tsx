@@ -7,7 +7,6 @@ import { AuthProvider, useAuth } from './src/auth/AuthProvider';
 import type { AuthFeedback, AuthMode, EmailAuthInput } from './src/auth/types';
 import { getUserDisplayName } from './src/auth/userNames';
 import { canUseDemoPreview } from './src/auth/demoPreview';
-import { isCurrentSubscription } from './src/billing/types';
 import { useTrackerBilling } from './src/billing/useTrackerBilling';
 import { BottomNav, Brand, Toast } from './src/components';
 import { I18nProvider, LANGUAGE_NATIVE_NAMES, useI18n } from './src/i18n';
@@ -19,11 +18,11 @@ import {
   type TrackerKind,
   type TrackerPreferences,
   addCanonicalCard,
-  applyTrackerIconOverrides,
   nextOperationPhase,
   reconcileTrackerPreferences,
   recordTrackerOpened,
   removeTracker,
+  resolveTrackerIcon,
   selectBillingDeviceIds,
   setTrackerIconOverride,
   updateTracker,
@@ -48,6 +47,7 @@ import { MapScreen } from './src/screens/MapScreen';
 import { NotificationsScreen } from './src/screens/NotificationsScreen';
 import { PairingModal } from './src/screens/PairingModal';
 import { PasswordResetScreen } from './src/screens/PasswordResetScreen';
+import { ProtectionScreen } from './src/screens/ProtectionScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { SubscriptionScreen } from './src/screens/SubscriptionScreen';
 import { TrackerDetailScreen } from './src/screens/TrackerDetailScreen';
@@ -67,6 +67,7 @@ import { TagSetupModal } from './src/provisioning/TagSetupModal';
 import { useTagSetup } from './src/provisioning/useTagSetup';
 import { useFirmwareUpdate } from './src/provisioning/useFirmwareUpdate';
 import { tagSetupErrorTranslationKey } from './src/provisioning/setup';
+import { usePremiumTrackers } from './src/premium/usePremiumTrackers';
 
 type PairingContext =
   | { kind: 'add' }
@@ -260,29 +261,30 @@ function AppContent() {
     if (auth.session) setDemoPreviewActive(false);
   }, [auth.session]);
 
+  const managedDeviceIds = selectBillingDeviceIds(trackers, demoPreviewActive && __DEV__);
   const billing = useTrackerBilling(
-    selectBillingDeviceIds(trackers, demoPreviewActive && __DEV__),
+    managedDeviceIds,
     auth.session?.access_token ?? null,
     demoPreviewActive && __DEV__,
   );
-  const accountSubscription = useMemo(
-    () => Object.values(billing.subscriptions).find(isCurrentSubscription),
-    [billing.subscriptions],
-  );
-  const cloudPlusActive = Boolean(accountSubscription);
+  const premium = usePremiumTrackers({
+    ownerKey: userId ?? '',
+    enabled: Boolean(auth.session),
+    apiConfig: PROVISIONING_API_CONFIG,
+    getAccessToken: auth.getAccessToken,
+    deviceIds: managedDeviceIds,
+    demoPreviewEnabled: demoPreviewActive && __DEV__,
+  });
   const displayTrackers = useMemo(
-    () =>
-      cloudPlusActive
-        ? applyTrackerIconOverrides(trackers, trackerPreferences.iconOverrides)
-        : trackers,
-    [cloudPlusActive, trackerPreferences.iconOverrides, trackers],
-  );
-  const accountSubscriptions = useMemo(
-    () =>
-      accountSubscription
-        ? Object.fromEntries(trackers.map((tracker) => [tracker.id, accountSubscription]))
-        : billing.subscriptions,
-    [accountSubscription, billing.subscriptions, trackers],
+    () => trackers.map((tracker) =>
+      premium.features[tracker.id]?.subscriptionActive
+        ? {
+            ...tracker,
+            kind: resolveTrackerIcon(tracker.id, trackerPreferences.iconOverrides),
+          }
+        : tracker,
+    ),
+    [premium.features, trackerPreferences.iconOverrides, trackers],
   );
   provisioningCheckout.current = billing.startProvisioningCheckout;
   const openSubscriptionFromNotification = useCallback(
@@ -330,6 +332,7 @@ function AppContent() {
   const selectedTracker = useMemo(() => {
     if (
       route.name !== 'tracker' &&
+      route.name !== 'protection' &&
       route.name !== 'subscription' &&
       route.name !== 'interval' &&
       route.name !== 'firmware'
@@ -338,7 +341,7 @@ function AppContent() {
     }
     return displayTrackers.find((tracker) => tracker.id === route.trackerId);
   }, [displayTrackers, route]);
-  const selectedBillingDeviceId = accountSubscription?.deviceId ?? selectedTracker?.id;
+  const selectedBillingDeviceId = selectedTracker?.id;
   const pairingTracker = useMemo(() => {
     if (pairingContext.kind === 'add') return undefined;
     return displayTrackers.find((tracker) => tracker.id === pairingContext.trackerId);
@@ -349,7 +352,7 @@ function AppContent() {
     if (route.name === 'map') {
       return displayTrackers.map((tracker) => tracker.id);
     }
-    if (route.name === 'tracker' && selectedTracker) {
+    if ((route.name === 'tracker' || route.name === 'protection') && selectedTracker) {
       return [selectedTracker.id];
     }
     if (route.name === 'main' && activeTab === 'trackers') {
@@ -375,7 +378,11 @@ function AppContent() {
   const locationTrigger = `${route.name}:${activeTab}:${locationTrackerIds.join(',')}`;
   const requestTrackerHistory = useCallback(
     async (trackerId: string, range: LocationHistoryRange) => {
-      if (!cloudPlusActive) throw new Error('Pinkeva Cloud + required');
+      const access = premium.features[trackerId];
+      const requiredDays = range === '30d' ? 30 : 1;
+      if (!access?.subscriptionActive || access.locationHistoryDays < requiredDays) {
+        throw new Error('Pinkeva Cloud + required');
+      }
       if (!PROVISIONING_API_CONFIG) throw new Error('API configuration unavailable');
       return requestLocationHistory(
         PROVISIONING_API_CONFIG,
@@ -384,7 +391,7 @@ function AppContent() {
         range,
       );
     },
-    [auth.getAccessToken, cloudPlusActive],
+    [auth.getAccessToken, premium.features],
   );
 
   useEffect(() => {
@@ -395,6 +402,7 @@ function AppContent() {
   useEffect(() => {
     const trackerScopedRoute =
       route.name === 'tracker' ||
+      route.name === 'protection' ||
       route.name === 'subscription' ||
       route.name === 'interval' ||
       route.name === 'firmware';
@@ -482,7 +490,12 @@ function AppContent() {
       setPairingPhase('idle');
       return true;
     }
-    if (route.name === 'interval' || route.name === 'firmware' || route.name === 'subscription') {
+    if (
+      route.name === 'interval' ||
+      route.name === 'firmware' ||
+      route.name === 'subscription' ||
+      route.name === 'protection'
+    ) {
       setRoute({ name: 'tracker', trackerId: route.trackerId });
       return true;
     }
@@ -524,6 +537,16 @@ function AppContent() {
     }
     setActiveTab('trackers');
     setRoute({ name: 'subscription', trackerId });
+  };
+
+  const openProtection = (trackerId: string) => {
+    const tracker = trackers.find((item) => item.id === trackerId);
+    if (!tracker || tracker.source === 'local-preview') {
+      showNotice(t('pairing.errorUnavailable'));
+      return;
+    }
+    setActiveTab('trackers');
+    setRoute({ name: 'protection', trackerId });
   };
 
   const openPairing = () => {
@@ -584,7 +607,7 @@ function AppContent() {
       return (
         <MapScreen
           trackers={displayTrackers}
-          cloudPlusActive={cloudPlusActive}
+          premiumFeatures={premium.features}
           requestedHistoryTrackerId={
             route.name === 'map' ? route.historyTrackerId : undefined
           }
@@ -601,14 +624,15 @@ function AppContent() {
       return (
         <TrackerDetailScreen
           tracker={selectedTracker}
-          cloudPlusActive={cloudPlusActive}
+          premiumActive={Boolean(premium.features[selectedTracker.id]?.subscriptionActive)}
+          premiumLoading={premium.loadingIds.has(selectedTracker.id)}
           onBack={() => changeTab('trackers')}
           onRename={(name) => {
             setTrackers((current) => updateTracker(current, selectedTracker.id, { name }));
             showNotice(t('tracker.nameUpdated'));
           }}
           onChangeIcon={(kind: TrackerKind) => {
-            if (!cloudPlusActive) {
+            if (!premium.features[selectedTracker.id]?.subscriptionActive) {
               openCloudPlus(selectedTracker.id);
               return;
             }
@@ -630,12 +654,33 @@ function AppContent() {
                     : t('tracker.iconCard');
             showNotice(t('tracker.iconUpdated', { name: selectedTracker.name, icon: iconName }));
           }}
-          subscription={accountSubscription ?? billing.subscriptions[selectedTracker.id]}
-          subscriptionLoading={!accountSubscription && billing.loadingIds.has(selectedTracker.id)}
+          subscription={billing.subscriptions[selectedTracker.id]}
+          subscriptionLoading={billing.loadingIds.has(selectedTracker.id)}
+          onOpenProtection={() => openProtection(selectedTracker.id)}
           onOpenSubscription={() => openCloudPlus(selectedTracker.id)}
           onOpenInterval={() => setRoute({ name: 'interval', trackerId: selectedTracker.id })}
           onOpenFirmware={() => setRoute({ name: 'firmware', trackerId: selectedTracker.id })}
           onRemove={() => setRemoveTrackerId(selectedTracker.id)}
+        />
+      );
+    }
+
+    if (route.name === 'protection' && selectedTracker) {
+      return (
+        <ProtectionScreen
+          tracker={selectedTracker}
+          features={premium.features[selectedTracker.id]}
+          overview={premium.overviews[selectedTracker.id]}
+          premiumLoading={premium.loadingIds.has(selectedTracker.id)}
+          premiumError={premium.errors[selectedTracker.id]}
+          ownerKey={userId ?? ''}
+          apiConfig={PROVISIONING_API_CONFIG}
+          getAccessToken={auth.getAccessToken}
+          demoPreviewEnabled={demoPreviewActive && __DEV__}
+          onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
+          onOpenSubscription={() => openCloudPlus(selectedTracker.id)}
+          onRefreshPremium={() => premium.refreshDevice(selectedTracker.id)}
+          onNotice={showNotice}
         />
       );
     }
@@ -649,13 +694,18 @@ function AppContent() {
       return (
         <SubscriptionScreen
           tracker={selectedTracker}
-          subscription={accountSubscription ?? billing.subscriptions[selectedTracker.id]}
-          loading={!accountSubscription && billing.loadingIds.has(selectedTracker.id)}
+          subscription={billing.subscriptions[selectedTracker.id]}
+          loading={billing.loadingIds.has(selectedTracker.id)}
           error={billing.errors[selectedBillingDeviceId]}
           mode={billing.mode}
           purchasesEnabled={billing.purchasesEnabled}
           onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
-          onRetry={() => billing.refreshDevice(selectedBillingDeviceId)}
+          onRetry={async () => {
+            await Promise.all([
+              billing.refreshDevice(selectedBillingDeviceId),
+              premium.refreshDevice(selectedBillingDeviceId),
+            ]);
+          }}
           onCheckout={(planCode) => billing.startCheckout(selectedBillingDeviceId, planCode)}
           onPortal={(action) => billing.openPortal(selectedBillingDeviceId, action)}
           onNotice={showNotice}
@@ -767,7 +817,7 @@ function AppContent() {
             if (tracker) showNotice(t('trackers.mainSetNotice', { name: tracker.name }));
           }}
           onNotice={showNotice}
-          subscriptions={accountSubscriptions}
+          subscriptions={billing.subscriptions}
           subscriptionLoadingIds={billing.loadingIds}
         />
       );
@@ -792,26 +842,19 @@ function AppContent() {
       <HomeScreen
         trackers={displayTrackers}
         mainTracker={mainTracker}
-        cloudPlusActive={cloudPlusActive}
+        premiumFeatures={premium.features}
         onOpenTracker={openTracker}
         onAddTracker={openPairing}
         onOpenHistory={(trackerId) => {
-          if (!cloudPlusActive) {
+          const access = premium.features[trackerId];
+          if (!access?.subscriptionActive || access.locationHistoryDays < 1) {
             openCloudPlus(trackerId);
             return;
           }
           setActiveTab('map');
           setRoute({ name: 'map', historyTrackerId: trackerId });
         }}
-        onToggleLost={(trackerId) => {
-          if (!cloudPlusActive) {
-            openCloudPlus(trackerId);
-            return;
-          }
-          const tracker = trackers.find((item) => item.id === trackerId);
-          setTrackers((current) => updateTracker(current, trackerId, { isLost: !tracker?.isLost }));
-          showNotice(tracker?.isLost ? t('notice.lostDisabled') : t('notice.markedLost'));
-        }}
+        onOpenProtection={openProtection}
         onOpenCloudPlus={openCloudPlus}
         onOpenNotifications={() => setRoute({ name: 'notifications' })}
         unreadNotificationCount={notificationInbox.unreadCount}
@@ -881,6 +924,7 @@ function AppContent() {
     authenticated &&
     route.name !== 'interval' &&
     route.name !== 'firmware' &&
+    route.name !== 'protection' &&
     route.name !== 'subscription' &&
     route.name !== 'info' &&
     route.name !== 'account' &&

@@ -7,7 +7,7 @@ import { useCloudPlusCopy } from './cloudPlusCopy';
 export function CloudPlusFeatures({ compact = false }: { compact?: boolean }) {
   const copy = useCloudPlusCopy();
   const features = [
-    { id: 'lost', icon: 'alert-circle-outline' as const, title: copy.lostTitle, body: copy.lostBody },
+    { id: 'recovery', icon: 'shield-checkmark-outline' as const, title: copy.recoveryTitle, body: copy.recoveryBody },
     { id: 'separation', icon: 'notifications-outline' as const, title: copy.separationTitle, body: copy.separationBody },
     { id: 'history', icon: 'time-outline' as const, title: copy.historyTitle, body: copy.historyBody },
     { id: 'discount', icon: 'pricetag-outline' as const, title: copy.discountTitle, body: copy.discountBody },
