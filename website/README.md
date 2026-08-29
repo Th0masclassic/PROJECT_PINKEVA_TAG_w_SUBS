@@ -1,6 +1,6 @@
-# PINQEVA storefront
+# PINKEVA storefront
 
-This is a local product/marketing storefront for the PINQEVA Card. It is a
+This is a local product/marketing storefront for the PINKEVA Card. It is a
 static Vite site with no checkout or backend connection yet; the order drawer
 is an intentionally local preview that can be connected to Stripe later.
 

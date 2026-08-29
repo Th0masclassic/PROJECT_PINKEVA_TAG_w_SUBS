@@ -8,11 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
+		299E70D0B863BCED84ECDA4D /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55217BE66CA22AA2CCD7D3A1 /* ExpoModulesProvider.swift */; };
+		30405153076D49E1ADC7BF4A /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 2E8A00BEB5854A9E82C800FF /* PrivacyInfo.xcprivacy */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
-		4A82500C27481343F213860B /* libPods-Pinkeva.a in Frameworks */ = {isa = PBXBuildFile; fileRef = EC743CCCC3FA95D107A680C9 /* libPods-Pinkeva.a */; };
-		9669D1D2536550A8ABF1B765 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = BF2CCC3B290AA51F8E9623DE /* PrivacyInfo.xcprivacy */; };
+		4601E540B723CB5B00A197D2 /* libPods-Pinkeva.a in Frameworks */ = {isa = PBXBuildFile; fileRef = ABCED62F9AC06698EB4E4BA4 /* libPods-Pinkeva.a */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
-		DF1A6A8DC7E2CA9396A0B9F4 /* ExpoModulesProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD5AE838EB8D1ABC0C119E7E /* ExpoModulesProvider.swift */; };
 		F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11748412D0307B40044C1D9 /* AppDelegate.swift */; };
 /* End PBXBuildFile section */
 
@@ -20,13 +20,13 @@
 		13B07F961A680F5B00A75B9A /* Pinkeva.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pinkeva.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = Pinkeva/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = Pinkeva/Info.plist; sourceTree = "<group>"; };
-		3285FFB3CE052FB10C4AF1C7 /* Pods-Pinkeva.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Pinkeva.release.xcconfig"; path = "Target Support Files/Pods-Pinkeva/Pods-Pinkeva.release.xcconfig"; sourceTree = "<group>"; };
+		2E8A00BEB5854A9E82C800FF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = PrivacyInfo.xcprivacy; path = Pinkeva/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		55217BE66CA22AA2CCD7D3A1 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-Pinkeva/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
+		670E01A78CEBB929405ABED3 /* Pods-Pinkeva.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Pinkeva.debug.xcconfig"; path = "Target Support Files/Pods-Pinkeva/Pods-Pinkeva.debug.xcconfig"; sourceTree = "<group>"; };
+		85AF910F272E52B55B78CFF7 /* Pods-Pinkeva.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Pinkeva.release.xcconfig"; path = "Target Support Files/Pods-Pinkeva/Pods-Pinkeva.release.xcconfig"; sourceTree = "<group>"; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = Pinkeva/SplashScreen.storyboard; sourceTree = "<group>"; };
+		ABCED62F9AC06698EB4E4BA4 /* libPods-Pinkeva.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Pinkeva.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		BB2F792C24A3F905000567C9 /* Expo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Expo.plist; sourceTree = "<group>"; };
-		BD5AE838EB8D1ABC0C119E7E /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-Pinkeva/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
-		BF2CCC3B290AA51F8E9623DE /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = Pinkeva/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		D203B793E9B644DE67648C96 /* Pods-Pinkeva.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Pinkeva.debug.xcconfig"; path = "Target Support Files/Pods-Pinkeva/Pods-Pinkeva.debug.xcconfig"; sourceTree = "<group>"; };
-		EC743CCCC3FA95D107A680C9 /* libPods-Pinkeva.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-Pinkeva.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = Pinkeva/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* Pinkeva-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "Pinkeva-Bridging-Header.h"; path = "Pinkeva/Pinkeva-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -37,7 +37,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4A82500C27481343F213860B /* libPods-Pinkeva.a in Frameworks */,
+				4601E540B723CB5B00A197D2 /* libPods-Pinkeva.a in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -53,34 +53,42 @@
 				13B07FB51A68108700A75B9A /* Images.xcassets */,
 				13B07FB61A68108700A75B9A /* Info.plist */,
 				AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */,
-				BF2CCC3B290AA51F8E9623DE /* PrivacyInfo.xcprivacy */,
+				2E8A00BEB5854A9E82C800FF /* PrivacyInfo.xcprivacy */,
 			);
 			name = Pinkeva;
-			sourceTree = "<group>";
-		};
-		15E9956F2BEBB0E3C547394B /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				D203B793E9B644DE67648C96 /* Pods-Pinkeva.debug.xcconfig */,
-				3285FFB3CE052FB10C4AF1C7 /* Pods-Pinkeva.release.xcconfig */,
-			);
-			name = Pods;
-			path = Pods;
 			sourceTree = "<group>";
 		};
 		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				ED297162215061F000B7C4FE /* JavaScriptCore.framework */,
-				EC743CCCC3FA95D107A680C9 /* libPods-Pinkeva.a */,
+				ABCED62F9AC06698EB4E4BA4 /* libPods-Pinkeva.a */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		40E299EECB0113816020C32D /* Pinkeva */ = {
+		31A870E1FA43BAEE6C0F0510 /* ExpoModulesProviders */ = {
 			isa = PBXGroup;
 			children = (
-				BD5AE838EB8D1ABC0C119E7E /* ExpoModulesProvider.swift */,
+				695D52896CD733BEA85403C9 /* Pinkeva */,
+			);
+			name = ExpoModulesProviders;
+			sourceTree = "<group>";
+		};
+		37343FCD9D5CC9919A337C2C /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				670E01A78CEBB929405ABED3 /* Pods-Pinkeva.debug.xcconfig */,
+				85AF910F272E52B55B78CFF7 /* Pods-Pinkeva.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
+		695D52896CD733BEA85403C9 /* Pinkeva */ = {
+			isa = PBXGroup;
+			children = (
+				55217BE66CA22AA2CCD7D3A1 /* ExpoModulesProvider.swift */,
 			);
 			name = Pinkeva;
 			sourceTree = "<group>";
@@ -99,8 +107,8 @@
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
 				2D16E6871FA4F8E400B85C8A /* Frameworks */,
-				15E9956F2BEBB0E3C547394B /* Pods */,
-				E01D1B3735FC3CD6E88FAA01 /* ExpoModulesProviders */,
+				37343FCD9D5CC9919A337C2C /* Pods */,
+				31A870E1FA43BAEE6C0F0510 /* ExpoModulesProviders */,
 			);
 			indentWidth = 2;
 			sourceTree = "<group>";
@@ -124,14 +132,6 @@
 			path = Pinkeva/Supporting;
 			sourceTree = "<group>";
 		};
-		E01D1B3735FC3CD6E88FAA01 /* ExpoModulesProviders */ = {
-			isa = PBXGroup;
-			children = (
-				40E299EECB0113816020C32D /* Pinkeva */,
-			);
-			name = ExpoModulesProviders;
-			sourceTree = "<group>";
-		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -140,13 +140,13 @@
 			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "Pinkeva" */;
 			buildPhases = (
 				08A4A3CD28434E44B6B9DE2E /* [CP] Check Pods Manifest.lock */,
-				CDED3677E34C731B8D8C2910 /* [Expo] Configure project */,
+				75C2811E68C93DADFF0BF8C8 /* [Expo] Configure project */,
 				13B07F871A680F5B00A75B9A /* Sources */,
 				13B07F8C1A680F5B00A75B9A /* Frameworks */,
 				13B07F8E1A680F5B00A75B9A /* Resources */,
 				00DD1BFF1BD5951E006B06BC /* Bundle React Native code and images */,
 				800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */,
-				E53578D663A43C3D122E1F74 /* [CP] Embed Pods Frameworks */,
+				94FD12B7244199673A5D3034 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -196,7 +196,7 @@
 				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
-				9669D1D2536550A8ABF1B765 /* PrivacyInfo.xcprivacy in Resources */,
+				30405153076D49E1ADC7BF4A /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -242,6 +242,30 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
+		75C2811E68C93DADFF0BF8C8 /* [Expo] Configure project */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/.xcode.env",
+				"$(SRCROOT)/.xcode.env.local",
+				"$(SRCROOT)/Pinkeva/Pinkeva.entitlements",
+				"$(SRCROOT)/Pods/Target Support Files/Pods-Pinkeva/expo-configure-project.sh",
+			);
+			name = "[Expo] Configure project";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(SRCROOT)/Pods/Target Support Files/Pods-Pinkeva/ExpoModulesProvider.swift",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-Pinkeva/expo-configure-project.sh\"\n";
+		};
 		800E24972A6A228C8D4807E9 /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -280,31 +304,7 @@
 			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-Pinkeva/Pods-Pinkeva-resources.sh\"\n";
 			showEnvVarsInLog = 0;
 		};
-		CDED3677E34C731B8D8C2910 /* [Expo] Configure project */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"$(SRCROOT)/.xcode.env",
-				"$(SRCROOT)/.xcode.env.local",
-				"$(SRCROOT)/Pinkeva/Pinkeva.entitlements",
-				"$(SRCROOT)/Pods/Target Support Files/Pods-Pinkeva/expo-configure-project.sh",
-			);
-			name = "[Expo] Configure project";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(SRCROOT)/Pods/Target Support Files/Pods-Pinkeva/ExpoModulesProvider.swift",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "# This script configures Expo modules and generates the modules provider file.\nbash -l -c \"./Pods/Target\\ Support\\ Files/Pods-Pinkeva/expo-configure-project.sh\"\n";
-		};
-		E53578D663A43C3D122E1F74 /* [CP] Embed Pods Frameworks */ = {
+		94FD12B7244199673A5D3034 /* [CP] Embed Pods Frameworks */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -346,7 +346,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				F11748422D0307B40044C1D9 /* AppDelegate.swift in Sources */,
-				DF1A6A8DC7E2CA9396A0B9F4 /* ExpoModulesProvider.swift in Sources */,
+				299E70D0B863BCED84ECDA4D /* ExpoModulesProvider.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -355,7 +355,7 @@
 /* Begin XCBuildConfiguration section */
 		13B07F941A680F5B00A75B9A /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = D203B793E9B644DE67648C96 /* Pods-Pinkeva.debug.xcconfig */;
+			baseConfigurationReference = 670E01A78CEBB929405ABED3 /* Pods-Pinkeva.debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;
@@ -393,7 +393,7 @@
 		};
 		13B07F951A680F5B00A75B9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 3285FFB3CE052FB10C4AF1C7 /* Pods-Pinkeva.release.xcconfig */;
+			baseConfigurationReference = 85AF910F272E52B55B78CFF7 /* Pods-Pinkeva.release.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_MODULES = YES;

@@ -25,9 +25,7 @@ import {
 import { formatRelativeTime, useI18n } from '../i18n';
 import { formatInterval, type Tracker, type TrackerKind } from '../model';
 import { colors, radii, shadow } from '../theme';
-import { subscriptionStatusLabel, useBillingCopy } from '../billing/copy';
 import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
-import type { DeviceSubscription } from '../billing/types';
 import { useProtectionCopy } from '../premium/copy';
 import { useTrackerCloudCopy } from '../trackers/copy';
 
@@ -45,10 +43,8 @@ export function TrackerDetailScreen({
   onChangeIcon,
   premiumActive,
   premiumLoading,
-  subscription,
-  subscriptionLoading,
   onOpenProtection,
-  onOpenSubscription,
+  onOpenCloudPlus,
   onOpenInterval,
   onOpenFirmware,
   onRemove,
@@ -59,17 +55,14 @@ export function TrackerDetailScreen({
   onChangeIcon: (kind: TrackerKind) => void;
   premiumActive: boolean;
   premiumLoading: boolean;
-  subscription?: DeviceSubscription;
-  subscriptionLoading: boolean;
   onOpenProtection: () => void;
-  onOpenSubscription: () => void;
+  onOpenCloudPlus: () => void;
   onOpenInterval: () => void;
   onOpenFirmware: () => void;
   onRemove: () => void;
 }) {
   const { width } = useWindowDimensions();
   const { t } = useI18n();
-  const billingCopy = useBillingCopy();
   const cloudCopy = useCloudPlusCopy();
   const protectionCopy = useProtectionCopy();
   const trackerCloudCopy = useTrackerCloudCopy();
@@ -108,6 +101,16 @@ export function TrackerDetailScreen({
           <Text style={styles.lastSeen}>
             {t('tracker.lastSeenValue', { time: formatRelativeTime(t, tracker.lastSeen) })}
           </Text>
+          {premiumActive ? (
+            <View
+              accessibilityLabel={`${cloudCopy.name}, ${cloudCopy.active}`}
+              style={styles.cloudPill}
+              testID="tracker-cloud-plus"
+            >
+              <Ionicons name="cloud" size={16} color={colors.blue} />
+              <Text style={styles.cloudPillText}>{cloudCopy.name}</Text>
+            </View>
+          ) : null}
         </Surface>
 
         <Text style={styles.sectionLabel}>{t('tracker.settings')}</Text>
@@ -123,30 +126,17 @@ export function TrackerDetailScreen({
               </View>
             </Surface>
           ) : (
-            <>
-              <Surface style={styles.settingCard}>
-                <SettingRow
-                  icon="card-outline"
-                  title={billingCopy.subscription}
-                  subtitle={billingCopy.subscriptionSubtitle}
-                  value={subscriptionLoading ? billingCopy.loading : subscriptionStatusLabel(billingCopy, subscription)}
-                  onPress={onOpenSubscription}
-                  isLast
-                  testID="tracker-subscription"
-                />
-              </Surface>
-              <Surface style={styles.settingCard}>
-                <SettingRow
-                  icon={premiumActive ? 'shield-checkmark-outline' : 'lock-closed-outline'}
-                  title={protectionCopy.title}
-                  subtitle={premiumActive ? protectionCopy.activeBody : protectionCopy.lockedBody}
-                  value={premiumLoading ? protectionCopy.loading : premiumActive ? cloudCopy.active : cloudCopy.locked}
-                  onPress={onOpenProtection}
-                  isLast
-                  testID="tracker-protection"
-                />
-              </Surface>
-            </>
+            <Surface style={styles.settingCard}>
+              <SettingRow
+                icon={premiumActive ? 'shield-checkmark-outline' : 'lock-closed-outline'}
+                title={protectionCopy.title}
+                subtitle={premiumActive ? protectionCopy.activeBody : protectionCopy.lockedBody}
+                value={premiumLoading ? protectionCopy.loading : premiumActive ? cloudCopy.active : cloudCopy.locked}
+                onPress={onOpenProtection}
+                isLast
+                testID="tracker-protection"
+              />
+            </Surface>
           )}
           <Surface style={styles.settingCard}>
             <SettingRow
@@ -168,7 +158,7 @@ export function TrackerDetailScreen({
               title={t('tracker.icon')}
               subtitle={premiumActive ? t('tracker.iconSubtitle') : cloudCopy.iconLocked}
               value={premiumActive ? iconLabel : cloudCopy.locked}
-              onPress={premiumActive ? () => setIconVisible(true) : onOpenSubscription}
+              onPress={premiumActive ? () => setIconVisible(true) : onOpenCloudPlus}
               isLast
               testID="tracker-icon"
             />
@@ -310,6 +300,17 @@ const styles = StyleSheet.create({
   awayDot: { width: 11, height: 11, borderRadius: 6, backgroundColor: colors.muted },
   awayText: { color: colors.mutedDark, fontSize: 17, fontWeight: '600' },
   lastSeen: { color: colors.muted, fontSize: 17, marginTop: 10 },
+  cloudPill: {
+    minHeight: 30,
+    borderRadius: 999,
+    paddingHorizontal: 11,
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.bluePale,
+  },
+  cloudPillText: { color: colors.blueDark, fontSize: 12, fontWeight: '800' },
   sectionLabel: { color: colors.muted, fontSize: 19, fontWeight: '600', marginTop: 30, marginBottom: 14, marginLeft: 2 },
   settingStack: { gap: 14 },
   settingCard: { borderRadius: radii.medium, overflow: 'hidden' },

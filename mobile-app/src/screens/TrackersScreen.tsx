@@ -12,35 +12,30 @@ import {
 } from '../components';
 import { useI18n } from '../i18n';
 import type { Tracker } from '../model';
+import type { PremiumFeatureAccess } from '../premium/api';
 import { colors, radii, shadow } from '../theme';
-import { SubscriptionBadge } from '../billing/SubscriptionBadge';
-import { useBillingCopy } from '../billing/copy';
-import type { DeviceSubscription } from '../billing/types';
+import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import { useTrackerCloudCopy } from '../trackers/copy';
 
 export function TrackersScreen({
   trackers,
   mainTrackerId,
+  premiumFeatures,
   onAdd,
   onOpenTracker,
-  onOpenSubscription,
   onSetMain,
   onNotice,
-  subscriptions,
-  subscriptionLoadingIds,
 }: {
   trackers: Tracker[];
   mainTrackerId: string | null;
+  premiumFeatures: Record<string, PremiumFeatureAccess>;
   onAdd: () => void;
   onOpenTracker: (trackerId: string) => void;
-  onOpenSubscription: (trackerId: string) => void;
   onSetMain: (trackerId: string) => void;
   onNotice: (message: string) => void;
-  subscriptions: Record<string, DeviceSubscription>;
-  subscriptionLoadingIds: ReadonlySet<string>;
 }) {
   const { t } = useI18n();
-  const billingCopy = useBillingCopy();
+  const cloudCopy = useCloudPlusCopy();
   const trackerCloudCopy = useTrackerCloudCopy();
 
   return (
@@ -77,33 +72,23 @@ export function TrackersScreen({
                       testID={`local-preview-${tracker.id}`}
                     >
                       <Ionicons name="phone-portrait-outline" size={22} color={colors.blue} />
-                      <View style={styles.billingCopy}>
-                        <Text style={styles.billingTitle}>{trackerCloudCopy.localTitle}</Text>
+                      <View style={styles.localCopy}>
+                        <Text style={styles.localTitle}>{trackerCloudCopy.localTitle}</Text>
                         <Text style={styles.localSubtitle}>{trackerCloudCopy.localBody}</Text>
                       </View>
                     </View>
-                  ) : (
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${billingCopy.subscription}, ${tracker.name}`}
-                      onPress={() => onOpenSubscription(tracker.id)}
-                      style={({ pressed }) => [styles.billingFooter, pressed && styles.pressed]}
-                      testID={`subscription-${tracker.id}`}
+                  ) : premiumFeatures[tracker.id]?.subscriptionActive ? (
+                    <View
+                      accessibilityLabel={`${cloudCopy.name}, ${cloudCopy.active}`}
+                      style={styles.cloudIndicator}
+                      testID={`cloud-plus-${tracker.id}`}
                     >
-                      <View style={styles.billingCopy}>
-                        <Text style={styles.billingTitle}>{billingCopy.subscription}</Text>
-                        <Text numberOfLines={1} style={styles.billingSubtitle}>
-                          {billingCopy.subscriptionSubtitle}
-                        </Text>
+                      <View style={styles.cloudPill}>
+                        <Ionicons name="cloud" size={16} color={colors.blue} />
+                        <Text style={styles.cloudPillText}>{cloudCopy.name}</Text>
                       </View>
-                      <SubscriptionBadge
-                        compact
-                        subscription={subscriptions[tracker.id]}
-                        loading={subscriptionLoadingIds.has(tracker.id)}
-                      />
-                      <Ionicons name="chevron-forward" size={20} color={colors.muted} />
-                    </Pressable>
-                  )}
+                    </View>
+                  ) : null}
                   {isMain ? (
                     <View
                       accessibilityLabel={t('a11y.mainTracker', { name: tracker.name })}
@@ -168,12 +153,28 @@ const styles = StyleSheet.create({
   divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border },
   listContent: { paddingHorizontal: 20, paddingTop: 24, paddingBottom: 34, gap: 18 },
   trackerCard: { borderRadius: radii.large, overflow: 'hidden' },
-  billingFooter: { minHeight: 64, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', gap: 10 },
   localFooter: { minHeight: 78, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, paddingHorizontal: 18, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#F5F8FF' },
-  billingCopy: { flex: 1, gap: 2 },
-  billingTitle: { color: colors.text, fontSize: 14, fontWeight: '800' },
-  billingSubtitle: { color: colors.muted, fontSize: 11 },
+  localCopy: { flex: 1, gap: 2 },
+  localTitle: { color: colors.text, fontSize: 14, fontWeight: '800' },
   localSubtitle: { color: colors.mutedDark, fontSize: 11, lineHeight: 16 },
+  cloudIndicator: {
+    minHeight: 46,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingHorizontal: 18,
+    justifyContent: 'center',
+  },
+  cloudPill: {
+    alignSelf: 'flex-start',
+    minHeight: 28,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: colors.bluePale,
+  },
+  cloudPillText: { color: colors.blueDark, fontSize: 12, fontWeight: '800' },
   mainFooter: { minHeight: 58, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: '#F5F8FF', paddingHorizontal: 18, flexDirection: 'row', alignItems: 'center', gap: 11 },
   mainPill: { borderRadius: 999, paddingHorizontal: 11, paddingVertical: 7, backgroundColor: colors.blue, flexDirection: 'row', alignItems: 'center', gap: 6 },
   mainPillText: { color: '#FFFFFF', fontSize: 13, fontWeight: '800' },

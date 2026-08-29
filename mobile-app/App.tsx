@@ -8,6 +8,7 @@ import type { AuthFeedback, AuthMode, EmailAuthInput } from './src/auth/types';
 import { getUserDisplayName } from './src/auth/userNames';
 import { canUseDemoPreview } from './src/auth/demoPreview';
 import { useTrackerBilling } from './src/billing/useTrackerBilling';
+import { isCurrentSubscription } from './src/billing/types';
 import { BottomNav, Brand, Toast } from './src/components';
 import { I18nProvider, LANGUAGE_NATIVE_NAMES, useI18n } from './src/i18n';
 import {
@@ -49,7 +50,7 @@ import { PairingModal } from './src/screens/PairingModal';
 import { PasswordResetScreen } from './src/screens/PasswordResetScreen';
 import { ProtectionScreen } from './src/screens/ProtectionScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
-import { SubscriptionScreen } from './src/screens/SubscriptionScreen';
+import { SubscriptionsScreen } from './src/screens/SubscriptionsScreen';
 import { TrackerDetailScreen } from './src/screens/TrackerDetailScreen';
 import { TrackersScreen } from './src/screens/TrackersScreen';
 import { colors } from './src/theme';
@@ -275,6 +276,16 @@ function AppContent() {
     deviceIds: managedDeviceIds,
     demoPreviewEnabled: demoPreviewActive && __DEV__,
   });
+  // `main` still exposes billing only through device-scoped routes. This keeps
+  // that legacy transport out of tracker UI until an account billing endpoint
+  // can replace it without changing the new Cloud + tab design.
+  const legacyBillingDeviceId =
+    managedDeviceIds.find((deviceId) => {
+      const subscription = billing.subscriptions[deviceId];
+      return subscription ? isCurrentSubscription(subscription) : false;
+    })
+    ?? managedDeviceIds.find((deviceId) => Boolean(billing.subscriptions[deviceId]))
+    ?? managedDeviceIds[0];
   const displayTrackers = useMemo(
     () => trackers.map((tracker) =>
       premium.features[tracker.id]?.subscriptionActive
@@ -291,8 +302,8 @@ function AppContent() {
     (deviceId: string) => {
       void notificationInbox.refresh();
       void billing.refreshDevice(deviceId);
-      setActiveTab('trackers');
-      setRoute({ name: 'subscription', trackerId: deviceId });
+      setActiveTab('subscriptions');
+      setRoute({ name: 'main' });
     },
     [billing.refreshDevice, notificationInbox.refresh],
   );
@@ -333,7 +344,6 @@ function AppContent() {
     if (
       route.name !== 'tracker' &&
       route.name !== 'protection' &&
-      route.name !== 'subscription' &&
       route.name !== 'interval' &&
       route.name !== 'firmware'
     ) {
@@ -341,7 +351,6 @@ function AppContent() {
     }
     return displayTrackers.find((tracker) => tracker.id === route.trackerId);
   }, [displayTrackers, route]);
-  const selectedBillingDeviceId = selectedTracker?.id;
   const pairingTracker = useMemo(() => {
     if (pairingContext.kind === 'add') return undefined;
     return displayTrackers.find((tracker) => tracker.id === pairingContext.trackerId);
@@ -403,15 +412,12 @@ function AppContent() {
     const trackerScopedRoute =
       route.name === 'tracker' ||
       route.name === 'protection' ||
-      route.name === 'subscription' ||
       route.name === 'interval' ||
       route.name === 'firmware';
-    const invalidLocalSubscription =
-      route.name === 'subscription' && selectedTracker?.source === 'local-preview';
     if (
       trackerCatalog.status !== 'ready' ||
       !trackerScopedRoute ||
-      (selectedTracker && !invalidLocalSubscription)
+      selectedTracker
     ) return;
 
     setRoute({ name: 'main' });
@@ -493,7 +499,6 @@ function AppContent() {
     if (
       route.name === 'interval' ||
       route.name === 'firmware' ||
-      route.name === 'subscription' ||
       route.name === 'protection'
     ) {
       setRoute({ name: 'tracker', trackerId: route.trackerId });
@@ -529,14 +534,9 @@ function AppContent() {
     setRoute({ name: 'tracker', trackerId });
   };
 
-  const openCloudPlus = (trackerId: string) => {
-    const tracker = trackers.find((item) => item.id === trackerId);
-    if (!tracker || tracker.source === 'local-preview') {
-      showNotice(t('pairing.errorUnavailable'));
-      return;
-    }
-    setActiveTab('trackers');
-    setRoute({ name: 'subscription', trackerId });
+  const openCloudPlus = (_trackerId?: string) => {
+    setActiveTab('subscriptions');
+    setRoute({ name: 'main' });
   };
 
   const openProtection = (trackerId: string) => {
@@ -633,7 +633,7 @@ function AppContent() {
           }}
           onChangeIcon={(kind: TrackerKind) => {
             if (!premium.features[selectedTracker.id]?.subscriptionActive) {
-              openCloudPlus(selectedTracker.id);
+              openCloudPlus();
               return;
             }
             setTrackerPreferences((current) => ({
@@ -654,10 +654,8 @@ function AppContent() {
                     : t('tracker.iconCard');
             showNotice(t('tracker.iconUpdated', { name: selectedTracker.name, icon: iconName }));
           }}
-          subscription={billing.subscriptions[selectedTracker.id]}
-          subscriptionLoading={billing.loadingIds.has(selectedTracker.id)}
           onOpenProtection={() => openProtection(selectedTracker.id)}
-          onOpenSubscription={() => openCloudPlus(selectedTracker.id)}
+          onOpenCloudPlus={() => openCloudPlus()}
           onOpenInterval={() => setRoute({ name: 'interval', trackerId: selectedTracker.id })}
           onOpenFirmware={() => setRoute({ name: 'firmware', trackerId: selectedTracker.id })}
           onRemove={() => setRemoveTrackerId(selectedTracker.id)}
@@ -678,36 +676,8 @@ function AppContent() {
           getAccessToken={auth.getAccessToken}
           demoPreviewEnabled={demoPreviewActive && __DEV__}
           onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
-          onOpenSubscription={() => openCloudPlus(selectedTracker.id)}
+          onOpenSubscription={() => openCloudPlus()}
           onRefreshPremium={() => premium.refreshDevice(selectedTracker.id)}
-          onNotice={showNotice}
-        />
-      );
-    }
-
-    if (
-      route.name === 'subscription' &&
-      selectedTracker &&
-      selectedBillingDeviceId &&
-      selectedTracker.source !== 'local-preview'
-    ) {
-      return (
-        <SubscriptionScreen
-          tracker={selectedTracker}
-          subscription={billing.subscriptions[selectedTracker.id]}
-          loading={billing.loadingIds.has(selectedTracker.id)}
-          error={billing.errors[selectedBillingDeviceId]}
-          mode={billing.mode}
-          purchasesEnabled={billing.purchasesEnabled}
-          onBack={() => setRoute({ name: 'tracker', trackerId: selectedTracker.id })}
-          onRetry={async () => {
-            await Promise.all([
-              billing.refreshDevice(selectedBillingDeviceId),
-              premium.refreshDevice(selectedBillingDeviceId),
-            ]);
-          }}
-          onCheckout={(planCode) => billing.startCheckout(selectedBillingDeviceId, planCode)}
-          onPortal={(action) => billing.openPortal(selectedBillingDeviceId, action)}
           onNotice={showNotice}
         />
       );
@@ -808,17 +778,51 @@ function AppContent() {
         <TrackersScreen
           trackers={displayTrackers}
           mainTrackerId={trackerPreferences.mainTrackerId}
+          premiumFeatures={premium.features}
           onAdd={openPairing}
           onOpenTracker={openTracker}
-          onOpenSubscription={openCloudPlus}
           onSetMain={(trackerId) => {
             const tracker = displayTrackers.find((item) => item.id === trackerId);
             setTrackerPreferences((current) => ({ ...current, mainTrackerId: trackerId }));
             if (tracker) showNotice(t('trackers.mainSetNotice', { name: tracker.name }));
           }}
           onNotice={showNotice}
-          subscriptions={billing.subscriptions}
-          subscriptionLoadingIds={billing.loadingIds}
+        />
+      );
+    }
+
+    if (activeTab === 'subscriptions') {
+      const accountSubscription = legacyBillingDeviceId
+        ? billing.subscriptions[legacyBillingDeviceId]
+        : undefined;
+      return (
+        <SubscriptionsScreen
+          subscription={accountSubscription}
+          loading={Boolean(
+            legacyBillingDeviceId && billing.loadingIds.has(legacyBillingDeviceId)
+          )}
+          error={legacyBillingDeviceId ? billing.errors[legacyBillingDeviceId] : undefined}
+          mode={billing.mode}
+          purchasesEnabled={billing.purchasesEnabled}
+          checkoutAvailable={Boolean(legacyBillingDeviceId)}
+          onRetry={async () => {
+            if (!legacyBillingDeviceId) return;
+            await Promise.all([
+              billing.refreshDevice(legacyBillingDeviceId),
+              premium.refreshDevice(legacyBillingDeviceId),
+            ]);
+          }}
+          onCheckout={(planCode) =>
+            legacyBillingDeviceId
+              ? billing.startCheckout(legacyBillingDeviceId, planCode)
+              : Promise.resolve({ kind: 'error', code: 'not_found' })
+          }
+          onPortal={(action) =>
+            legacyBillingDeviceId
+              ? billing.openPortal(legacyBillingDeviceId, action)
+              : Promise.resolve({ kind: 'error', code: 'not_found' })
+          }
+          onNotice={showNotice}
         />
       );
     }
@@ -848,7 +852,7 @@ function AppContent() {
         onOpenHistory={(trackerId) => {
           const access = premium.features[trackerId];
           if (!access?.subscriptionActive || access.locationHistoryDays < 1) {
-            openCloudPlus(trackerId);
+            openCloudPlus();
             return;
           }
           setActiveTab('map');
@@ -925,7 +929,6 @@ function AppContent() {
     route.name !== 'interval' &&
     route.name !== 'firmware' &&
     route.name !== 'protection' &&
-    route.name !== 'subscription' &&
     route.name !== 'info' &&
     route.name !== 'account' &&
     route.name !== 'notifications' &&

@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useMemo } from 'react';
 import {
   Pressable,
@@ -6,7 +7,6 @@ import {
   StyleSheet,
   Text,
   View,
-  useWindowDimensions,
 } from 'react-native';
 
 import {
@@ -17,14 +17,12 @@ import {
   TextButton,
   TrackerArtwork,
 } from '../components';
-import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import { formatRelativeTime, localizeTrackerPlace, useI18n } from '../i18n';
 import { selectClosestLocatedTracker } from '../location/nearestTracker';
 import { useUserLocation } from '../location/useUserLocation';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
 import type { PremiumFeatureAccess } from '../premium/api';
-import { useProtectionCopy } from '../premium/copy';
 import { colors, radii, shadow } from '../theme';
 
 export function HomeScreen({
@@ -52,10 +50,7 @@ export function HomeScreen({
   unreadNotificationCount: number;
   onNotice: (message: string) => void;
 }) {
-  const { width } = useWindowDimensions();
   const { t } = useI18n();
-  const cloudCopy = useCloudPlusCopy();
-  const protectionCopy = useProtectionCopy();
   const userCoordinate = useUserLocation(trackers.length > 0);
   const closestLocatedTracker = useMemo(
     () => selectClosestLocatedTracker(trackers, userCoordinate, mainTracker?.id),
@@ -66,10 +61,6 @@ export function HomeScreen({
     () => (focusedTracker ? [focusedTracker] : []),
     [focusedTracker],
   );
-  const cloudPlusActive = Boolean(
-    focusedTracker && premiumFeatures[focusedTracker.id]?.subscriptionActive,
-  );
-
   if (!focusedTracker) {
     return <TrackerSetupStart onAddTracker={onAddTracker} onNotice={onNotice} />;
   }
@@ -77,30 +68,32 @@ export function HomeScreen({
   return (
     <AppSafeArea style={styles.safeArea}>
       <View style={styles.container} testID="home-screen">
-        <GoogleTrackerMap
-          trackers={mapTrackers}
-          mapType="standard"
-          recenterToken={0}
-          focusTrackerId={focusedTracker?.id}
-          showsUserLocation={Boolean(userCoordinate)}
-          onOpenTracker={onOpenTracker}
-        />
-        <View pointerEvents="none" style={styles.mapWash} />
+        <View style={styles.mapSection}>
+          <GoogleTrackerMap
+            trackers={mapTrackers}
+            mapType="standard"
+            recenterToken={0}
+            focusTrackerId={focusedTracker?.id}
+            showsUserLocation={Boolean(userCoordinate)}
+            onOpenTracker={onOpenTracker}
+          />
+          <View pointerEvents="none" style={styles.mapWash} />
 
-        <View style={styles.topBar} pointerEvents="box-none">
-          <View style={[styles.brandPill, shadow]}>
-            <Brand compact />
-          </View>
-          <View style={[styles.notificationShadow, shadow]}>
-            <IconButton
-              name="notifications-outline"
-              accessibilityLabel={t('a11y.notifications')}
-              onPress={onOpenNotifications}
-              style={styles.notificationButton}
-            />
-            {unreadNotificationCount > 0 ? (
-              <View pointerEvents="none" style={styles.notificationDot} />
-            ) : null}
+          <View style={styles.topBar} pointerEvents="box-none">
+            <View style={[styles.brandPill, shadow]}>
+              <Brand compact />
+            </View>
+            <View style={[styles.notificationShadow, shadow]}>
+              <IconButton
+                name="notifications-outline"
+                accessibilityLabel={t('a11y.notifications')}
+                onPress={onOpenNotifications}
+                style={styles.notificationButton}
+              />
+              {unreadNotificationCount > 0 ? (
+                <View pointerEvents="none" style={styles.notificationDot} />
+              ) : null}
+            </View>
           </View>
         </View>
 
@@ -112,44 +105,41 @@ export function HomeScreen({
             style={({ pressed }) => [styles.trackerCard, shadow, pressed && styles.pressed]}
             testID="home-closest-tracker"
           >
-            <View style={styles.trackerArtwork}>
-              <TrackerArtwork
-                kind={focusedTracker.kind}
-                style={styles.trackerArtworkImage}
-                decorative
-                carIconSize={34}
-              />
-            </View>
-            <View style={styles.trackerCopy}>
-              <Text style={styles.trackerLabel}>{t('home.lastSeen')}</Text>
-              <Text numberOfLines={1} style={styles.trackerName}>{focusedTracker.name}</Text>
-              <Text numberOfLines={1} style={styles.trackerMeta}>
-                {localizeTrackerPlace(t, focusedTracker.place)} · {formatRelativeTime(t, focusedTracker.lastSeen)}
-              </Text>
-            </View>
-            <Ionicons name="chevron-forward" size={24} color={colors.mutedDark} />
+            <LinearGradient
+              colors={['#082C67', '#031638', '#061C45']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.trackerCardGradient}
+            >
+              <View style={styles.trackerArtwork}>
+                <TrackerArtwork
+                  kind={focusedTracker.kind}
+                  style={styles.trackerArtworkImage}
+                  decorative
+                  carIconSize={56}
+                />
+              </View>
+              <View style={styles.trackerCopy}>
+                <Text numberOfLines={1} style={styles.trackerName}>{focusedTracker.name}</Text>
+                <View style={styles.trackerStatus}>
+                  <View style={styles.trackerStatusDot} />
+                  <Text style={styles.trackerStatusText}>
+                    {focusedTracker.status === 'nearby' ? t('tracker.nearby') : t('tracker.away')}
+                  </Text>
+                </View>
+                <Text style={styles.trackerLabel}>{t('home.lastSeen')}</Text>
+                <Text numberOfLines={1} style={styles.trackerTime}>
+                  {formatRelativeTime(t, focusedTracker.lastSeen)}
+                </Text>
+                <Text numberOfLines={1} style={styles.trackerMeta}>
+                  {localizeTrackerPlace(t, focusedTracker.place)}
+                </Text>
+              </View>
+              <View style={styles.trackerChevron}>
+                <Ionicons name="chevron-forward" size={25} color="#FFFFFF" />
+              </View>
+            </LinearGradient>
           </Pressable>
-
-          <View style={[styles.actionGrid, width < 360 && styles.actionGridStacked]}>
-            <ActionCard
-              icon={cloudPlusActive ? 'shield-checkmark-outline' : 'lock-closed-outline'}
-              title={protectionCopy.homeTitle}
-              body={cloudPlusActive ? protectionCopy.homeBody : protectionCopy.homeLocked}
-              locked={!cloudPlusActive}
-              onPress={() => onOpenProtection(focusedTracker.id)}
-            />
-            <ActionCard
-              icon={cloudPlusActive ? 'time-outline' : 'lock-closed-outline'}
-              title={cloudCopy.historyTitle}
-              body={cloudPlusActive ? cloudCopy.historyBody : cloudCopy.historyLocked}
-              locked={!cloudPlusActive}
-              onPress={() =>
-                cloudPlusActive
-                  ? onOpenHistory(focusedTracker.id)
-                  : onOpenCloudPlus(focusedTracker.id)
-              }
-            />
-          </View>
         </View>
       </View>
     </AppSafeArea>
@@ -241,36 +231,6 @@ function TrackerSetupStart({
   );
 }
 
-function ActionCard({
-  icon,
-  title,
-  body,
-  locked = false,
-  onPress,
-}: {
-  icon: React.ComponentProps<typeof Ionicons>['name'];
-  title: string;
-  body: string;
-  locked?: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={`${title}. ${body}`}
-      onPress={onPress}
-      style={({ pressed }) => [styles.actionCard, shadow, pressed && styles.pressed]}
-    >
-      <Ionicons name={icon} size={27} color={colors.blue} />
-      <View style={styles.actionCopy}>
-        <Text style={styles.actionTitle} numberOfLines={2}>{title}</Text>
-        <Text style={styles.actionBody} numberOfLines={3}>{body}</Text>
-      </View>
-      {locked ? <Ionicons name="lock-closed" size={15} color={colors.muted} /> : null}
-    </Pressable>
-  );
-}
-
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: colors.mapWater },
   setupSafeArea: { backgroundColor: colors.background },
@@ -292,7 +252,8 @@ const styles = StyleSheet.create({
   setupStepTitle: { color: colors.text, fontSize: 15, lineHeight: 19, fontWeight: '800', paddingRight: 22 },
   setupStepBody: { color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 3 },
   setupPrimary: { width: '100%', marginTop: 22 },
-  container: { flex: 1, backgroundColor: colors.mapWater, overflow: 'hidden' },
+  container: { flex: 1, backgroundColor: colors.background, overflow: 'hidden' },
+  mapSection: { flex: 1, minHeight: 300, overflow: 'hidden', backgroundColor: colors.mapWater },
   mapWash: {
     position: 'absolute',
     top: 0,
@@ -337,51 +298,50 @@ const styles = StyleSheet.create({
     backgroundColor: colors.blue,
   },
   bottomContent: {
-    position: 'absolute',
-    right: 18,
-    bottom: 18,
-    left: 18,
-    gap: 12,
+    flexShrink: 0,
+    paddingHorizontal: 15,
+    paddingTop: 13,
+    paddingBottom: 15,
+    backgroundColor: colors.background,
   },
   trackerCard: {
-    minHeight: 84,
-    padding: 11,
-    paddingRight: 14,
-    borderRadius: radii.large,
+    minHeight: 180,
+    borderRadius: 27,
+    overflow: 'hidden',
+  },
+  trackerCardGradient: {
+    flex: 1,
+    minHeight: 180,
+    padding: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    backgroundColor: 'rgba(255,255,255,0.97)',
+    gap: 13,
   },
   trackerArtwork: {
-    width: 61,
-    height: 61,
-    borderRadius: 18,
+    flex: 1.08,
+    height: 143,
     alignItems: 'center',
     justifyContent: 'center',
-    overflow: 'hidden',
-    backgroundColor: '#F1F5FF',
   },
-  trackerArtworkImage: { width: 56, height: 48 },
-  trackerCopy: { flex: 1, minWidth: 0 },
-  trackerLabel: { color: colors.muted, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.7 },
-  trackerName: { color: colors.text, fontSize: 20, lineHeight: 24, fontWeight: '800', marginTop: 1 },
-  trackerMeta: { color: colors.mutedDark, fontSize: 12, lineHeight: 17, marginTop: 2 },
-  actionGrid: { flexDirection: 'row', gap: 12 },
-  actionGridStacked: { flexDirection: 'column' },
-  actionCard: {
-    flex: 1,
-    minHeight: 98,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    borderRadius: radii.medium,
-    flexDirection: 'row',
+  trackerArtworkImage: { width: '116%', height: '100%' },
+  trackerCopy: { flex: 0.92, minWidth: 0, paddingRight: 31 },
+  trackerName: { color: '#FFFFFF', fontSize: 20, lineHeight: 24, fontWeight: '800' },
+  trackerStatus: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 7 },
+  trackerStatusDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: '#2D83FF' },
+  trackerStatusText: { color: '#2D83FF', fontSize: 13, lineHeight: 17, fontWeight: '600' },
+  trackerLabel: { color: 'rgba(255,255,255,0.62)', fontSize: 11, lineHeight: 15, marginTop: 17 },
+  trackerTime: { color: '#FFFFFF', fontSize: 19, lineHeight: 23, fontWeight: '800', marginTop: 2 },
+  trackerMeta: { color: 'rgba(255,255,255,0.68)', fontSize: 13, lineHeight: 18, marginTop: 1 },
+  trackerChevron: {
+    position: 'absolute',
+    right: 14,
+    top: 64,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: 'rgba(255,255,255,0.97)',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(83,130,193,0.28)',
   },
-  actionCopy: { flex: 1, minWidth: 0 },
-  actionTitle: { color: colors.text, fontSize: 14, lineHeight: 18, fontWeight: '800' },
-  actionBody: { color: colors.muted, fontSize: 11, lineHeight: 15, marginTop: 3 },
   pressed: { opacity: 0.82, transform: [{ scale: 0.985 }] },
 });

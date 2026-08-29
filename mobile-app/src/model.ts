@@ -1,4 +1,4 @@
-export type MainTab = 'home' | 'trackers' | 'map' | 'settings';
+export type MainTab = 'home' | 'trackers' | 'map' | 'subscriptions' | 'settings';
 
 export type PairingPhase = 'idle' | 'searching' | 'connecting' | 'installing' | 'success' | 'error';
 
@@ -42,7 +42,6 @@ export type AppRoute =
   | { name: 'map'; historyTrackerId?: string }
   | { name: 'tracker'; trackerId: string }
   | { name: 'protection'; trackerId: string }
-  | { name: 'subscription'; trackerId: string }
   | { name: 'interval'; trackerId: string }
   | { name: 'firmware'; trackerId: string }
   | { name: 'language' }

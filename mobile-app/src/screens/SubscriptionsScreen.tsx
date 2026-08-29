@@ -1,60 +1,120 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
 
+import { useAccountBillingCopy } from '../billing/accountCopy';
 import { CloudPlusFeatures } from '../billing/CloudPlusFeatures';
 import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
-import { useBillingCopy } from '../billing/copy';
-import { billingIntervalLabel, formatBillingMoney, localizedBillingPlanName } from '../billing/format';
+import {
+  billingErrorMessage,
+  subscriptionStatusLabel,
+  useBillingCopy,
+} from '../billing/copy';
+import {
+  billingIntervalLabel,
+  formatBillingDate,
+  formatBillingMoney,
+  localizedBillingPlanName,
+} from '../billing/format';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
-import type { BillingPlan, DeviceSubscription } from '../billing/types';
+import {
+  isCurrentSubscription,
+  type BillingActionResult,
+  type BillingErrorCode,
+  type BillingMode,
+  type BillingPlan,
+  type BillingPortalAction,
+  type DeviceSubscription,
+} from '../billing/types';
 import {
   AppSafeArea,
+  OutlineButton,
   PrimaryButton,
   ScreenTitle,
   Surface,
-  TrackerArtwork,
 } from '../components';
 import { useI18n } from '../i18n';
-import type { Tracker } from '../model';
-import { colors, radii, shadow } from '../theme';
+import { colors, radii } from '../theme';
 
-function collectAvailablePlans(
-  trackers: readonly Tracker[],
-  subscriptions: Record<string, DeviceSubscription>,
-): BillingPlan[] {
-  const plans = new Map<string, BillingPlan>();
-  for (const tracker of trackers) {
-    for (const plan of subscriptions[tracker.id]?.availablePlans ?? []) {
-      plans.set(plan.code, plan);
-    }
-  }
-  return [...plans.values()].sort(
-    (left, right) =>
-      left.amountMinor - right.amountMinor ||
-      left.durationMonths - right.durationMonths ||
-      left.code.localeCompare(right.code),
-  );
-}
+const EMPTY_PLANS: BillingPlan[] = [];
 
 export function SubscriptionsScreen({
-  trackers,
-  subscriptions,
-  subscriptionLoadingIds,
-  onOpenSubscription,
-  onAddTracker,
+  subscription,
+  loading,
+  error,
+  mode,
+  purchasesEnabled,
+  checkoutAvailable,
+  onRetry,
+  onCheckout,
+  onPortal,
+  onNotice,
 }: {
-  trackers: readonly Tracker[];
-  subscriptions: Record<string, DeviceSubscription>;
-  subscriptionLoadingIds: ReadonlySet<string>;
-  onOpenSubscription: (trackerId: string) => void;
-  onAddTracker: () => void;
+  subscription?: DeviceSubscription;
+  loading: boolean;
+  error?: BillingErrorCode;
+  mode: BillingMode;
+  purchasesEnabled: boolean;
+  checkoutAvailable: boolean;
+  onRetry: () => Promise<void>;
+  onCheckout: (planCode: string) => Promise<BillingActionResult>;
+  onPortal: (action: BillingPortalAction) => Promise<BillingActionResult>;
+  onNotice: (message: string) => void;
 }) {
-  const { language, t } = useI18n();
-  const copy = useBillingCopy();
+  const { language } = useI18n();
+  const accountCopy = useAccountBillingCopy();
+  const billingCopy = useBillingCopy();
   const cloudCopy = useCloudPlusCopy();
-  const managedTrackers = trackers.filter((tracker) => tracker.source !== 'local-preview');
-  const availablePlans = collectAvailablePlans(managedTrackers, subscriptions);
-  const featuredPlan = availablePlans[availablePlans.length - 1];
+  const plans = subscription?.availablePlans ?? EMPTY_PLANS;
+  const current = subscription ? isCurrentSubscription(subscription) : false;
+  const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+
+  useEffect(() => {
+    const preferred = plans.find((plan) => plan.code === selectedPlanCode)?.code
+      ?? plans.find((plan) => plan.code === subscription?.planCode)?.code
+      ?? plans[0]?.code
+      ?? null;
+    setSelectedPlanCode(preferred);
+  }, [plans, selectedPlanCode, subscription?.planCode]);
+
+  const selectedPlan = useMemo(
+    () => plans.find((plan) => plan.code === selectedPlanCode),
+    [plans, selectedPlanCode],
+  );
+  const currentPlanName =
+    subscription?.planCode && subscription.planName
+      ? localizedBillingPlanName(subscription.planCode, subscription.planName, language)
+      : null;
+  const periodEnd = formatBillingDate(subscription?.currentPeriodEnd ?? null, language);
+
+  const presentResult = (result: BillingActionResult) => {
+    if (result.kind === 'opened') onNotice(billingCopy.opened);
+    else if (result.kind === 'demo') onNotice(billingCopy.demoAction);
+    else if (result.kind === 'disabled') onNotice(billingCopy.purchaseDisabled);
+    else onNotice(billingErrorMessage(billingCopy, result.code));
+  };
+
+  const submit = async () => {
+    if (!checkoutAvailable || (!current && !selectedPlan)) return;
+    setActionBusy(true);
+    try {
+      presentResult(
+        current
+          ? await onPortal('update')
+          : await onCheckout(selectedPlan!.code),
+      );
+    } finally {
+      setActionBusy(false);
+    }
+  };
 
   return (
     <AppSafeArea>
@@ -63,230 +123,246 @@ export function SubscriptionsScreen({
         showsVerticalScrollIndicator={false}
         testID="subscriptions-screen"
       >
-        <ScreenTitle title={copy.subscription} subtitle={copy.subscriptionSubtitle} />
+        <ScreenTitle title={cloudCopy.name} subtitle={accountCopy.subtitle} />
 
-        <Surface style={styles.introCard}>
-          <View style={styles.introIcon}>
-            <Ionicons name="cloud" size={27} color={colors.blue} />
+        <Surface style={styles.hero}>
+          <View style={styles.heroTop}>
+            <View style={styles.heroIcon}>
+              <Ionicons name="cloud" size={31} color="#FFFFFF" />
+            </View>
+            <View style={styles.heroCopy}>
+              <Text style={styles.heroEyebrow}>{cloudCopy.eyebrow}</Text>
+              <Text style={styles.heroTitle}>{cloudCopy.name}</Text>
+            </View>
           </View>
-          <View style={styles.introCopy}>
-            <Text style={styles.introTitle}>{cloudCopy.name}</Text>
-            <Text style={styles.introBody}>{cloudCopy.accountBody}</Text>
-          </View>
-          <View style={styles.secureRow}>
-            <Ionicons name="shield-checkmark-outline" size={21} color={colors.blue} />
-            <Text style={styles.secureText}>{copy.secureNotice}</Text>
-          </View>
+          <Text style={styles.heroTagline}>{cloudCopy.tagline}</Text>
+          <Text style={styles.heroBody}>{cloudCopy.accountBody}</Text>
+          <SubscriptionBadge subscription={subscription} loading={loading} />
         </Surface>
 
         <CloudPlusFeatures compact />
 
         <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>{copy.plans}</Text>
-          <Text style={styles.sectionBody}>{copy.choosePlan}</Text>
+          <Text style={styles.sectionTitle}>{accountCopy.membership}</Text>
+        </View>
+        <Surface style={styles.membershipCard}>
+          <View style={[styles.membershipIcon, current && styles.membershipIconActive]}>
+            <Ionicons
+              name={current ? 'shield-checkmark' : 'shield-outline'}
+              size={25}
+              color={current ? '#FFFFFF' : colors.blue}
+            />
+          </View>
+          <View style={styles.membershipCopy}>
+            <Text style={styles.membershipTitle}>
+              {subscriptionStatusLabel(billingCopy, subscription)}
+            </Text>
+            <Text style={styles.membershipBody}>
+              {current ? accountCopy.activeBody : accountCopy.inactiveBody}
+            </Text>
+            {currentPlanName ? (
+              <Text style={styles.membershipMeta}>
+                {periodEnd
+                  ? `${currentPlanName} · ${subscription?.cancelAtPeriodEnd ? billingCopy.endsOn : billingCopy.renewsOn} ${periodEnd}`
+                  : currentPlanName}
+              </Text>
+            ) : null}
+          </View>
+        </Surface>
+
+        {mode === 'demo' ? (
+          <View style={styles.demoBanner} testID="billing-demo-banner">
+            <Ionicons name="flask-outline" size={21} color="#704600" />
+            <View style={styles.demoCopy}>
+              <Text style={styles.demoTitle}>{billingCopy.demoTitle}</Text>
+              <Text style={styles.demoBody}>{billingCopy.demoBody}</Text>
+            </View>
+          </View>
+        ) : null}
+
+        {error ? (
+          <Surface style={styles.errorCard}>
+            <Ionicons name="alert-circle-outline" size={26} color={colors.danger} />
+            <Text style={styles.errorText}>{billingErrorMessage(billingCopy, error)}</Text>
+            <OutlineButton label={billingCopy.retry} onPress={() => void onRetry()} />
+          </Surface>
+        ) : null}
+
+        <View style={styles.sectionHeader}>
+          <Text style={styles.sectionTitle}>{accountCopy.plans}</Text>
+          <Text style={styles.sectionBody}>{accountCopy.choosePlan}</Text>
         </View>
 
-        {availablePlans.length ? (
-          <View style={styles.planGrid}>
-            {availablePlans.map((plan) => {
-              const featured = plan.code === featuredPlan?.code;
+        {loading && !subscription ? (
+          <Surface style={styles.loadingCard}>
+            <ActivityIndicator color={colors.blue} />
+            <Text style={styles.loadingText}>{billingCopy.loading}</Text>
+          </Surface>
+        ) : plans.length ? (
+          <View style={styles.planStack}>
+            {plans.map((plan) => {
+              const selected = plan.code === selectedPlanCode;
               const price = formatBillingMoney(plan.amountMinor, plan.currency, language);
               const interval = billingIntervalLabel(
                 plan.interval,
-                copy.month,
-                copy.year,
+                billingCopy.month,
+                billingCopy.year,
                 plan.intervalCount,
               );
               return (
-                <Surface
+                <Pressable
                   key={plan.code}
-                  style={[styles.planCard, featured ? styles.planCardFeatured : {}]}
-                  accessibilityLabel={localizedBillingPlanName(plan.code, plan.name, language)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ selected, disabled: current }}
+                  disabled={current}
+                  onPress={() => setSelectedPlanCode(plan.code)}
+                  style={({ pressed }) => [
+                    styles.planCard,
+                    selected && styles.planCardSelected,
+                    current && styles.planCardDisabled,
+                    pressed && styles.pressed,
+                  ]}
+                  testID={`billing-plan-${plan.code}`}
                 >
-                  <View style={[styles.planIcon, featured && styles.planIconFeatured]}>
-                    <Ionicons
-                      name={featured ? 'star' : 'time-outline'}
-                      size={19}
-                      color={featured ? '#FFFFFF' : colors.blue}
-                    />
+                  <View style={[styles.radio, selected && styles.radioSelected]}>
+                    {selected ? <View style={styles.radioDot} /> : null}
                   </View>
-                  <Text style={[styles.planName, featured && styles.planNameFeatured]}>
-                    {localizedBillingPlanName(plan.code, plan.name, language)}
-                  </Text>
-                  <Text style={[styles.planPrice, featured && styles.planPriceFeatured]}>
-                    {price} / {interval}
-                  </Text>
-                </Surface>
+                  <View style={styles.planCopy}>
+                    <Text style={styles.planName}>
+                      {localizedBillingPlanName(plan.code, plan.name, language)}
+                    </Text>
+                    <Text style={styles.planPrice}>
+                      {price && interval ? `${price} / ${interval}` : billingCopy.priceAtCheckout}
+                    </Text>
+                  </View>
+                </Pressable>
               );
             })}
           </View>
         ) : (
           <Surface style={styles.noPlansCard}>
-            {subscriptionLoadingIds.size ? <ActivityIndicator color={colors.blue} /> : null}
             <Ionicons name="hourglass-outline" size={24} color={colors.muted} />
-            <Text style={styles.noPlansText}>{copy.noPlans}</Text>
+            <Text style={styles.noPlansText}>{billingCopy.noPlans}</Text>
           </Surface>
         )}
 
-        <View style={styles.tagsHeader}>
-          <Text style={styles.sectionTitle}>{t('common.trackers')}</Text>
-          <Text style={styles.sectionBody}>{copy.subscriptionSubtitle}</Text>
-        </View>
+        {(current || selectedPlan) && checkoutAvailable ? (
+          <PrimaryButton
+            label={actionBusy ? billingCopy.loading : current ? accountCopy.manage : accountCopy.subscribe}
+            icon={current ? 'open-outline' : 'card-outline'}
+            onPress={() => void submit()}
+            disabled={actionBusy || loading || !purchasesEnabled}
+            testID="subscription-primary-action"
+          />
+        ) : null}
 
-        {managedTrackers.length ? (
-          <View style={styles.tagList}>
-            {managedTrackers.map((tracker) => (
-              <Pressable
-                key={tracker.id}
-                accessibilityRole="button"
-                accessibilityLabel={`${copy.subscription}, ${tracker.name}`}
-                onPress={() => onOpenSubscription(tracker.id)}
-                style={({ pressed }) => [styles.tagRow, pressed && styles.pressed]}
-                testID={`subscription-overview-${tracker.id}`}
-              >
-                <View style={styles.tagArtwork}>
-                  <TrackerArtwork kind={tracker.kind} style={styles.tagArtworkImage} decorative />
-                </View>
-                <View style={styles.tagCopy}>
-                  <Text numberOfLines={1} style={styles.tagName}>
-                    {tracker.name}
-                  </Text>
-                  <SubscriptionBadge
-                    compact
-                    subscription={subscriptions[tracker.id]}
-                    loading={subscriptionLoadingIds.has(tracker.id)}
-                  />
-                  {subscriptions[tracker.id]?.amountMinor !== null &&
-                  subscriptions[tracker.id]?.amountMinor !== undefined ? (
-                    <Text style={styles.tagPrice}>
-                      {formatBillingMoney(
-                        subscriptions[tracker.id]?.amountMinor ?? null,
-                        subscriptions[tracker.id]?.currency ?? null,
-                        language,
-                      )}{' '}
-                      /{' '}
-                      {billingIntervalLabel(
-                        subscriptions[tracker.id]?.interval ?? null,
-                        copy.month,
-                        copy.year,
-                        subscriptions[tracker.id]?.intervalCount ?? 1,
-                      )}
-                    </Text>
-                  ) : null}
-                </View>
-                <Ionicons name="chevron-forward" size={24} color={colors.muted} />
-              </Pressable>
-            ))}
+        {!purchasesEnabled && checkoutAvailable ? (
+          <View style={styles.policyNotice} testID="external-purchase-disabled">
+            <Ionicons name="information-circle-outline" size={22} color={colors.mutedDark} />
+            <Text style={styles.policyText}>{billingCopy.purchaseDisabled}</Text>
           </View>
-        ) : (
-          <Surface style={styles.emptyCard}>
-            <View style={styles.emptyIcon}>
-              <Ionicons name="pricetag-outline" size={27} color={colors.blue} />
-            </View>
-            <Text style={styles.emptyTitle}>{t('trackers.emptyTitle')}</Text>
-            <Text style={styles.emptyBody}>{t('trackers.emptyBody')}</Text>
-            <PrimaryButton
-              label={t('trackers.add')}
-              icon="add-circle-outline"
-              onPress={onAddTracker}
-              style={styles.emptyButton}
-              testID="subscriptions-add-tracker"
-            />
-          </Surface>
-        )}
+        ) : null}
 
+        <View style={styles.secureNotice}>
+          <Ionicons name="shield-checkmark-outline" size={23} color={colors.blue} />
+          <Text style={styles.secureText}>{billingCopy.secureNotice}</Text>
+        </View>
       </ScrollView>
     </AppSafeArea>
   );
 }
 
 const styles = StyleSheet.create({
-  content: { paddingHorizontal: 20, paddingBottom: 36, gap: 18 },
-  introCard: { padding: 18, borderRadius: radii.large, gap: 14 },
-  introIcon: {
-    width: 52,
-    height: 52,
-    borderRadius: 16,
+  content: { paddingHorizontal: 20, paddingBottom: 36, gap: 17 },
+  hero: { padding: 19, gap: 10, backgroundColor: colors.navy, borderColor: colors.navy },
+  heroTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  heroIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    backgroundColor: colors.blue,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: colors.bluePale,
   },
-  introCopy: { gap: 6 },
-  introTitle: { color: colors.text, fontSize: 22, fontWeight: '800' },
-  introBody: { color: colors.mutedDark, fontSize: 15, lineHeight: 22 },
-  secureRow: {
-    borderTopWidth: StyleSheet.hairlineWidth,
-    borderTopColor: colors.border,
-    paddingTop: 13,
+  heroCopy: { flex: 1, gap: 2 },
+  heroEyebrow: { color: '#AFC7FF', fontSize: 10, fontWeight: '900', letterSpacing: 1.1 },
+  heroTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: '900' },
+  heroTagline: { color: '#FFFFFF', fontSize: 18, lineHeight: 23, fontWeight: '800', marginTop: 4 },
+  heroBody: { color: '#D9E5FF', fontSize: 13, lineHeight: 19 },
+  sectionHeader: { gap: 5, marginTop: 2 },
+  sectionTitle: { color: colors.text, fontSize: 21, fontWeight: '800' },
+  sectionBody: { color: colors.muted, fontSize: 14, lineHeight: 20 },
+  membershipCard: { padding: 17, flexDirection: 'row', alignItems: 'flex-start', gap: 13 },
+  membershipIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: colors.bluePale,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  membershipIconActive: { backgroundColor: colors.blue },
+  membershipCopy: { flex: 1, gap: 5 },
+  membershipTitle: { color: colors.text, fontSize: 17, fontWeight: '800' },
+  membershipBody: { color: colors.mutedDark, fontSize: 13, lineHeight: 19 },
+  membershipMeta: { color: colors.blueDark, fontSize: 12, lineHeight: 18, fontWeight: '700' },
+  demoBanner: {
+    borderRadius: radii.medium,
+    backgroundColor: '#FFF5D9',
+    borderWidth: 1,
+    borderColor: '#F5D58A',
+    padding: 15,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
+  demoCopy: { flex: 1, gap: 4 },
+  demoTitle: { color: '#5F3D00', fontSize: 15, fontWeight: '800' },
+  demoBody: { color: '#745516', fontSize: 13, lineHeight: 19 },
+  errorCard: { padding: 18, gap: 12 },
+  errorText: { color: colors.text, fontSize: 15, lineHeight: 21 },
+  loadingCard: { minHeight: 112, alignItems: 'center', justifyContent: 'center', gap: 10 },
+  loadingText: { color: colors.muted, fontSize: 14 },
+  planStack: { gap: 10 },
+  planCard: {
+    minHeight: 78,
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    borderRadius: radii.medium,
+    backgroundColor: colors.surface,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  planCardSelected: { borderColor: colors.blue, backgroundColor: '#F5F8FF' },
+  planCardDisabled: { opacity: 0.76 },
+  radio: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 2,
+    borderColor: colors.muted,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioSelected: { borderColor: colors.blue },
+  radioDot: { width: 10, height: 10, borderRadius: 5, backgroundColor: colors.blue },
+  planCopy: { flex: 1, gap: 4 },
+  planName: { color: colors.text, fontSize: 16, fontWeight: '800' },
+  planPrice: { color: colors.blueDark, fontSize: 13, fontWeight: '700' },
+  noPlansCard: { padding: 20, alignItems: 'center', gap: 9 },
+  noPlansText: { color: colors.muted, fontSize: 14, textAlign: 'center' },
+  policyNotice: {
+    borderRadius: 14,
+    backgroundColor: '#F0F2F6',
+    padding: 13,
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: 9,
   },
-  secureText: { color: colors.mutedDark, flex: 1, fontSize: 13, lineHeight: 19 },
-  sectionHeader: { gap: 5 },
-  tagsHeader: { gap: 5, marginTop: 2 },
-  sectionTitle: { color: colors.text, fontSize: 22, fontWeight: '800' },
-  sectionBody: { color: colors.muted, fontSize: 14, lineHeight: 20 },
-  planGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12 },
-  planCard: {
-    width: '47.8%',
-    minHeight: 124,
-    borderRadius: radii.medium,
-    padding: 14,
-    justifyContent: 'space-between',
-  },
-  planCardFeatured: { backgroundColor: colors.blue, borderColor: colors.blue },
-  planIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 11,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bluePale,
-  },
-  planIconFeatured: { backgroundColor: 'rgba(255,255,255,0.2)' },
-  planName: { color: colors.text, fontSize: 16, fontWeight: '800', marginTop: 9 },
-  planNameFeatured: { color: '#FFFFFF' },
-  planPrice: { color: colors.mutedDark, fontSize: 13, fontWeight: '700', marginTop: 3 },
-  planPriceFeatured: { color: '#EAF1FF' },
-  noPlansCard: { padding: 20, alignItems: 'center', gap: 9 },
-  noPlansText: { color: colors.muted, fontSize: 14, textAlign: 'center' },
-  tagList: { overflow: 'hidden', borderRadius: radii.large, backgroundColor: colors.surface, ...shadow },
-  tagRow: {
-    minHeight: 88,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  tagArtwork: {
-    width: 70,
-    height: 58,
-    borderRadius: 12,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#F7F9FE',
-  },
-  tagArtworkImage: { width: '100%', height: '100%' },
-  tagCopy: { flex: 1, gap: 7 },
-  tagName: { color: colors.text, fontSize: 17, fontWeight: '800' },
-  tagPrice: { color: colors.mutedDark, fontSize: 13, fontWeight: '700' },
-  emptyCard: { alignItems: 'center', padding: 22, borderRadius: radii.large },
-  emptyIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bluePale,
-    marginBottom: 12,
-  },
-  emptyTitle: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
-  emptyBody: { color: colors.muted, fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 8 },
-  emptyButton: { width: '100%', marginTop: 18 },
+  policyText: { color: colors.mutedDark, flex: 1, fontSize: 13, lineHeight: 19 },
+  secureNotice: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 6 },
+  secureText: { color: colors.muted, flex: 1, fontSize: 12, lineHeight: 18 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.99 }] },
 });

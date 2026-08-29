@@ -366,6 +366,12 @@ const tabs: { id: MainTab; labelKey: TranslationKey; icon: IconName; activeIcon:
     icon: 'navigate-outline',
     activeIcon: 'navigate',
   },
+  {
+    id: 'subscriptions',
+    labelKey: 'common.subscriptions',
+    icon: 'cloud-outline',
+    activeIcon: 'cloud',
+  },
   { id: 'settings', labelKey: 'common.settings', icon: 'settings-outline', activeIcon: 'settings' },
 ];
 
@@ -392,7 +398,14 @@ export function BottomNav({ active, onChange }: { active: MainTab; onChange: (ta
                 size={29}
                 color={selected ? colors.blue : colors.mutedDark}
               />
-              <Text style={[styles.tabLabel, selected && styles.tabLabelSelected]}>{label}</Text>
+              <Text
+                adjustsFontSizeToFit
+                minimumFontScale={0.72}
+                numberOfLines={1}
+                style={[styles.tabLabel, selected && styles.tabLabelSelected]}
+              >
+                {label}
+              </Text>
             </Pressable>
           );
         })}
@@ -555,11 +568,11 @@ const styles = StyleSheet.create({
     borderTopWidth: StyleSheet.hairlineWidth,
     borderTopColor: colors.border,
     backgroundColor: 'rgba(255,255,255,0.98)',
-    paddingHorizontal: 20,
+    paddingHorizontal: 10,
     paddingTop: 10,
   },
   tab: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4, borderRadius: 14 },
-  tabLabel: { color: colors.mutedDark, fontSize: 13, fontWeight: '500' },
+  tabLabel: { color: colors.mutedDark, fontSize: 11, fontWeight: '600', maxWidth: '100%' },
   tabLabelSelected: { color: colors.blue },
   toast: {
     position: 'absolute',
