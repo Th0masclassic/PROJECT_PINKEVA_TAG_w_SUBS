@@ -16,8 +16,8 @@ test('formats validated minor-unit prices and rejects invalid values', () => {
 });
 
 test('localizes known plan names and preserves safe server fallbacks', () => {
-  assert.equal(localizedBillingPlanName('monthly_basic', 'Monthly', 'pt'), 'Pinkeva Mensal');
-  assert.equal(localizedBillingPlanName('yearly_pro', 'Annual', 'zh'), 'Pinkeva 年度套餐');
+  assert.equal(localizedBillingPlanName('monthly_basic', 'Monthly', 'pt'), 'Cloud + Mensal');
+  assert.equal(localizedBillingPlanName('yearly_pro', 'Annual', 'zh'), 'Cloud + 年度套餐');
   assert.equal(localizedBillingPlanName('partner_plan', 'Partner plan', 'fr'), 'Partner plan');
 });
 

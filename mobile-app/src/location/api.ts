@@ -28,6 +28,8 @@ export type DeviceLocationHistory = {
   points: DeviceLocationHistoryPoint[];
 };
 
+export type LocationHistoryRange = '24h' | '30d';
+
 type ErrorEnvelope = {
   error?: { code?: string; request_id?: string };
 };
@@ -155,6 +157,7 @@ function parseLocationHistory(value: unknown, expectedDeviceId: string): DeviceL
     : envelope?.points ??
       envelope?.locations ??
       envelope?.locations_24h ??
+      envelope?.locations_30d ??
       envelope?.reports ??
       envelope?.history;
   if (!Array.isArray(candidates) || candidates.length > 20_000) {
@@ -253,10 +256,11 @@ export async function requestLocationReport(
   );
 }
 
-export async function requestLocationHistory24h(
+export async function requestLocationHistory(
   config: ProvisioningApiConfig,
   getAccessToken: () => Promise<string | null>,
   deviceId: string,
+  range: LocationHistoryRange,
 ): Promise<DeviceLocationHistory> {
   const normalizedDeviceId = deviceId.toLowerCase();
   if (!UUID_PATTERN.test(normalizedDeviceId)) {
@@ -267,8 +271,24 @@ export async function requestLocationHistory24h(
       config,
       getAccessToken,
       normalizedDeviceId,
-      'report_24h',
+      range === '30d' ? 'history?days=30' : 'report_24h',
     ),
     normalizedDeviceId,
   );
+}
+
+export function requestLocationHistory24h(
+  config: ProvisioningApiConfig,
+  getAccessToken: () => Promise<string | null>,
+  deviceId: string,
+): Promise<DeviceLocationHistory> {
+  return requestLocationHistory(config, getAccessToken, deviceId, '24h');
+}
+
+export function requestLocationHistory30d(
+  config: ProvisioningApiConfig,
+  getAccessToken: () => Promise<string | null>,
+  deviceId: string,
+): Promise<DeviceLocationHistory> {
+  return requestLocationHistory(config, getAccessToken, deviceId, '30d');
 }

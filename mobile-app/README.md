@@ -9,16 +9,18 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
 - RLS-scoped active ownership loading with canonical hosted device UUIDs; account changes and foreground returns refresh the catalog without allowing stale responses to cross accounts.
 - Google OAuth on iOS, Android, and web, plus native Sign in with Apple on iOS.
 - Home dashboard with one locally persisted main tracker and up to two most recently opened trackers.
-- Tracker list, real nearby-tag setup for authenticated users, main-device selection, rename/remove actions, and locally persisted icon overrides.
+- Tracker list, real nearby-tag setup for authenticated users, main-device selection, rename/remove actions, and Cloud +-gated locally persisted icon overrides.
 - Card, keys, bag, and car presentations. Card is the default and therefore requires no stored override.
-- Native Google Maps UI for the latest stored tracker reports, plus lost-mode
-  demo, settings, and localized support pages.
+- Native Google Maps UI for the latest stored tracker reports. Pinkeva Cloud +
+  members can hold a tracker for three seconds and switch between 24-hour and
+  30-day history; non-members see only its current or last reported location.
 - Per-tag advertising interval and signed BLE software-update flows with real
   backend release discovery, transfer progress, reboot verification, and retry.
-- A visible subscription state on every tracker plus a dedicated per-tag plan,
-  renewal, cancellation-at-period-end, checkout, and management screen.
-- Native renewal notifications and a durable per-tag billing inbox. Subscription
-  changes are cloud-only and never require a BLE synchronization with the tag.
+- Pinkeva Cloud + account membership with lost mode, separation alerts,
+  30-day history, custom tracker icons, and member purchase discounts.
+- Hosted plan selection, renewal, cancellation-at-period-end, management, and
+  a durable notification inbox. Subscription changes are cloud-only and never
+  require a BLE synchronization with the tag.
 - Account settings that show the authenticated email and allow the owner to
   update their display name without changing provider-managed account details.
 
@@ -110,7 +112,7 @@ a mobile scheme; close it and sign in from the phone app.
 
 Google must also be configured in Supabase and Google Cloud. For Apple, enable the capability for `com.pinkeva.mobile` and include that bundle identifier in the Apple provider's accepted client IDs in Supabase. Native OAuth callbacks and Apple authentication require a development build; they are not fully testable in Expo Go.
 
-## Configure per-tag billing
+## Configure Pinkeva Cloud + billing
 
 Set `EXPO_PUBLIC_API_URL` to the HTTPS backend. The app authenticates each
 billing request with the current Supabase access token and uses these routes:
@@ -120,21 +122,20 @@ billing request with the current Supabase access token and uses these routes:
 - `POST /v1/devices/{device_id}/subscription/portal` with
   `{ "action": "update" }` or `{ "action": "cancel" }`
 
-Each subscription is displayed and managed for one tag. No Stripe secret,
-publishable key, or card form belongs in the mobile app; checkout and portal
-URLs are validated and opened in the system's secure browser.
+The frontend treats one current subscription as Cloud + access for the entire
+signed-in account. The existing device-addressed routes remain a compatibility
+transport until the account-level billing backend contract replaces them. No
+Stripe secret, publishable key, or card form belongs in the mobile app;
+checkout and portal URLs are validated and opened in the system's secure
+browser.
 
-Stripe renews a recurring subscription and informs the backend without the app
-being open. The backend advances the paid period and records the physical tag
-as `pending`. The subscription screen and its dynamic **Tag updates** footer
-surface every tag that still needs a physical update. Before scanning, the app
-asks the owner to hold the tag button for five seconds to enter **Receive
-info** mode. It then connects only to that selected tag, establishes the
-challenge/proof session, writes the new signed expiry, reads all 135 bytes back
-over BLE, verifies the SHA-256 digest, and acknowledges that exact counter and
-period to the backend. A Stripe renewal is therefore app-independent, but
-updating an offline ESP32 necessarily requires the owner to bring the phone
-near the tag.
+Stripe renews the membership and informs the backend without the app being
+open. Cloud + access refreshes from the account state; the owner is never asked
+to send a renewed subscription to a nearby physical tracker.
+
+The map uses `POST /v1/devices/{device_id}/location/report_24h` for the short
+history view and `POST /v1/devices/{device_id}/location/history?days=30` for the
+Cloud + 30-day view.
 
 Checkout buttons are enabled whenever the authenticated app has a valid HTTPS
 `EXPO_PUBLIC_API_URL`. Missing API/auth configuration still fails closed. The
@@ -153,20 +154,19 @@ only inside the explicit development demo; it is excluded from subscription
 requests. Local and demo IDs are deliberately rejected by the billing API
 client instead of being sent to Stripe.
 
-## Configure renewal notifications
+## Configure Cloud + notifications
 
 Set `EXPO_PUBLIC_EAS_PROJECT_ID` to the UUID of the EAS project used for the
 native build and configure APNs/FCM credentials for that project. On the first
 authenticated native session, the app asks for notification permission and
 registers an installation-scoped Expo push token with the backend. Web and
-Expo Go are not renewal-notification targets.
+Expo Go are not push-notification targets.
 
-The backend schedules one durable notification per subscription period at one
-week before renewal, one day before renewal, and expiry. Notification permission
-can be denied without affecting billing or finder advertising; the backend inbox
-retains the event even when no push destination is available. **Settings →
-Notifications** shows that durable inbox, and tapping a renewal item refreshes
-and opens the affected tag’s subscription page.
+The backend can schedule durable renewal reminders, account and tracker updates,
+and Cloud + separation alerts. Notification permission can be denied without
+affecting billing or finder advertising; the backend inbox retains events even
+when no push destination is available. **Settings → Notifications** shows that
+durable inbox, and tapping a membership item refreshes and opens Pinkeva Cloud +.
 
 ## Configure Google Maps
 
@@ -188,6 +188,12 @@ tag(s). The app sends only its Supabase access token and device UUID; finder
 private keys and advertisement-key hashes remain in the backend. A temporary
 report failure leaves the last accepted location on screen and does not create
 placeholder coordinates.
+
+Current or last location uses
+`POST /v1/devices/{device_id}/location/report`. Cloud + history uses
+`POST /v1/devices/{device_id}/location/report_24h` and
+`POST /v1/devices/{device_id}/location/report_30d`. History responses may use
+`points`, `locations`, `locations_24h`, or `locations_30d` arrays.
 
 ## Run locally
 

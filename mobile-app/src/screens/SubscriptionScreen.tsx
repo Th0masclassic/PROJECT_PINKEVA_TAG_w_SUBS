@@ -16,6 +16,8 @@ import {
   subscriptionStatusLabel,
   useBillingCopy,
 } from '../billing/copy';
+import { CloudPlusFeatures } from '../billing/CloudPlusFeatures';
+import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import {
   billingIntervalLabel,
   formatBillingDate,
@@ -39,7 +41,6 @@ import {
   OutlineButton,
   PrimaryButton,
   Surface,
-  TrackerArtwork,
 } from '../components';
 import { useI18n } from '../i18n';
 import type { Tracker } from '../model';
@@ -74,6 +75,7 @@ export function SubscriptionScreen({
 }) {
   const { language } = useI18n();
   const copy = useBillingCopy();
+  const cloudCopy = useCloudPlusCopy();
   const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState<'primary' | 'cancel' | null>(null);
   const [cancelVisible, setCancelVisible] = useState(false);
@@ -155,25 +157,26 @@ export function SubscriptionScreen({
         showsVerticalScrollIndicator={false}
         testID="subscription-screen"
       >
-        <Text style={styles.subtitle}>
-          {interpolateBillingCopy(copy.subtitle, { name: tracker.name })}
-        </Text>
+        <Text style={styles.subtitle}>{copy.subtitle}</Text>
 
-        <Surface style={styles.heroCard}>
+        <Surface style={styles.cloudHero}>
           <View style={styles.heroTop}>
-            <View style={styles.artworkWrap}>
-              <TrackerArtwork kind={tracker.kind} style={styles.artwork} decorative carIconSize={42} />
+            <View style={styles.cloudIcon}>
+              <Ionicons name="cloud" size={31} color="#FFFFFF" />
             </View>
             <View style={styles.heroCopy}>
-              <Text numberOfLines={1} style={styles.trackerName}>{tracker.name}</Text>
-              <SubscriptionBadge subscription={subscription} loading={loading} />
+              <Text style={styles.cloudEyebrow}>{cloudCopy.eyebrow}</Text>
+              <Text style={styles.cloudName}>{cloudCopy.name}</Text>
             </View>
           </View>
-          <View style={styles.perTagNotice}>
-            <Ionicons name="pricetag" size={20} color={colors.blue} />
-            <Text style={styles.perTagText}>{copy.perTag}</Text>
+          <Text style={styles.cloudTagline}>{cloudCopy.tagline}</Text>
+          <Text style={styles.cloudBody}>{cloudCopy.accountBody}</Text>
+          <View style={styles.heroBadge}>
+            <SubscriptionBadge subscription={subscription} loading={loading} />
           </View>
         </Surface>
+
+        <CloudPlusFeatures />
 
         {mode === 'demo' ? (
           <View style={styles.demoBanner} testID="billing-demo-banner">
@@ -424,14 +427,15 @@ function DetailRow({
 const styles = StyleSheet.create({
   content: { paddingHorizontal: 20, paddingBottom: 38, gap: 16 },
   subtitle: { color: colors.muted, fontSize: 16, marginTop: -8, marginBottom: 2, textAlign: 'center' },
-  heroCard: { padding: 18, gap: 16 },
+  cloudHero: { padding: 19, gap: 10, backgroundColor: colors.navy, borderColor: colors.navy },
   heroTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  artworkWrap: { width: 94, height: 70, borderRadius: 15, backgroundColor: '#F7F9FE', overflow: 'hidden', alignItems: 'center', justifyContent: 'center' },
-  artwork: { width: 92, height: 68 },
-  heroCopy: { flex: 1, gap: 9 },
-  trackerName: { color: colors.text, fontSize: 23, fontWeight: '800' },
-  perTagNotice: { borderRadius: 14, backgroundColor: colors.bluePale, padding: 13, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  perTagText: { color: colors.blueDark, flex: 1, fontSize: 14, fontWeight: '600', lineHeight: 20 },
+  cloudIcon: { width: 54, height: 54, borderRadius: 18, backgroundColor: colors.blue, alignItems: 'center', justifyContent: 'center' },
+  heroCopy: { flex: 1, gap: 2 },
+  heroBadge: { alignItems: 'flex-start', marginTop: 2 },
+  cloudEyebrow: { color: '#AFC7FF', fontSize: 10, fontWeight: '900', letterSpacing: 1.1 },
+  cloudName: { color: '#FFFFFF', fontSize: 22, fontWeight: '900' },
+  cloudTagline: { color: '#FFFFFF', fontSize: 18, lineHeight: 23, fontWeight: '800', marginTop: 4 },
+  cloudBody: { color: '#D9E5FF', fontSize: 13, lineHeight: 19 },
   demoBanner: { borderRadius: radii.medium, backgroundColor: '#FFF5D9', borderWidth: 1, borderColor: '#F5D58A', padding: 15, flexDirection: 'row', gap: 12 },
   demoIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFE6A7', alignItems: 'center', justifyContent: 'center' },
   demoCopy: { flex: 1, gap: 5 },

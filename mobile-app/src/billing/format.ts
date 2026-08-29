@@ -12,13 +12,13 @@ const locales: Record<Language, string> = {
 };
 
 const localizedPlanNames: Record<Language, Record<string, string>> = {
-  en: { monthly_basic: 'Pinkeva Monthly', quarterly_standard: 'Pinkeva 3 Months', semiannual_plus: 'Pinkeva 6 Months', yearly_pro: 'Pinkeva Annual' },
-  pt: { monthly_basic: 'Pinkeva Mensal', quarterly_standard: 'Pinkeva 3 Meses', semiannual_plus: 'Pinkeva 6 Meses', yearly_pro: 'Pinkeva Anual' },
-  fr: { monthly_basic: 'Pinkeva Mensuel', quarterly_standard: 'Pinkeva 3 Mois', semiannual_plus: 'Pinkeva 6 Mois', yearly_pro: 'Pinkeva Annuel' },
-  de: { monthly_basic: 'Pinkeva Monatlich', quarterly_standard: 'Pinkeva 3 Monate', semiannual_plus: 'Pinkeva 6 Monate', yearly_pro: 'Pinkeva Jährlich' },
-  zh: { monthly_basic: 'Pinkeva 月度套餐', quarterly_standard: 'Pinkeva 3 个月', semiannual_plus: 'Pinkeva 6 个月', yearly_pro: 'Pinkeva 年度套餐' },
-  it: { monthly_basic: 'Pinkeva Mensile', quarterly_standard: 'Pinkeva 3 Mesi', semiannual_plus: 'Pinkeva 6 Mesi', yearly_pro: 'Pinkeva Annuale' },
-  es: { monthly_basic: 'Pinkeva Mensual', quarterly_standard: 'Pinkeva 3 Meses', semiannual_plus: 'Pinkeva 6 Meses', yearly_pro: 'Pinkeva Anual' },
+  en: { monthly_basic: 'Cloud + Monthly', quarterly_standard: 'Cloud + 3 Months', semiannual_plus: 'Cloud + 6 Months', yearly_pro: 'Cloud + Annual' },
+  pt: { monthly_basic: 'Cloud + Mensal', quarterly_standard: 'Cloud + 3 Meses', semiannual_plus: 'Cloud + 6 Meses', yearly_pro: 'Cloud + Anual' },
+  fr: { monthly_basic: 'Cloud + Mensuel', quarterly_standard: 'Cloud + 3 Mois', semiannual_plus: 'Cloud + 6 Mois', yearly_pro: 'Cloud + Annuel' },
+  de: { monthly_basic: 'Cloud + Monatlich', quarterly_standard: 'Cloud + 3 Monate', semiannual_plus: 'Cloud + 6 Monate', yearly_pro: 'Cloud + Jährlich' },
+  zh: { monthly_basic: 'Cloud + 月度套餐', quarterly_standard: 'Cloud + 3 个月', semiannual_plus: 'Cloud + 6 个月', yearly_pro: 'Cloud + 年度套餐' },
+  it: { monthly_basic: 'Cloud + Mensile', quarterly_standard: 'Cloud + 3 Mesi', semiannual_plus: 'Cloud + 6 Mesi', yearly_pro: 'Cloud + Annuale' },
+  es: { monthly_basic: 'Cloud + Mensual', quarterly_standard: 'Cloud + 3 Meses', semiannual_plus: 'Cloud + 6 Meses', yearly_pro: 'Cloud + Anual' },
 };
 
 export function localizedBillingPlanName(

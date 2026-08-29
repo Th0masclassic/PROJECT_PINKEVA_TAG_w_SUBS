@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -26,6 +26,7 @@ import { formatRelativeTime, useI18n } from '../i18n';
 import { formatInterval, type Tracker, type TrackerKind } from '../model';
 import { colors, radii, shadow } from '../theme';
 import { subscriptionStatusLabel, useBillingCopy } from '../billing/copy';
+import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import type { DeviceSubscription } from '../billing/types';
 import { useTrackerCloudCopy } from '../trackers/copy';
 
@@ -41,6 +42,7 @@ export function TrackerDetailScreen({
   onBack,
   onRename,
   onChangeIcon,
+  cloudPlusActive,
   subscription,
   subscriptionLoading,
   onOpenSubscription,
@@ -52,6 +54,7 @@ export function TrackerDetailScreen({
   onBack: () => void;
   onRename: (name: string) => void;
   onChangeIcon: (kind: TrackerKind) => void;
+  cloudPlusActive: boolean;
   subscription?: DeviceSubscription;
   subscriptionLoading: boolean;
   onOpenSubscription: () => void;
@@ -62,10 +65,15 @@ export function TrackerDetailScreen({
   const { width } = useWindowDimensions();
   const { t } = useI18n();
   const billingCopy = useBillingCopy();
+  const cloudCopy = useCloudPlusCopy();
   const trackerCloudCopy = useTrackerCloudCopy();
   const [renameVisible, setRenameVisible] = useState(false);
   const [iconVisible, setIconVisible] = useState(false);
   const [draftName, setDraftName] = useState(tracker.name);
+
+  useEffect(() => {
+    if (!cloudPlusActive) setIconVisible(false);
+  }, [cloudPlusActive]);
 
   const saveName = () => {
     const trimmed = draftName.trim();
@@ -137,11 +145,11 @@ export function TrackerDetailScreen({
           </Surface>
           <Surface style={styles.settingCard}>
             <SettingRow
-              icon="images-outline"
+              icon={cloudPlusActive ? 'images-outline' : 'lock-closed-outline'}
               title={t('tracker.icon')}
-              subtitle={t('tracker.iconSubtitle')}
-              value={iconLabel}
-              onPress={() => setIconVisible(true)}
+              subtitle={cloudPlusActive ? t('tracker.iconSubtitle') : cloudCopy.iconLocked}
+              value={cloudPlusActive ? iconLabel : cloudCopy.locked}
+              onPress={cloudPlusActive ? () => setIconVisible(true) : onOpenSubscription}
               isLast
               testID="tracker-icon"
             />
@@ -208,7 +216,7 @@ export function TrackerDetailScreen({
         </View>
       </Modal>
 
-      <Modal transparent visible={iconVisible} animationType="slide" onRequestClose={() => setIconVisible(false)}>
+      <Modal transparent visible={cloudPlusActive && iconVisible} animationType="slide" onRequestClose={() => setIconVisible(false)}>
         <View style={styles.iconScrim}>
           <Pressable onPress={() => setIconVisible(false)} style={StyleSheet.absoluteFill} />
           <SafeAreaView edges={['bottom']} style={styles.iconSheetSafe}>

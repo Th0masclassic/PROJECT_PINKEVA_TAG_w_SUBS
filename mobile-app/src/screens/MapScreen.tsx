@@ -8,14 +8,21 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
   useWindowDimensions,
 } from 'react-native';
 
+import {
+  interpolateCloudPlusCopy,
+  useCloudPlusCopy,
+} from '../billing/cloudPlusCopy';
 import { AppSafeArea, TrackerArtwork } from '../components';
 import { formatRelativeTime, useI18n } from '../i18n';
-import type { DeviceLocationHistory, DeviceLocationReport } from '../location/api';
+import type {
+  DeviceLocationHistory,
+  DeviceLocationReport,
+  LocationHistoryRange,
+} from '../location/api';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
 import { colors, radii, shadow } from '../theme';
@@ -24,6 +31,7 @@ const LONG_PRESS_DURATION_MS = 3000;
 
 export function MapScreen({
   trackers,
+  cloudPlusActive,
   requestedHistoryTrackerId,
   onHistoryRequestHandled,
   onRequestTrackerLocation,
@@ -32,19 +40,26 @@ export function MapScreen({
   onNotice,
 }: {
   trackers: Tracker[];
+  cloudPlusActive: boolean;
   requestedHistoryTrackerId?: string;
   onHistoryRequestHandled: () => void;
   onRequestTrackerLocation: (trackerId: string) => Promise<DeviceLocationReport>;
-  onRequestTrackerHistory: (trackerId: string) => Promise<DeviceLocationHistory>;
+  onRequestTrackerHistory: (
+    trackerId: string,
+    range: LocationHistoryRange,
+  ) => Promise<DeviceLocationHistory>;
   onShowTrackers: () => void;
   onNotice: (message: string) => void;
 }) {
   const { t } = useI18n();
+  const cloudCopy = useCloudPlusCopy();
   const mapTrackers = trackers;
   const { height: windowHeight } = useWindowDimensions();
   const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
   const [recenterToken, setRecenterToken] = useState(0);
+  const [focusedTrackerId, setFocusedTrackerId] = useState<string | null>(null);
   const [historyTrackerId, setHistoryTrackerId] = useState<string | null>(null);
+  const [historyRange, setHistoryRange] = useState<LocationHistoryRange>('24h');
   const [historyPoints, setHistoryPoints] = useState<DeviceLocationHistory['points']>([]);
   const [historyLoadingId, setHistoryLoadingId] = useState<string | null>(null);
   const [locationLoadingId, setLocationLoadingId] = useState<string | null>(null);
@@ -98,6 +113,7 @@ export function MapScreen({
   }, []);
 
   const startHoldCountdown = useCallback((trackerId: string) => {
+    if (!cloudPlusActive) return;
     if (holdCountdownTimer.current) clearInterval(holdCountdownTimer.current);
     const deadline = Date.now() + LONG_PRESS_DURATION_MS;
     setHoldCountdown({ trackerId, seconds: 3 });
@@ -118,7 +134,7 @@ export function MapScreen({
           : current,
       );
     }, 100);
-  }, []);
+  }, [cloudPlusActive]);
 
   const sheetPanResponder = useMemo(
     () =>
@@ -144,47 +160,71 @@ export function MapScreen({
     [collapsedSheetOffset, settleSheet, sheetTranslateY],
   );
 
-  const showTrackerHistory = useCallback(async (trackerId: string) => {
+  const showTrackerHistory = useCallback(async (
+    trackerId: string,
+    range: LocationHistoryRange = historyRange,
+  ) => {
+    if (!cloudPlusActive) {
+      stopHoldCountdown();
+      onNotice(cloudCopy.historyLocked);
+      return;
+    }
     locationRequestSequence.current += 1;
     setLocationLoadingId(null);
     stopHoldCountdown();
     const sequence = ++historyRequestSequence.current;
+    setFocusedTrackerId(trackerId);
+    setHistoryTrackerId(trackerId);
+    setHistoryRange(range);
+    setHistoryPoints([]);
     setHistoryLoadingId(trackerId);
     try {
-      const history = await onRequestTrackerHistory(trackerId);
+      const history = await onRequestTrackerHistory(trackerId, range);
       if (historyRequestSequence.current !== sequence) return;
-      setHistoryTrackerId(trackerId);
       setHistoryPoints(history.points);
       setRecenterToken((current) => current + 1);
+      const rangeLabel = range === '30d' ? cloudCopy.history30d : cloudCopy.history24h;
       onNotice(
         history.points.length
-          ? t('map.historyReady', { count: history.points.length })
-          : t('map.historyEmpty'),
+          ? interpolateCloudPlusCopy(cloudCopy.historyReady, {
+              count: String(history.points.length),
+              range: rangeLabel,
+            })
+          : interpolateCloudPlusCopy(cloudCopy.historyEmpty, { range: rangeLabel }),
       );
       settleSheet(collapsedSheetOffset);
     } catch {
       if (historyRequestSequence.current !== sequence) return;
-      onNotice(t('map.historyError'));
+      onNotice(interpolateCloudPlusCopy(cloudCopy.historyError, {
+        range: range === '30d' ? cloudCopy.history30d : cloudCopy.history24h,
+      }));
     } finally {
       if (historyRequestSequence.current === sequence) setHistoryLoadingId(null);
     }
-  }, [collapsedSheetOffset, onNotice, onRequestTrackerHistory, settleSheet, stopHoldCountdown, t]);
-
-  useEffect(() => {
-    if (!requestedHistoryTrackerId) return;
-    onHistoryRequestHandled();
-    void showTrackerHistory(requestedHistoryTrackerId);
-  }, [onHistoryRequestHandled, requestedHistoryTrackerId, showTrackerHistory]);
+  }, [
+    cloudCopy,
+    cloudPlusActive,
+    collapsedSheetOffset,
+    historyRange,
+    onNotice,
+    onRequestTrackerHistory,
+    settleSheet,
+    stopHoldCountdown,
+  ]);
 
   const handleRowLongPress = useCallback((trackerId: string) => {
     stopHoldCountdown();
+    if (!cloudPlusActive) {
+      onNotice(cloudCopy.historyLocked);
+      return;
+    }
     rowLongPressId.current = trackerId;
     if (rowLongPressTimer.current) clearTimeout(rowLongPressTimer.current);
     rowLongPressTimer.current = setTimeout(() => {
       if (rowLongPressId.current === trackerId) rowLongPressId.current = null;
     }, 1000);
     void showTrackerHistory(trackerId);
-  }, [showTrackerHistory, stopHoldCountdown]);
+  }, [cloudCopy.historyLocked, cloudPlusActive, onNotice, showTrackerHistory, stopHoldCountdown]);
 
   const requestAndFocusTracker = useCallback(async (trackerId: string) => {
     stopHoldCountdown();
@@ -194,7 +234,8 @@ export function MapScreen({
     }
     historyRequestSequence.current += 1;
     setHistoryLoadingId(null);
-    setHistoryTrackerId(trackerId);
+    setFocusedTrackerId(trackerId);
+    setHistoryTrackerId(null);
     setHistoryPoints([]);
     setRecenterToken((current) => current + 1);
     settleSheet(collapsedSheetOffset);
@@ -226,8 +267,43 @@ export function MapScreen({
     }
   }, [collapsedSheetOffset, mapTrackers, onNotice, onRequestTrackerLocation, settleSheet, stopHoldCountdown, t]);
 
+  useEffect(() => {
+    if (!requestedHistoryTrackerId) return;
+    onHistoryRequestHandled();
+    if (!cloudPlusActive) {
+      setFocusedTrackerId(requestedHistoryTrackerId);
+      setHistoryTrackerId(null);
+      setHistoryPoints([]);
+      setRecenterToken((current) => current + 1);
+      onNotice(cloudCopy.historyLocked);
+      return;
+    }
+    void showTrackerHistory(requestedHistoryTrackerId, '24h');
+  }, [
+    cloudCopy.historyLocked,
+    cloudPlusActive,
+    onHistoryRequestHandled,
+    onNotice,
+    requestedHistoryTrackerId,
+    showTrackerHistory,
+  ]);
+
+  const closeHistory = useCallback(() => {
+    historyRequestSequence.current += 1;
+    setHistoryLoadingId(null);
+    setHistoryTrackerId(null);
+    setHistoryPoints([]);
+    setRecenterToken((current) => current + 1);
+  }, []);
+
+  useEffect(() => {
+    if (cloudPlusActive) return;
+    closeHistory();
+    stopHoldCountdown();
+  }, [cloudPlusActive, closeHistory, stopHoldCountdown]);
+
   const displayedMapTrackers = useMemo(() => {
-    if (!historyTrackerId || historyPoints.length === 0) return mapTrackers;
+    if (!cloudPlusActive || !historyTrackerId || historyPoints.length === 0) return mapTrackers;
     const tracker = mapTrackers.find((candidate) => candidate.id === historyTrackerId);
     const latestPoint = historyPoints[historyPoints.length - 1];
     if (!tracker || !latestPoint) return mapTrackers;
@@ -236,7 +312,7 @@ export function MapScreen({
       latitude: latestPoint.latitude,
       longitude: latestPoint.longitude,
     }];
-  }, [historyPoints, historyTrackerId, mapTrackers]);
+  }, [cloudPlusActive, historyPoints, historyTrackerId, mapTrackers]);
 
   return (
     <AppSafeArea style={styles.safeArea}>
@@ -245,8 +321,8 @@ export function MapScreen({
           trackers={displayedMapTrackers}
           mapType={mapType}
           recenterToken={recenterToken}
-          focusTrackerId={historyTrackerId ?? undefined}
-          pathCoordinates={historyPoints}
+          focusTrackerId={focusedTrackerId ?? historyTrackerId ?? undefined}
+          pathCoordinates={cloudPlusActive ? historyPoints : []}
           onPressInTracker={startHoldCountdown}
           onPressOutTracker={stopHoldCountdown}
           onLongPressTracker={handleRowLongPress}
@@ -254,29 +330,54 @@ export function MapScreen({
         />
         <View style={styles.mapWash} pointerEvents="none" />
 
-        <View style={styles.searchRow}>
-          <View style={[styles.searchBox, shadow]}>
-            <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.mapMenu')} onPress={() => onNotice(t('map.menuOpened'))} style={styles.searchIconButton}>
-              <Ionicons name="menu" size={28} color={colors.mutedDark} />
-            </Pressable>
-            <TextInput
-              accessibilityLabel={t('a11y.searchTracker')}
-              placeholder={t('map.searchPlaceholder')}
-              placeholderTextColor={colors.muted}
-              returnKeyType="search"
-              onSubmitEditing={({ nativeEvent }) =>
-                onNotice(nativeEvent.text ? t('map.showingResults', { query: nativeEvent.text }) : t('map.enterTrackerName'))
-              }
-              style={styles.searchInput}
-            />
-            <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.voiceSearch')} onPress={() => onNotice(t('map.voiceReady'))} style={styles.searchIconButton}>
-              <Ionicons name="mic" size={25} color={colors.mutedDark} />
-            </Pressable>
+        {cloudPlusActive && historyTrackerId ? (
+          <View style={[styles.historyPanel, shadow]} testID="map-history-filter">
+            <View style={styles.historyPanelHeader}>
+              <View style={styles.historyPanelTitleRow}>
+                <Ionicons name="time-outline" size={19} color={colors.blue} />
+                <Text style={styles.historyPanelTitle}>{cloudCopy.historyRangeTitle}</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t('common.close')}
+                onPress={closeHistory}
+                style={styles.historyCloseButton}
+              >
+                <Ionicons name="close" size={20} color={colors.mutedDark} />
+              </Pressable>
+            </View>
+            <View style={styles.historySegments}>
+              {(['24h', '30d'] as const).map((range) => {
+                const selected = historyRange === range;
+                const label = range === '30d' ? cloudCopy.history30d : cloudCopy.history24h;
+                return (
+                  <Pressable
+                    key={range}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    onPress={() => {
+                      if (!selected) void showTrackerHistory(historyTrackerId, range);
+                    }}
+                    style={[styles.historySegment, selected && styles.historySegmentSelected]}
+                    testID={`map-history-${range}`}
+                  >
+                    <Text style={[
+                      styles.historySegmentText,
+                      selected && styles.historySegmentTextSelected,
+                    ]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
           </View>
-          <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.openProfile')} onPress={() => onNotice(t('map.profileOpened'))} style={[styles.roundControl, shadow]}>
-            <Ionicons name="person-circle-outline" size={35} color={colors.mutedDark} />
-          </Pressable>
-        </View>
+        ) : cloudPlusActive ? (
+          <View pointerEvents="none" style={[styles.historyHint, shadow]}>
+            <Ionicons name="sparkles" size={17} color={colors.blue} />
+            <Text numberOfLines={3} style={styles.historyHintText}>{cloudCopy.historyHint}</Text>
+          </View>
+        ) : null}
 
         <Pressable accessibilityRole="button" accessibilityLabel={t('a11y.changeMapLayers')} onPress={() => {
           setMapType((current) => current === 'standard' ? 'satellite' : 'standard');
@@ -296,18 +397,25 @@ export function MapScreen({
           <View pointerEvents="none" style={styles.holdCountdownLayer}>
             <View style={[styles.holdCountdown, shadow]} accessibilityLiveRegion="polite">
               <Ionicons name="time-outline" size={17} color="#FFFFFF" />
-              <Text style={styles.holdCountdownText}>24h · {holdCountdown.seconds}</Text>
+              <Text style={styles.holdCountdownText}>
+                {cloudCopy.historyCountdown} · {holdCountdown.seconds}
+              </Text>
             </View>
           </View>
         ) : null}
 
         {historyLoadingId || locationLoadingId ? (
-          <View style={[styles.historyLoading, shadow]}>
+          <View style={[
+            styles.historyLoading,
+            historyTrackerId && styles.historyLoadingWithPanel,
+            shadow,
+          ]}>
             <ActivityIndicator color={colors.blue} />
             <Text style={styles.historyLoadingText}>
               {historyLoadingId
-                ? t('map.historyLoading', {
+                ? interpolateCloudPlusCopy(cloudCopy.historyLoading, {
                     name: mapTrackers.find((tracker) => tracker.id === historyLoadingId)?.name ?? t('common.tracker'),
+                    range: historyRange === '30d' ? cloudCopy.history30d : cloudCopy.history24h,
                   })
                 : t('map.locationLoading', {
                     name: mapTrackers.find((tracker) => tracker.id === locationLoadingId)?.name ?? t('common.tracker'),
@@ -402,17 +510,26 @@ const styles = StyleSheet.create({
   safeArea: { backgroundColor: colors.mapWater },
   container: { flex: 1, overflow: 'hidden' },
   mapWash: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(228,243,255,0.16)' },
-  searchRow: { position: 'absolute', top: 18, left: 18, right: 18, flexDirection: 'row', gap: 12, alignItems: 'center' },
-  searchBox: { flex: 1, minHeight: 58, borderRadius: 29, backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 5 },
-  searchIconButton: { width: 46, height: 48, alignItems: 'center', justifyContent: 'center' },
-  searchInput: { flex: 1, minHeight: 54, color: colors.text, fontSize: 16, outlineStyle: 'none' } as never,
   roundControl: { width: 56, height: 56, borderRadius: 28, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
-  layersButton: { position: 'absolute', right: 22, top: 94 },
+  layersButton: { position: 'absolute', right: 22, top: 18 },
   recenterButton: { position: 'absolute', right: 22, bottom: '43%' },
-  holdCountdownLayer: { position: 'absolute', top: 91, left: 80, right: 80, alignItems: 'center' },
+  historyHint: { position: 'absolute', top: 18, left: 18, right: 90, minHeight: 62, borderRadius: 19, backgroundColor: '#FFFFFF', paddingHorizontal: 14, paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 9 },
+  historyHintText: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17, fontWeight: '700' },
+  historyPanel: { position: 'absolute', top: 18, left: 18, right: 90, borderRadius: 20, backgroundColor: '#FFFFFF', padding: 10, gap: 8 },
+  historyPanelHeader: { minHeight: 30, paddingLeft: 3, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
+  historyPanelTitleRow: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7 },
+  historyPanelTitle: { flex: 1, color: colors.text, fontSize: 14, fontWeight: '800' },
+  historyCloseButton: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#F1F4F9', alignItems: 'center', justifyContent: 'center' },
+  historySegments: { minHeight: 38, padding: 3, borderRadius: 13, backgroundColor: '#EEF2F8', flexDirection: 'row', gap: 3 },
+  historySegment: { flex: 1, minHeight: 32, borderRadius: 10, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  historySegmentSelected: { backgroundColor: colors.blue },
+  historySegmentText: { color: colors.mutedDark, fontSize: 12, fontWeight: '800' },
+  historySegmentTextSelected: { color: '#FFFFFF' },
+  holdCountdownLayer: { position: 'absolute', top: 90, left: 80, right: 80, alignItems: 'center' },
   holdCountdown: { minHeight: 38, borderRadius: 19, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', gap: 7, backgroundColor: 'rgba(7,21,53,0.90)' },
   holdCountdownText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800', letterSpacing: 0.2 },
-  historyLoading: { position: 'absolute', top: 164, left: 28, right: 28, minHeight: 52, borderRadius: 18, backgroundColor: '#FFFFFF', paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  historyLoading: { position: 'absolute', top: 90, left: 28, right: 28, minHeight: 52, borderRadius: 18, backgroundColor: '#FFFFFF', paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  historyLoadingWithPanel: { top: 132 },
   historyLoadingText: { flex: 1, color: colors.text, fontSize: 14, fontWeight: '600' },
   bottomSheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingTop: 4, ...shadow },
   sheetGrabArea: { minHeight: 82 },

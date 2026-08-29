@@ -19,12 +19,12 @@ import {
   type PermissionKey,
   type PermissionState,
 } from '../permissions/appPermissions';
+import { CloudPlusFeatures } from '../billing/CloudPlusFeatures';
 import type { InfoTopic } from '../model';
 import { colors, radii } from '../theme';
 
 const connectTracker = require('../../assets/help/connect-tracker.png');
 const firmwareUpdate = require('../../assets/help/firmware-update.png');
-const renewalFlow = require('../../assets/help/renewal-flow.png');
 
 const topics: Record<InfoTopic, { title: TranslationKey; message: TranslationKey; icon: IconName }> = {
   account: { title: 'settings.account', message: 'settings.accountMessage', icon: 'person-circle-outline' },
@@ -36,13 +36,13 @@ const topics: Record<InfoTopic, { title: TranslationKey; message: TranslationKey
   firmware: { title: 'settings.firmware', message: 'settings.firmwareMessage', icon: 'sync-outline' },
 };
 
-type HelpTab = 'start' | 'connect' | 'update' | 'renewal' | 'faq';
+type HelpTab = 'start' | 'connect' | 'update' | 'cloud' | 'faq';
 
 const helpTabs: { id: HelpTab; label: string }[] = [
   { id: 'start', label: 'Start here' },
   { id: 'connect', label: 'Connect' },
   { id: 'update', label: 'Update' },
-  { id: 'renewal', label: 'Renewal' },
+  { id: 'cloud', label: 'Cloud +' },
   { id: 'faq', label: 'FAQ' },
 ];
 
@@ -226,7 +226,7 @@ function HelpContent() {
     <>
       <Surface style={styles.helpIntro}>
         <Text style={styles.heroTitle}>A clear path, every time</Text>
-        <Text style={styles.heroBody}>From unboxing to a renewed tracker, these quick guides keep the next step obvious.</Text>
+        <Text style={styles.heroBody}>From unboxing to Pinkeva Cloud +, these quick guides keep the next step obvious.</Text>
       </Surface>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.helpTabs}>
         {helpTabs.map((item) => (
@@ -268,22 +268,20 @@ function HelpContent() {
           </View>
         </Surface>
       ) : null}
-      {tab === 'renewal' ? (
-        <Surface style={styles.flowCard}>
-          <Image source={renewalFlow} resizeMode="cover" style={styles.flowImage} />
-          <View style={styles.flowContent}>
-            <Text style={styles.cardTitle}>When a subscription renews</Text>
-            <Step number={1} title="The period renews">Your subscription renews according to the plan shown on the tracker’s subscription page. Pinkeva sends a reminder when notification delivery is enabled.</Step>
-            <Step number={2} title="Cloud access continues">Pinkeva updates location access, history, sharing, safe zones, and smart alerts automatically after the verified payment event.</Step>
-            <Step number={3} title="No tag sync needed">The physical tag keeps advertising its selected finder identity. You do not need Bluetooth, the tag button, or a nearby phone for renewal.</Step>
-          </View>
+      {tab === 'cloud' ? (
+        <Surface style={styles.card}>
+          <View style={styles.startIcon}><Ionicons name="cloud-outline" size={32} color={colors.blue} /></View>
+          <Text style={styles.cardTitle}>Pinkeva Cloud +</Text>
+          <Text style={styles.body}>Cloud + is managed through your Pinkeva account. Subscription changes are applied online, so there is no manual subscription update to send to a physical tracker.</Text>
+          <View style={styles.divider} />
+          <CloudPlusFeatures compact />
         </Surface>
       ) : null}
       {tab === 'faq' ? (
         <View style={styles.stack}>
           {[
             ['Why can’t I see my tag?', 'Refresh the Trackers screen and check the last-report time. Bluetooth is needed only for nearby setup, maintenance, and firmware updates; finder reports can arrive later when a compatible phone observes the tag.'],
-            ['Does a renewal update the physical tag?', 'No. Renewal changes Pinkeva cloud access only. The tag keeps advertising its installed finder identity without receiving a billing period or expiry date.'],
+            ['Do I need to update a tag after renewal?', 'No. Cloud + access is managed through your Pinkeva account and updates automatically after the backend confirms the renewal.'],
             ['What should I do if an update stops?', 'Keep the tag close, reopen Pinkeva, and start the update again from the tracker page. The tag verifies every update and will not accept an incomplete or unverified package.'],
             ['Can I turn permissions off later?', 'Yes. Use App Permissions to stop Pinkeva notification delivery or open your phone settings to change Bluetooth, location, or notification access.'],
           ].map(([question, answer]) => {
@@ -313,7 +311,7 @@ function AboutContent() {
       <Section title="What Pinkeva does">
         <Surface style={styles.card}>
           <Bullet>Helps you securely set up and manage your individual Pinkeva tags.</Bullet>
-          <Bullet>Shows tracker, subscription, and accepted location information in one place.</Bullet>
+          <Bullet>Shows tracker, Cloud + membership, and accepted location information in one place.</Bullet>
           <Bullet>Keeps signed firmware and nearby tag-control operations verified before a tag accepts them.</Bullet>
         </Surface>
       </Section>
@@ -342,6 +340,7 @@ function FirmwareContent() {
           <Bullet>Verified, signed firmware packages before installation.</Bullet>
           <Bullet>Rollback-aware update flow so a tag does not accept an incomplete update.</Bullet>
           <Bullet>One selected Apple or Google finder advertisement, restored after reboot.</Bullet>
+          <Bullet>Cloud + account access without a manual tracker subscription sync.</Bullet>
           <Bullet>Clearer maintenance and recovery checks during sensitive tag operations.</Bullet>
         </Surface>
       </Section>

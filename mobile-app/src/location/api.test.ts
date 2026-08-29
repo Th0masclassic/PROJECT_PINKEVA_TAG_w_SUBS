@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ProvisioningApiError, type ProvisioningApiConfig } from '../provisioning/api.ts';
-import { requestLocationHistory24h, requestLocationReport } from './api.ts';
+import {
+  requestLocationHistory,
+  requestLocationHistory24h,
+  requestLocationReport,
+} from './api.ts';
 
 const CONFIG: ProvisioningApiConfig = { baseUrl: 'https://api.example.test' };
 const DEVICE_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -126,6 +130,40 @@ test('accepts a direct 24-hour point array while rejecting malformed coordinates
     );
     assert.equal(history.points.length, 1);
     assert.equal(history.points[0].latitude, 38.72);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('requests the 30-day history route and accepts a 30-day response envelope', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = (async (input: string | URL | Request) => {
+    requestedUrl = String(input);
+    return new Response(
+      JSON.stringify({
+        device_id: DEVICE_ID,
+        locations_30d: [
+          { latitude: 38.71, longitude: -9.15, recorded_at: '2026-08-01T11:00:00Z' },
+          { latitude: 38.72, longitude: -9.14, recorded_at: '2026-08-25T11:00:00Z' },
+        ],
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  }) as typeof fetch;
+
+  try {
+    const history = await requestLocationHistory(
+      CONFIG,
+      async () => 'access-token',
+      DEVICE_ID,
+      '30d',
+    );
+    assert.equal(
+      requestedUrl,
+      `${CONFIG.baseUrl}/v1/devices/${DEVICE_ID}/location/history?days=30`,
+    );
+    assert.equal(history.points.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

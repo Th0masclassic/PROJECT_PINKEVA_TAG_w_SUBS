@@ -47,7 +47,7 @@
       "expo-notifications",
       "expo-web-browser",
       "expo-font",
-      "./plugins/withPersonalTeamDevelopment",
+      "./plugins/withPersonalTeamDevelopment.cjs",
       [
         "@sfourdrinier/react-native-ble-plx",
         {
@@ -58,6 +58,12 @@
           "androidEnableForegroundService": false
         }
       ]
-    ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "232449f6-038d-4a3d-b06f-cc07f632d1d3"
+      }
+    },
+    "owner": "pinkeva"
   }
 }

@@ -1,10 +1,12 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
+import { CloudPlusFeatures } from '../billing/CloudPlusFeatures';
+import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import { useBillingCopy } from '../billing/copy';
 import { billingIntervalLabel, formatBillingMoney, localizedBillingPlanName } from '../billing/format';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
-import { type BillingPlan, type DeviceSubscription } from '../billing/types';
+import type { BillingPlan, DeviceSubscription } from '../billing/types';
 import {
   AppSafeArea,
   PrimaryButton,
@@ -49,6 +51,7 @@ export function SubscriptionsScreen({
 }) {
   const { language, t } = useI18n();
   const copy = useBillingCopy();
+  const cloudCopy = useCloudPlusCopy();
   const managedTrackers = trackers.filter((tracker) => tracker.source !== 'local-preview');
   const availablePlans = collectAvailablePlans(managedTrackers, subscriptions);
   const featuredPlan = availablePlans[availablePlans.length - 1];
@@ -64,17 +67,19 @@ export function SubscriptionsScreen({
 
         <Surface style={styles.introCard}>
           <View style={styles.introIcon}>
-            <Ionicons name="card" size={27} color={colors.blue} />
+            <Ionicons name="cloud" size={27} color={colors.blue} />
           </View>
           <View style={styles.introCopy}>
-            <Text style={styles.introTitle}>{copy.subscription}</Text>
-            <Text style={styles.introBody}>{copy.perTag}</Text>
+            <Text style={styles.introTitle}>{cloudCopy.name}</Text>
+            <Text style={styles.introBody}>{cloudCopy.accountBody}</Text>
           </View>
           <View style={styles.secureRow}>
             <Ionicons name="shield-checkmark-outline" size={21} color={colors.blue} />
             <Text style={styles.secureText}>{copy.secureNotice}</Text>
           </View>
         </Surface>
+
+        <CloudPlusFeatures compact />
 
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>{copy.plans}</Text>
@@ -125,7 +130,7 @@ export function SubscriptionsScreen({
 
         <View style={styles.tagsHeader}>
           <Text style={styles.sectionTitle}>{t('common.trackers')}</Text>
-          <Text style={styles.sectionBody}>{copy.perTag}</Text>
+          <Text style={styles.sectionBody}>{copy.subscriptionSubtitle}</Text>
         </View>
 
         {managedTrackers.length ? (

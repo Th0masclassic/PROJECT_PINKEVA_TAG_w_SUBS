@@ -17,6 +17,7 @@ import {
   TextButton,
   TrackerArtwork,
 } from '../components';
+import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import { formatRelativeTime, localizeTrackerPlace, useI18n } from '../i18n';
 import { selectClosestLocatedTracker } from '../location/nearestTracker';
 import { useUserLocation } from '../location/useUserLocation';
@@ -27,22 +28,31 @@ import { colors, radii, shadow } from '../theme';
 export function HomeScreen({
   trackers,
   mainTracker,
+  cloudPlusActive,
   onOpenTracker,
   onAddTracker,
   onOpenHistory,
   onToggleLost,
+  onOpenCloudPlus,
+  onOpenNotifications,
+  unreadNotificationCount,
   onNotice,
 }: {
   trackers: Tracker[];
   mainTracker?: Tracker;
+  cloudPlusActive: boolean;
   onOpenTracker: (trackerId: string) => void;
   onAddTracker: () => void;
   onOpenHistory: (trackerId: string) => void;
   onToggleLost: (trackerId: string) => void;
+  onOpenCloudPlus: (trackerId: string) => void;
+  onOpenNotifications: () => void;
+  unreadNotificationCount: number;
   onNotice: (message: string) => void;
 }) {
   const { width } = useWindowDimensions();
   const { t } = useI18n();
+  const cloudCopy = useCloudPlusCopy();
   const userCoordinate = useUserLocation(trackers.length > 0);
   const closestLocatedTracker = useMemo(
     () => selectClosestLocatedTracker(trackers, userCoordinate, mainTracker?.id),
@@ -79,10 +89,12 @@ export function HomeScreen({
             <IconButton
               name="notifications-outline"
               accessibilityLabel={t('a11y.notifications')}
-              onPress={() => onNotice(t('home.notificationsClear'))}
+              onPress={onOpenNotifications}
               style={styles.notificationButton}
             />
-            <View pointerEvents="none" style={styles.notificationDot} />
+            {unreadNotificationCount > 0 ? (
+              <View pointerEvents="none" style={styles.notificationDot} />
+            ) : null}
           </View>
         </View>
 
@@ -114,16 +126,32 @@ export function HomeScreen({
 
           <View style={[styles.actionGrid, width < 360 && styles.actionGridStacked]}>
             <ActionCard
-              icon="shield-outline"
+              icon={cloudPlusActive ? 'shield-outline' : 'lock-closed-outline'}
               title={focusedTracker.isLost ? t('home.markedLost') : t('home.markLost')}
-              body={focusedTracker.isLost ? t('home.lostEnabledBody') : t('home.lostHelpBody')}
-              onPress={() => onToggleLost(focusedTracker.id)}
+              body={
+                cloudPlusActive
+                  ? focusedTracker.isLost
+                    ? t('home.lostEnabledBody')
+                    : t('home.lostHelpBody')
+                  : cloudCopy.lostLocked
+              }
+              locked={!cloudPlusActive}
+              onPress={() =>
+                cloudPlusActive
+                  ? onToggleLost(focusedTracker.id)
+                  : onOpenCloudPlus(focusedTracker.id)
+              }
             />
             <ActionCard
-              icon="time-outline"
-              title={t('home.locationHistory')}
-              body={t('home.locationHistoryBody')}
-              onPress={() => onOpenHistory(focusedTracker.id)}
+              icon={cloudPlusActive ? 'time-outline' : 'lock-closed-outline'}
+              title={cloudCopy.historyTitle}
+              body={cloudPlusActive ? cloudCopy.historyBody : cloudCopy.historyLocked}
+              locked={!cloudPlusActive}
+              onPress={() =>
+                cloudPlusActive
+                  ? onOpenHistory(focusedTracker.id)
+                  : onOpenCloudPlus(focusedTracker.id)
+              }
             />
           </View>
         </View>
@@ -221,11 +249,13 @@ function ActionCard({
   icon,
   title,
   body,
+  locked = false,
   onPress,
 }: {
   icon: React.ComponentProps<typeof Ionicons>['name'];
   title: string;
   body: string;
+  locked?: boolean;
   onPress: () => void;
 }) {
   return (
@@ -237,9 +267,10 @@ function ActionCard({
     >
       <Ionicons name={icon} size={27} color={colors.blue} />
       <View style={styles.actionCopy}>
-        <Text style={styles.actionTitle} numberOfLines={1}>{title}</Text>
-        <Text style={styles.actionBody} numberOfLines={2}>{body}</Text>
+        <Text style={styles.actionTitle} numberOfLines={2}>{title}</Text>
+        <Text style={styles.actionBody} numberOfLines={3}>{body}</Text>
       </View>
+      {locked ? <Ionicons name="lock-closed" size={15} color={colors.muted} /> : null}
     </Pressable>
   );
 }
@@ -344,7 +375,7 @@ const styles = StyleSheet.create({
   actionGridStacked: { flexDirection: 'column' },
   actionCard: {
     flex: 1,
-    minHeight: 84,
+    minHeight: 98,
     paddingHorizontal: 14,
     paddingVertical: 13,
     borderRadius: radii.medium,
