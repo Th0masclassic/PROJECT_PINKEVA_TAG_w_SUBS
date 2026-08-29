@@ -210,6 +210,13 @@ npm run android
 npm run web
 ```
 
+For a phone install that runs without a Metro development server, use the
+embedded iOS release build:
+
+```sh
+npm run ios:release -- --device "iPhone"
+```
+
 For local iPhone testing with a free Personal Team, Apple Sign In is disabled
 by default because Apple does not allow that entitlement for Personal Teams.
 Email and Google authentication remain available. Set
