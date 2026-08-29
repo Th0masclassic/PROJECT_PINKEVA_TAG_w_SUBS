@@ -14,6 +14,9 @@ from .auth import AuthenticatedPrincipal
 from .crypto import b64url_decode_exact, b64url_encode
 from .database import Database
 from .models import (
+    DeviceCompanionObservationCreate,
+    DeviceCompanionResetResponse,
+    DeviceCompanionStatusResponse,
     DeviceLocationHistoryPoint,
     DeviceProtectionProfileResponse,
     DeviceProtectionProfileUpdate,
@@ -22,6 +25,10 @@ from .models import (
     DeviceRecoveryShareCreateResponse,
     DeviceRecoveryShareListResponse,
     DeviceRecoveryShareSummary,
+    DeviceReplacementClaimCreate,
+    DeviceReplacementClaimListResponse,
+    DeviceReplacementClaimSummary,
+    DeviceReplacementEligibilityResponse,
     DeviceSafeZoneCreate,
     DeviceSafeZoneListResponse,
     DeviceSafeZoneResponse,
@@ -62,15 +69,24 @@ class PremiumService:
                             device.serial_number) AS tracker_name,
                    device.firmware_version, device.last_latitude,
                    device.last_longitude, device.last_location_at,
-                   active_subscription.id AS active_subscription_id
+                   active_subscription.id AS active_subscription_id,
+                   active_subscription.status AS active_subscription_status,
+                   active_subscription.plan_code AS active_plan_code,
+                   active_subscription.duration_months AS active_plan_months,
+                   active_subscription.starts_at AS active_period_start,
+                   active_subscription.current_period_end AS active_period_end
               FROM public.device device
               JOIN public.ownership ownership
                 ON ownership.device_id = device.id
                AND ownership.user_id = %s
                AND ownership.ended_at IS NULL
          LEFT JOIN LATERAL (
-                    SELECT subscription.id
+                    SELECT subscription.id, subscription.status,
+                           subscription.plan_code, subscription.starts_at,
+                           subscription.current_period_end,
+                           plan.duration_months
                       FROM public.subscription subscription
+                      JOIN public.plan plan ON plan.code = subscription.plan_code
                      WHERE subscription.device_id = device.id
                        AND subscription.user_id = ownership.user_id
                        AND subscription.status IN ('active', 'trialing')
@@ -95,6 +111,11 @@ class PremiumService:
     @staticmethod
     def _feature_response(device: dict) -> PremiumFeatureAccessResponse:
         active = device["active_subscription_id"] is not None
+        replacement = (
+            active
+            and device.get("active_subscription_status") == "active"
+            and int(device.get("active_plan_months") or 0) >= 6
+        )
         return PremiumFeatureAccessResponse(
             device_id=device["device_id"],
             subscription_active=active,
@@ -103,10 +124,11 @@ class PremiumService:
             location_history_days=30 if active else 0,
             smart_alerts=active,
             safe_zones=active,
-            lost_mode=active,
+            companion_separation_alerts=active,
             trusted_sharing=active,
             recovery_report=active,
             vehicle_mode=active,
+            replacement_benefit=replacement,
         )
 
     async def feature_access(
@@ -130,10 +152,8 @@ class PremiumService:
             latitude=float(row["latitude"]),
             longitude=float(row["longitude"]),
             radius_meters=int(row["radius_meters"]),
-            notify_on_enter=bool(row["notify_on_enter"]),
-            notify_on_exit=bool(row["notify_on_exit"]),
             enabled=bool(row["enabled"]),
-            last_inside=row.get("last_inside"),
+            last_tracker_inside=row.get("last_tracker_inside"),
             last_evaluated_at=row.get("last_evaluated_at"),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
@@ -169,12 +189,11 @@ class PremiumService:
             query = await connection.execute(
                 """
                 INSERT INTO public.device_safe_zone (
-                    user_id, device_id, name, latitude, longitude,
-                    radius_meters, notify_on_enter, notify_on_exit
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    user_id, device_id, name, latitude, longitude, radius_meters
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id, device_id, name, latitude, longitude,
-                          radius_meters, notify_on_enter, notify_on_exit,
-                          enabled, last_inside, last_evaluated_at,
+                          radius_meters, enabled, last_tracker_inside,
+                          last_evaluated_at,
                           created_at, updated_at
                 """,
                 (
@@ -184,8 +203,6 @@ class PremiumService:
                     request.latitude,
                     request.longitude,
                     request.radius_meters,
-                    request.notify_on_enter,
-                    request.notify_on_exit,
                 ),
             )
             row = await query.fetchone()
@@ -206,8 +223,8 @@ class PremiumService:
             query = await connection.execute(
                 """
                 SELECT id, device_id, name, latitude, longitude,
-                       radius_meters, notify_on_enter, notify_on_exit,
-                       enabled, last_inside, last_evaluated_at,
+                       radius_meters, enabled, last_tracker_inside,
+                       last_evaluated_at,
                        created_at, updated_at
                   FROM public.device_safe_zone
                  WHERE user_id = %s AND device_id = %s
@@ -251,19 +268,16 @@ class PremiumService:
                        latitude = CASE WHEN %s THEN %s ELSE latitude END,
                        longitude = CASE WHEN %s THEN %s ELSE longitude END,
                        radius_meters = CASE WHEN %s THEN %s ELSE radius_meters END,
-                       notify_on_enter = CASE
-                         WHEN %s THEN %s ELSE notify_on_enter END,
-                       notify_on_exit = CASE
-                         WHEN %s THEN %s ELSE notify_on_exit END,
                        enabled = CASE WHEN %s THEN %s ELSE enabled END,
-                       last_inside = CASE WHEN %s THEN NULL ELSE last_inside END,
+                       last_tracker_inside = CASE
+                         WHEN %s THEN NULL ELSE last_tracker_inside END,
                        last_evaluated_at = CASE
                          WHEN %s THEN NULL ELSE last_evaluated_at END,
                        updated_at = now()
                  WHERE id = %s AND user_id = %s AND device_id = %s
                 RETURNING id, device_id, name, latitude, longitude,
-                          radius_meters, notify_on_enter, notify_on_exit,
-                          enabled, last_inside, last_evaluated_at,
+                          radius_meters, enabled, last_tracker_inside,
+                          last_evaluated_at,
                           created_at, updated_at
                 """,
                 (
@@ -275,10 +289,6 @@ class PremiumService:
                     request.longitude,
                     "radius_meters" in fields,
                     request.radius_meters,
-                    "notify_on_enter" in fields,
-                    request.notify_on_enter,
-                    "notify_on_exit" in fields,
-                    request.notify_on_exit,
                     "enabled" in fields,
                     request.enabled,
                     evaluation_reset,
@@ -323,9 +333,10 @@ class PremiumService:
     def _profile_response(row: dict) -> DeviceProtectionProfileResponse:
         return DeviceProtectionProfileResponse(
             device_id=row["device_id"],
-            lost_mode=bool(row["lost_mode"]),
-            lost_since=row.get("lost_since"),
-            recovery_message=row.get("recovery_message"),
+            separation_alerts=bool(row["separation_alerts"]),
+            separation_threshold_meters=int(
+                row["separation_threshold_meters"]
+            ),
             vehicle_mode=bool(row["vehicle_mode"]),
             movement_alerts=bool(row["movement_alerts"]),
             movement_threshold_meters=int(row["movement_threshold_meters"]),
@@ -345,8 +356,9 @@ class PremiumService:
         )
         query = await connection.execute(
             """
-            SELECT device_id, lost_mode, lost_since, recovery_message,
-                   vehicle_mode, movement_alerts, movement_threshold_meters,
+            SELECT device_id, separation_alerts,
+                   separation_threshold_meters, vehicle_mode,
+                   movement_alerts, movement_threshold_meters,
                    movement_anchor_latitude, movement_anchor_longitude,
                    updated_at
               FROM public.device_protection_profile
@@ -386,8 +398,7 @@ class PremiumService:
         fields = request.model_fields_set
         if not fields:
             raise PremiumError("INVALID_PREMIUM_REQUEST", 422)
-        required_fields = fields.difference({"recovery_message"})
-        if any(getattr(request, field) is None for field in required_fields):
+        if any(getattr(request, field) is None for field in fields):
             raise PremiumError("INVALID_PREMIUM_REQUEST", 422)
         async with database.transaction() as connection:
             device = await self._owned_device(
@@ -400,18 +411,15 @@ class PremiumService:
             current = await self._profile_row(
                 connection, user_id=user_id, device_id=device_id
             )
-            lost_mode = (
-                request.lost_mode if "lost_mode" in fields else current["lost_mode"]
+            separation_alerts = (
+                request.separation_alerts
+                if "separation_alerts" in fields
+                else current["separation_alerts"]
             )
-            lost_since = current["lost_since"]
-            if lost_mode and not current["lost_mode"]:
-                lost_since = datetime.now(UTC)
-            elif not lost_mode:
-                lost_since = None
-            recovery_message = (
-                request.recovery_message
-                if "recovery_message" in fields
-                else current["recovery_message"]
+            separation_threshold = (
+                request.separation_threshold_meters
+                if "separation_threshold_meters" in fields
+                else current["separation_threshold_meters"]
             )
             vehicle_mode = (
                 request.vehicle_mode
@@ -442,21 +450,22 @@ class PremiumService:
             query = await connection.execute(
                 """
                 UPDATE public.device_protection_profile
-                   SET lost_mode = %s, lost_since = %s,
-                       recovery_message = %s, vehicle_mode = %s,
+                   SET separation_alerts = %s,
+                       separation_threshold_meters = %s,
+                       vehicle_mode = %s,
                        movement_alerts = %s, movement_threshold_meters = %s,
                        movement_anchor_latitude = %s,
                        movement_anchor_longitude = %s,
                        updated_at = now()
                  WHERE user_id = %s AND device_id = %s
-                RETURNING device_id, lost_mode, lost_since, recovery_message,
-                          vehicle_mode, movement_alerts,
+                RETURNING device_id, separation_alerts,
+                          separation_threshold_meters, vehicle_mode,
+                          movement_alerts,
                           movement_threshold_meters, updated_at
                 """,
                 (
-                    lost_mode,
-                    lost_since,
-                    recovery_message,
+                    separation_alerts,
+                    separation_threshold,
                     vehicle_mode,
                     movement_alerts,
                     threshold,
@@ -470,6 +479,185 @@ class PremiumService:
         if row is None:
             raise RuntimeError("Protection-profile update returned no row")
         return self._profile_response(dict(row))
+
+    @staticmethod
+    def _utc_timestamp(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise PremiumError("INVALID_COMPANION_OBSERVATION", 422)
+        return value.astimezone(UTC)
+
+    async def _companion_status(
+        self,
+        connection: AsyncConnection,
+        *,
+        device: dict,
+        user_id: UUID,
+        observation_accepted: bool | None = None,
+    ) -> DeviceCompanionStatusResponse:
+        query = await connection.execute(
+            """
+            SELECT companion.installation_id, companion.platform,
+                   observation.sampled_at, observation.phone_accuracy_meters,
+                   observation.tag_proximity, observation.tag_observed_at,
+                   observation.tag_rssi_dbm
+              FROM public.device_primary_companion companion
+         LEFT JOIN LATERAL (
+                    SELECT sampled_at, phone_accuracy_meters, tag_proximity,
+                           tag_observed_at, tag_rssi_dbm
+                      FROM public.device_companion_observation observation
+                     WHERE observation.user_id = companion.user_id
+                       AND observation.device_id = companion.device_id
+                       AND observation.installation_id = companion.installation_id
+                     ORDER BY observation.sampled_at DESC,
+                              observation.created_at DESC
+                     LIMIT 1
+                   ) observation ON true
+             WHERE companion.user_id = %s AND companion.device_id = %s
+            """,
+            (user_id, device["device_id"]),
+        )
+        row = await query.fetchone()
+        if row is None:
+            return DeviceCompanionStatusResponse(
+                device_id=device["device_id"],
+                subscription_active=device["active_subscription_id"] is not None,
+                configured=False,
+                observation_accepted=observation_accepted,
+            )
+        return DeviceCompanionStatusResponse(
+            device_id=device["device_id"],
+            subscription_active=device["active_subscription_id"] is not None,
+            configured=True,
+            installation_id=row["installation_id"],
+            platform=row["platform"],
+            observation_accepted=observation_accepted,
+            last_observation_at=row.get("sampled_at"),
+            phone_accuracy_meters=(
+                float(row["phone_accuracy_meters"])
+                if row.get("phone_accuracy_meters") is not None
+                else None
+            ),
+            tag_proximity=row.get("tag_proximity"),
+            tag_observed_at=row.get("tag_observed_at"),
+            tag_rssi_dbm=row.get("tag_rssi_dbm"),
+        )
+
+    async def report_companion_observation(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        request: DeviceCompanionObservationCreate,
+    ) -> DeviceCompanionStatusResponse:
+        now = datetime.now(UTC)
+        sampled_at = self._utc_timestamp(request.sampled_at)
+        if sampled_at < now - timedelta(hours=24) or sampled_at > now + timedelta(
+            minutes=5
+        ):
+            raise PremiumError("INVALID_COMPANION_OBSERVATION", 422)
+        tag_observed_at = None
+        if request.tag_observed_at is not None:
+            tag_observed_at = self._utc_timestamp(request.tag_observed_at)
+            if (
+                tag_observed_at > sampled_at + timedelta(minutes=5)
+                or tag_observed_at < sampled_at - timedelta(minutes=5)
+            ):
+                raise PremiumError("INVALID_COMPANION_OBSERVATION", 422)
+
+        async with database.transaction() as connection:
+            device = await self._owned_device(
+                connection,
+                user_id=user_id,
+                device_id=device_id,
+                require_subscription=True,
+                lock=True,
+            )
+            primary_query = await connection.execute(
+                """
+                INSERT INTO public.device_primary_companion (
+                    user_id, device_id, installation_id, platform
+                ) VALUES (%s, %s, %s, %s)
+                ON CONFLICT (user_id, device_id) DO UPDATE
+                   SET platform = EXCLUDED.platform, updated_at = now()
+                 WHERE device_primary_companion.installation_id =
+                       EXCLUDED.installation_id
+                RETURNING installation_id
+                """,
+                (user_id, device_id, request.installation_id, request.platform),
+            )
+            if await primary_query.fetchone() is None:
+                raise PremiumError("MAIN_DEVICE_MISMATCH", 409)
+            observation_query = await connection.execute(
+                """
+                INSERT INTO public.device_companion_observation (
+                    user_id, device_id, installation_id, platform,
+                    phone_latitude, phone_longitude, phone_accuracy_meters,
+                    sampled_at, tag_proximity, tag_observed_at,
+                    tag_rssi_dbm, scan_duration_seconds
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (user_id, device_id, installation_id, sampled_at)
+                DO NOTHING
+                RETURNING id
+                """,
+                (
+                    user_id,
+                    device_id,
+                    request.installation_id,
+                    request.platform,
+                    request.phone_latitude,
+                    request.phone_longitude,
+                    request.phone_accuracy_meters,
+                    sampled_at,
+                    request.tag_proximity,
+                    tag_observed_at,
+                    request.tag_rssi_dbm,
+                    request.scan_duration_seconds,
+                ),
+            )
+            accepted = await observation_query.fetchone() is not None
+            return await self._companion_status(
+                connection,
+                device=device,
+                user_id=user_id,
+                observation_accepted=accepted,
+            )
+
+    async def get_companion_status(
+        self, database: Database, *, user_id: UUID, device_id: UUID
+    ) -> DeviceCompanionStatusResponse:
+        async with database.transaction() as connection:
+            device = await self._owned_device(
+                connection,
+                user_id=user_id,
+                device_id=device_id,
+                require_subscription=False,
+            )
+            return await self._companion_status(
+                connection, device=device, user_id=user_id
+            )
+
+    async def reset_companion(
+        self, database: Database, *, user_id: UUID, device_id: UUID
+    ) -> DeviceCompanionResetResponse:
+        async with database.transaction() as connection:
+            await self._owned_device(
+                connection,
+                user_id=user_id,
+                device_id=device_id,
+                require_subscription=False,
+                lock=True,
+            )
+            await connection.execute(
+                """
+                DELETE FROM public.device_primary_companion
+                 WHERE user_id = %s AND device_id = %s
+                """,
+                (user_id, device_id),
+            )
+        return DeviceCompanionResetResponse(device_id=device_id)
 
     @staticmethod
     def _share_summary(row: dict) -> DeviceRecoveryShareSummary:
@@ -621,17 +809,12 @@ class PremiumService:
                 SELECT share.id, share.device_id, share.user_id,
                        share.access_level, share.expires_at,
                        COALESCE(NULLIF(BTRIM(device.name), ''),
-                                device.serial_number) AS tracker_name,
-                       COALESCE(profile.lost_mode, false) AS lost_mode,
-                       profile.recovery_message
+                                device.serial_number) AS tracker_name
                   FROM public.device_recovery_share share
                   JOIN public.device device ON device.id = share.device_id
                   JOIN public.profiles owner
                     ON owner.id = share.user_id
                    AND owner.account_status = 'active'
-             LEFT JOIN public.device_protection_profile profile
-                    ON profile.device_id = share.device_id
-                   AND profile.user_id = share.user_id
                  WHERE share.token_sha256 = %s
                    AND share.revoked_at IS NULL
                    AND share.expires_at > now()
@@ -687,12 +870,212 @@ class PremiumService:
         ]
         return SharedTrackerResponse(
             tracker_name=share["tracker_name"],
-            lost_mode=bool(share["lost_mode"]),
-            recovery_message=share["recovery_message"],
             access_level=share["access_level"],
             expires_at=share["expires_at"],
             latest_location=points[0] if points else None,
             locations=points if share["access_level"] == "history" else [],
+        )
+
+    @staticmethod
+    def _replacement_claim_summary(row: dict) -> DeviceReplacementClaimSummary:
+        return DeviceReplacementClaimSummary(
+            id=row["id"],
+            device_id=row["device_id"],
+            subscription_id=row["subscription_id"],
+            reason=row["reason"],
+            incident_at=row["incident_at"],
+            status=row["status"],
+            notes=row.get("notes"),
+            benefit_period_start=row["benefit_period_start"],
+            benefit_period_end=row["benefit_period_end"],
+            replacement_price_minor=0,
+            replacement_device_id=row.get("replacement_device_id"),
+            replacement_serial_number=row.get("replacement_serial_number"),
+            provisioning_request_id=row.get("provisioning_request_id"),
+            submitted_at=row["submitted_at"],
+            reviewed_at=row.get("reviewed_at"),
+            fulfilled_at=row.get("fulfilled_at"),
+        )
+
+    async def _replacement_eligibility(
+        self,
+        connection: AsyncConnection,
+        *,
+        device: dict,
+        user_id: UUID,
+    ) -> DeviceReplacementEligibilityResponse:
+        device_id = device["device_id"]
+        subscription_id = device.get("active_subscription_id")
+        plan_months = device.get("active_plan_months")
+        period_start = device.get("active_period_start")
+        period_end = device.get("active_period_end")
+        if subscription_id is None:
+            return DeviceReplacementEligibilityResponse(
+                device_id=device_id,
+                eligible=False,
+                reason="subscription_required",
+            )
+        if device.get("active_subscription_status") != "active":
+            return DeviceReplacementEligibilityResponse(
+                device_id=device_id,
+                eligible=False,
+                reason="paid_subscription_required",
+                current_plan_months=plan_months,
+                benefit_period_start=period_start,
+                benefit_period_end=period_end,
+            )
+        if int(plan_months or 0) < 6:
+            return DeviceReplacementEligibilityResponse(
+                device_id=device_id,
+                eligible=False,
+                reason="plan_not_eligible",
+                current_plan_months=plan_months,
+                benefit_period_start=period_start,
+                benefit_period_end=period_end,
+            )
+        existing_query = await connection.execute(
+            """
+            SELECT id, status
+              FROM public.device_replacement_claim
+             WHERE user_id = %s AND device_id = %s
+               AND subscription_id = %s AND benefit_period_start = %s
+             LIMIT 1
+            """,
+            (user_id, device_id, subscription_id, period_start),
+        )
+        existing = await existing_query.fetchone()
+        if existing is not None:
+            return DeviceReplacementEligibilityResponse(
+                device_id=device_id,
+                eligible=False,
+                reason="already_claimed",
+                current_plan_months=plan_months,
+                benefit_period_start=period_start,
+                benefit_period_end=period_end,
+                existing_claim_id=existing["id"],
+                existing_claim_status=existing["status"],
+            )
+        return DeviceReplacementEligibilityResponse(
+            device_id=device_id,
+            eligible=True,
+            reason="eligible",
+            current_plan_months=plan_months,
+            benefit_period_start=period_start,
+            benefit_period_end=period_end,
+        )
+
+    async def replacement_eligibility(
+        self, database: Database, *, user_id: UUID, device_id: UUID
+    ) -> DeviceReplacementEligibilityResponse:
+        async with database.transaction() as connection:
+            device = await self._owned_device(
+                connection,
+                user_id=user_id,
+                device_id=device_id,
+                require_subscription=False,
+            )
+            return await self._replacement_eligibility(
+                connection, device=device, user_id=user_id
+            )
+
+    async def create_replacement_claim(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        request: DeviceReplacementClaimCreate,
+    ) -> DeviceReplacementClaimSummary:
+        incident_at = self._utc_timestamp(request.incident_at)
+        now = datetime.now(UTC)
+        if incident_at > now + timedelta(minutes=5):
+            raise PremiumError("INVALID_PREMIUM_REQUEST", 422)
+        async with database.transaction() as connection:
+            device = await self._owned_device(
+                connection,
+                user_id=user_id,
+                device_id=device_id,
+                require_subscription=False,
+                lock=True,
+            )
+            eligibility = await self._replacement_eligibility(
+                connection, device=device, user_id=user_id
+            )
+            if not eligibility.eligible:
+                status_code = (
+                    402
+                    if eligibility.reason
+                    in {"subscription_required", "paid_subscription_required"}
+                    else 409
+                )
+                raise PremiumError("REPLACEMENT_NOT_ELIGIBLE", status_code)
+            if (
+                eligibility.benefit_period_start is None
+                or eligibility.benefit_period_end is None
+                or incident_at < eligibility.benefit_period_start
+            ):
+                raise PremiumError("REPLACEMENT_NOT_ELIGIBLE", 409)
+            query = await connection.execute(
+                """
+                INSERT INTO public.device_replacement_claim (
+                    user_id, device_id, subscription_id, reason, incident_at,
+                    notes, benefit_period_start, benefit_period_end
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (subscription_id, benefit_period_start) DO NOTHING
+                RETURNING id, device_id, subscription_id, reason, incident_at,
+                          status, notes, benefit_period_start,
+                          benefit_period_end, submitted_at, reviewed_at,
+                          fulfilled_at
+                """,
+                (
+                    user_id,
+                    device_id,
+                    device["active_subscription_id"],
+                    request.reason,
+                    incident_at,
+                    request.notes,
+                    eligibility.benefit_period_start,
+                    eligibility.benefit_period_end,
+                ),
+            )
+            row = await query.fetchone()
+        if row is None:
+            raise PremiumError("REPLACEMENT_ALREADY_CLAIMED", 409)
+        return self._replacement_claim_summary(dict(row))
+
+    async def list_replacement_claims(
+        self, database: Database, *, user_id: UUID, device_id: UUID
+    ) -> DeviceReplacementClaimListResponse:
+        async with database.transaction() as connection:
+            await self._owned_device(
+                connection,
+                user_id=user_id,
+                device_id=device_id,
+                require_subscription=False,
+            )
+            query = await connection.execute(
+                """
+                SELECT claim.id, claim.device_id, claim.subscription_id,
+                       claim.reason, claim.incident_at, claim.status,
+                       claim.notes, claim.benefit_period_start,
+                       claim.benefit_period_end, claim.replacement_device_id,
+                       replacement.serial_number AS replacement_serial_number,
+                       provisioning.id AS provisioning_request_id,
+                       claim.submitted_at, claim.reviewed_at, claim.fulfilled_at
+                  FROM public.device_replacement_claim claim
+             LEFT JOIN public.device replacement
+                    ON replacement.id = claim.replacement_device_id
+             LEFT JOIN public.provisioning_request provisioning
+                    ON provisioning.replacement_claim_id = claim.id
+                 WHERE claim.user_id = %s AND claim.device_id = %s
+                 ORDER BY claim.submitted_at DESC, claim.id DESC
+                 LIMIT 100
+                """,
+                (user_id, device_id),
+            )
+            rows = await query.fetchall()
+        return DeviceReplacementClaimListResponse(
+            claims=[self._replacement_claim_summary(dict(row)) for row in rows]
         )
 
     async def recovery_report(
@@ -705,8 +1088,8 @@ class PremiumService:
                 device_id=device_id,
                 require_subscription=True,
             )
-            profile = await self._profile_row(
-                connection, user_id=user_id, device_id=device_id
+            eligibility = await self._replacement_eligibility(
+                connection, device=device, user_id=user_id
             )
             query = await connection.execute(
                 """
@@ -717,12 +1100,42 @@ class PremiumService:
                        (SELECT count(*) FROM public.device_recovery_share share
                          WHERE share.user_id = %s AND share.device_id = %s
                            AND share.revoked_at IS NULL
-                           AND share.expires_at > now()) AS active_share_count
+                           AND share.expires_at > now()) AS active_share_count,
+                       (SELECT count(*) FROM public.user_notification notice
+                         WHERE notice.user_id = %s AND notice.device_id = %s
+                           AND notice.kind IN (
+                             'separation_detected', 'movement_detected'
+                           )
+                           AND notice.created_at >= now() - interval '30 days'
+                       ) AS recent_alert_count,
+                       EXISTS (
+                         SELECT 1 FROM public.device_primary_companion companion
+                          WHERE companion.user_id = %s
+                            AND companion.device_id = %s
+                       ) AS companion_configured,
+                       (SELECT max(observation.sampled_at)
+                          FROM public.device_companion_observation observation
+                         WHERE observation.user_id = %s
+                           AND observation.device_id = %s
+                       ) AS companion_last_observation
                   FROM public.device_location_report report
                  WHERE report.user_id = %s AND report.device_id = %s
                    AND report.recorded_at >= now() - interval '30 days'
                 """,
-                (user_id, device_id, user_id, device_id, user_id, device_id),
+                (
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                ),
             )
             counts = await query.fetchone()
             latest_query = await connection.execute(
@@ -745,18 +1158,32 @@ class PremiumService:
             if latest is not None
             else None
         )
+        companion_last = counts.get("companion_last_observation") if counts else None
+        if not counts or not bool(counts.get("companion_configured")):
+            companion_status = "not_configured"
+        elif (
+            companion_last is not None
+            and companion_last >= datetime.now(UTC) - timedelta(minutes=15)
+        ):
+            companion_status = "ready"
+        else:
+            companion_status = "stale"
         return DeviceRecoveryReportResponse(
             device_id=device_id,
             tracker_name=device["tracker_name"],
             serial_number=device["serial_number"],
             generated_at=datetime.now(UTC),
-            lost_mode=bool(profile["lost_mode"]),
-            lost_since=profile["lost_since"],
-            recovery_message=profile["recovery_message"],
+            subscription_period_end=device["active_period_end"],
             last_location=last_location,
             location_count_30d=int(counts["location_count"]) if counts else 0,
             safe_zone_count=int(counts["safe_zone_count"]) if counts else 0,
             active_share_count=int(counts["active_share_count"]) if counts else 0,
+            recent_alert_count_30d=(
+                int(counts["recent_alert_count"]) if counts else 0
+            ),
+            companion_status=companion_status,
+            replacement_eligible=eligibility.eligible,
+            replacement_claim_status=eligibility.existing_claim_status,
         )
 
     async def overview(
@@ -772,6 +1199,9 @@ class PremiumService:
             profile = await self._profile_row(
                 connection, user_id=user_id, device_id=device_id
             )
+            eligibility = await self._replacement_eligibility(
+                connection, device=device, user_id=user_id
+            )
             query = await connection.execute(
                 """
                 SELECT (SELECT count(*) FROM public.device_safe_zone zone
@@ -780,9 +1210,28 @@ class PremiumService:
                        (SELECT count(*) FROM public.device_recovery_share share
                          WHERE share.user_id = %s AND share.device_id = %s
                            AND share.revoked_at IS NULL
-                           AND share.expires_at > now()) AS active_share_count
+                           AND share.expires_at > now()) AS active_share_count,
+                       EXISTS (
+                         SELECT 1 FROM public.device_primary_companion companion
+                          WHERE companion.user_id = %s
+                            AND companion.device_id = %s
+                       ) AS companion_configured,
+                       (SELECT max(observation.sampled_at)
+                          FROM public.device_companion_observation observation
+                         WHERE observation.user_id = %s
+                           AND observation.device_id = %s
+                       ) AS companion_last_observation
                 """,
-                (user_id, device_id, user_id, device_id),
+                (
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                    user_id,
+                    device_id,
+                ),
             )
             counts = await query.fetchone()
         last_location_at = device["last_location_at"]
@@ -796,6 +1245,16 @@ class PremiumService:
                 if last_location_at >= datetime.now(UTC) - timedelta(hours=24)
                 else "stale"
             )
+        companion_last = counts.get("companion_last_observation") if counts else None
+        if not counts or not bool(counts.get("companion_configured")):
+            companion_status = "not_configured"
+        elif (
+            companion_last is not None
+            and companion_last >= datetime.now(UTC) - timedelta(minutes=15)
+        ):
+            companion_status = "ready"
+        else:
+            companion_status = "stale"
         return PremiumTrackerOverviewResponse(
             device_id=device_id,
             tracker_name=device["tracker_name"],
@@ -803,11 +1262,13 @@ class PremiumService:
             location_status=location_status,
             last_location_at=last_location_at,
             firmware_version=device["firmware_version"],
-            lost_mode=bool(profile["lost_mode"]),
+            separation_alerts=bool(profile["separation_alerts"]),
             vehicle_mode=bool(profile["vehicle_mode"]),
             movement_alerts=bool(profile["movement_alerts"]),
             safe_zone_count=int(counts["safe_zone_count"]) if counts else 0,
             active_share_count=int(counts["active_share_count"]) if counts else 0,
+            companion_status=companion_status,
+            replacement_eligible=eligibility.eligible,
         )
 
     async def delete_location_history(
@@ -844,16 +1305,28 @@ class PremiumRetentionWorker:
         async with self.database.transaction() as connection:
             query = await connection.execute(
                 """
-                WITH deleted AS (
+                WITH deleted_locations AS (
                     DELETE FROM public.device_location_report
                      WHERE recorded_at < now() - interval '30 days'
                     RETURNING 1
+                ), deleted_observations AS (
+                    DELETE FROM public.device_companion_observation
+                     WHERE sampled_at < now() - interval '24 hours'
+                    RETURNING 1
                 )
-                SELECT count(*)::int AS deleted_count FROM deleted
+                SELECT
+                  (SELECT count(*) FROM deleted_locations)::int
+                    AS deleted_location_count,
+                  (SELECT count(*) FROM deleted_observations)::int
+                    AS deleted_observation_count
                 """
             )
             row = await query.fetchone()
-        return int(row["deleted_count"]) if row is not None else 0
+        if row is None:
+            return 0
+        return int(row["deleted_location_count"]) + int(
+            row["deleted_observation_count"]
+        )
 
     async def run(self, stop: asyncio.Event) -> None:
         while not stop.is_set():
@@ -1011,6 +1484,52 @@ async def update_protection_profile(
     )
 
 
+@router.post(
+    "/devices/{device_id}/companion/observations",
+    response_model=DeviceCompanionStatusResponse,
+)
+async def report_companion_observation(
+    device_id: UUID,
+    body: DeviceCompanionObservationCreate,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+) -> DeviceCompanionStatusResponse:
+    return await request.app.state.premium.report_companion_observation(
+        request.app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+        request=body,
+    )
+
+
+@router.get(
+    "/devices/{device_id}/companion",
+    response_model=DeviceCompanionStatusResponse,
+)
+async def get_companion_status(
+    device_id: UUID, request: Request, principal: AuthenticatedPrincipal
+) -> DeviceCompanionStatusResponse:
+    return await request.app.state.premium.get_companion_status(
+        request.app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+    )
+
+
+@router.delete(
+    "/devices/{device_id}/companion",
+    response_model=DeviceCompanionResetResponse,
+)
+async def reset_companion(
+    device_id: UUID, request: Request, principal: AuthenticatedPrincipal
+) -> DeviceCompanionResetResponse:
+    return await request.app.state.premium.reset_companion(
+        request.app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+    )
+
+
 @router.get(
     "/devices/{device_id}/recovery-report",
     response_model=DeviceRecoveryReportResponse,
@@ -1019,6 +1538,53 @@ async def recovery_report(
     device_id: UUID, request: Request, principal: AuthenticatedPrincipal
 ) -> DeviceRecoveryReportResponse:
     return await request.app.state.premium.recovery_report(
+        request.app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+    )
+
+
+@router.get(
+    "/devices/{device_id}/replacement-eligibility",
+    response_model=DeviceReplacementEligibilityResponse,
+)
+async def replacement_eligibility(
+    device_id: UUID, request: Request, principal: AuthenticatedPrincipal
+) -> DeviceReplacementEligibilityResponse:
+    return await request.app.state.premium.replacement_eligibility(
+        request.app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+    )
+
+
+@router.post(
+    "/devices/{device_id}/replacement-claims",
+    response_model=DeviceReplacementClaimSummary,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_replacement_claim(
+    device_id: UUID,
+    body: DeviceReplacementClaimCreate,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+) -> DeviceReplacementClaimSummary:
+    return await request.app.state.premium.create_replacement_claim(
+        request.app.state.database,
+        user_id=principal.user_id,
+        device_id=device_id,
+        request=body,
+    )
+
+
+@router.get(
+    "/devices/{device_id}/replacement-claims",
+    response_model=DeviceReplacementClaimListResponse,
+)
+async def list_replacement_claims(
+    device_id: UUID, request: Request, principal: AuthenticatedPrincipal
+) -> DeviceReplacementClaimListResponse:
+    return await request.app.state.premium.list_replacement_claims(
         request.app.state.database,
         user_id=principal.user_id,
         device_id=device_id,

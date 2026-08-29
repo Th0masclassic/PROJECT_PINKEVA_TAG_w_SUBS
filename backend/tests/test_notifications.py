@@ -49,6 +49,9 @@ class CapturingWorker(NotificationWorker):
     async def _tokens(self, notification: NotificationJob) -> list[str]:
         return self.tokens
 
+    async def _premium_access_active(self, notification: NotificationJob) -> bool:
+        return True
+
     async def _finish(
         self, notification: NotificationJob, **values: Any
     ) -> None:
@@ -227,7 +230,7 @@ async def test_worker_routes_premium_tracker_alerts_to_the_tracker() -> None:
             id=uuid4(),
             user_id=uuid4(),
             device_id=device_id,
-            kind="safe_zone_exit",
+            kind="separation_detected",
             period_end=None,
             cancel_at_period_end=False,
             device_name="Keys",
@@ -240,7 +243,37 @@ async def test_worker_routes_premium_tracker_alerts_to_the_tracker() -> None:
     assert captured["title"] == "Left Home"
     assert captured["body"] == "Keys left Home."
     assert captured["data"] == {
-        "kind": "safe_zone_exit",
+        "kind": "separation_detected",
         "route": "tracker",
         "deviceId": str(device_id),
     }
+
+
+@pytest.mark.asyncio
+async def test_worker_skips_queued_premium_alert_after_subscription_expiry() -> None:
+    class ExpiredWorker(CapturingWorker):
+        async def _premium_access_active(
+            self, notification: NotificationJob
+        ) -> bool:
+            return False
+
+    worker = ExpiredWorker(["ExpoPushToken[token]"], object())
+    await worker.process(
+        NotificationJob(
+            id=uuid4(),
+            user_id=uuid4(),
+            device_id=uuid4(),
+            kind="separation_detected",
+            period_end=None,
+            cancel_at_period_end=False,
+            device_name="Keys",
+            title="Tracker separated",
+            body="Keys may have been left behind.",
+            attempt_count=1,
+            subscription_id=uuid4(),
+        )
+    )
+
+    assert worker.finishes == [
+        {"status": "skipped", "error_code": "SUBSCRIPTION_ENDED"}
+    ]

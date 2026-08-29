@@ -1255,11 +1255,17 @@ class ProvisioningService:
             """
             SELECT pr.id, pr.user_id, pr.device_id, pr.serial_number,
                    pr.status, pr.plan_code, pr.claim_deadline,
+                   pr.replacement_claim_id,
                    s.status AS subscription_status,
-                   s.starts_at, s.current_period_end
+                   s.starts_at, s.current_period_end,
+                   replacement.status AS replacement_claim_status
               FROM public.provisioning_request pr
               LEFT JOIN public.subscription s
                 ON s.id = pr.subscription_id
+              LEFT JOIN public.device_replacement_claim replacement
+                ON replacement.id = pr.replacement_claim_id
+               AND replacement.user_id = pr.user_id
+               AND replacement.replacement_device_id = pr.device_id
              WHERE pr.id = %s
                AND pr.user_id = %s
                AND pr.device_id = %s
@@ -1280,9 +1286,14 @@ class ProvisioningService:
                     or row["claim_deadline"] <= now
                 )
             )
-            or row["subscription_status"] not in {"active", "trialing"}
-            or row["starts_at"] > now
-            or row["current_period_end"] <= now
+            or not (
+                (
+                    row["subscription_status"] in {"active", "trialing"}
+                    and row["starts_at"] <= now
+                    and row["current_period_end"] > now
+                )
+                or row.get("replacement_claim_status") == "fulfilled"
+            )
         ):
             raise ProvisioningError(
                 "SUBSCRIPTION_REQUIRED",

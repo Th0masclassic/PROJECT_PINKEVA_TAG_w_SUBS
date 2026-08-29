@@ -289,7 +289,7 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
     binding, identity_key = _google_binding_row(
         settings, user_id=user_id, device_id=device_id, session_id=session_id
     )
-    report_time = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
+    report_time = datetime.now(UTC).replace(microsecond=0)
 
     def fake_google_post(url: str, **kwargs: object) -> _Response:
         assert url == "https://google-bridge.test/v1/reports"
@@ -311,7 +311,7 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
                         "longitude": -9.1393,
                         "confidence": 4,
                         "status": 1,
-                        "timestamp": "2026-08-28T12:00:00Z",
+                        "timestamp": report_time.isoformat().replace("+00:00", "Z"),
                     }
                 ]
             }

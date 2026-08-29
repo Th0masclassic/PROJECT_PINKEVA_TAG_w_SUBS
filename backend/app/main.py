@@ -153,6 +153,10 @@ SAFE_PREMIUM_MESSAGES = {
     "SAFE_ZONE_LIMIT_REACHED": "This tracker already has the maximum number of safe zones.",
     "RECOVERY_SHARE_NOT_FOUND": "This recovery link is unavailable or has expired.",
     "RECOVERY_SHARE_LIMIT_REACHED": "This tracker already has the maximum number of active recovery links.",
+    "MAIN_DEVICE_MISMATCH": "Reset the current main phone before linking a different phone.",
+    "INVALID_COMPANION_OBSERVATION": "The main-phone observation is invalid or too old.",
+    "REPLACEMENT_NOT_ELIGIBLE": "This subscription term is not eligible for another replacement.",
+    "REPLACEMENT_ALREADY_CLAIMED": "A replacement has already been requested for this subscription term.",
     "INVALID_PREMIUM_REQUEST": "Choose valid settings to update.",
 }
 

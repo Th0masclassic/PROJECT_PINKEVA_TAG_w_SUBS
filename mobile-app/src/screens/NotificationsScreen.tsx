@@ -21,9 +21,7 @@ function errorMessage(copy: ReturnType<typeof useBillingCopy>, error: Notificati
 
 function notificationIcon(kind: UserNotification['kind']): ComponentProps<typeof Ionicons>['name'] {
   if (kind === 'admin_message') return 'megaphone-outline';
-  if (kind === 'safe_zone_enter') return 'enter-outline';
-  if (kind === 'safe_zone_exit') return 'exit-outline';
-  if (kind === 'lost_mode_location') return 'location-outline';
+  if (kind === 'separation_detected') return 'unlink-outline';
   if (kind === 'movement_detected') return 'navigate-outline';
   if (kind === 'expired') return 'alert-circle-outline';
   return 'notifications-outline';
@@ -31,9 +29,7 @@ function notificationIcon(kind: UserNotification['kind']): ComponentProps<typeof
 
 function isTrackerAlert(kind: UserNotification['kind']): boolean {
   return (
-    kind === 'safe_zone_enter' ||
-    kind === 'safe_zone_exit' ||
-    kind === 'lost_mode_location' ||
+    kind === 'separation_detected' ||
     kind === 'movement_detected'
   );
 }

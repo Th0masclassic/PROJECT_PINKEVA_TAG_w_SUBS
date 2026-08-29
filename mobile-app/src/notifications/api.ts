@@ -9,9 +9,7 @@ export type NotificationKind =
   | 'renewal_1_day'
   | 'expired'
   | 'admin_message'
-  | 'safe_zone_enter'
-  | 'safe_zone_exit'
-  | 'lost_mode_location'
+  | 'separation_detected'
   | 'movement_detected';
 
 export type UserNotification = {
@@ -69,9 +67,7 @@ function parseKind(value: unknown): NotificationKind | null {
     value === 'renewal_1_day' ||
     value === 'expired' ||
     value === 'admin_message' ||
-    value === 'safe_zone_enter' ||
-    value === 'safe_zone_exit' ||
-    value === 'lost_mode_location' ||
+    value === 'separation_detected' ||
     value === 'movement_detected'
     ? value
     : null;
@@ -95,9 +91,7 @@ export function parseUserNotifications(value: unknown): UserNotification[] {
     const isBillingMessage =
       kind === 'renewal_7_days' || kind === 'renewal_1_day' || kind === 'expired';
     const isPremiumTrackerAlert =
-      kind === 'safe_zone_enter' ||
-      kind === 'safe_zone_exit' ||
-      kind === 'lost_mode_location' ||
+      kind === 'separation_detected' ||
       kind === 'movement_detected';
     if (!id || !kind || !title || !body || !createdAt || readAt === null && item.read_at !== null ||
       (isAdminMessage && (deviceId !== null || periodEnd !== null)) ||

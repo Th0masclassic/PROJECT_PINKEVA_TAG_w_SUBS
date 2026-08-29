@@ -24,13 +24,19 @@ python -m app.server
 The launcher uses Uvicorn's normal event loop on Unix and a Selector event loop
 on Windows so Psycopg's async pool works on Python 3.14.
 
-On Windows, `./run_local.ps1` starts the pinned local Supabase CLI stack when
-`.env` points to port 54322 and then starts Uvicorn with `.env`. The recommended
-Windows Anisette mode is the embedded native provider because it does not
-require Docker or virtualization. Configure a durable absolute state path; the
-first start downloads Apple's Android Apple Music package to obtain the native
-libraries, provisions one virtual device, and persists that device for later
-starts:
+On the Windows RDC server, keep the already-working Anisette executable as a
+separately managed loopback service. The backend does not spawn or replace it:
+
+```powershell
+# backend/.env
+# PINQEVA_FINDMY_ANISETTE_PROVIDER=http
+# PINQEVA_FINDMY_ANISETTE_URL=http://127.0.0.1:6969
+python -m app.server
+```
+
+Embedded `native` mode remains available on Windows when no external executable
+is used. Configure a durable absolute state path; the first start downloads
+Apple's Android Apple Music package, provisions one virtual device, and saves it:
 
 ```powershell
 cd C:\Users\tomas\Documents\PINKEVA\backend
@@ -42,10 +48,12 @@ cd C:\Users\tomas\Documents\PINKEVA\backend
 ```
 
 Keep the generated state file private and backed up; replacing it creates a new
-Anisette device that must be provisioned again. `http` mode remains available
-for Linux/Docker deployments. In that mode the launcher starts or reuses the
-`dadoum/anisette-v3-server` container and verifies its v1 headers; pass
-`-SkipAnisette` only when the external HTTP service is managed separately.
+Anisette device that must be provisioned again. For Linux/Docker, the checked-in
+`backend/Dockerfile` defaults to embedded `native` mode and stores that state at
+`/var/lib/pinqeva/anisette-state.bin`. Mount `/var/lib/pinqeva` as a durable
+volume. `http` mode is still supported for a separately managed HTTPS service or
+a loopback sidecar. In both modes the same backend Apple-login code consumes the
+HTTP header contract; only ownership of the Anisette process changes.
 
 On the configured development Mac, `./run_local_secure.sh` loads application
 settings from the ignored `backend/.env`, keeps the hosted database password in
@@ -316,17 +324,34 @@ GET|POST   /v1/devices/{device_id}/safe-zones
 PATCH|DELETE /v1/devices/{device_id}/safe-zones/{safe_zone_id}
 
 GET|PATCH  /v1/devices/{device_id}/protection
+GET|DELETE /v1/devices/{device_id}/companion
+POST       /v1/devices/{device_id}/companion/observations
 GET        /v1/devices/{device_id}/recovery-report
 GET|POST   /v1/devices/{device_id}/recovery-shares
 DELETE     /v1/devices/{device_id}/recovery-shares/{share_id}
 POST       /v1/recovery-shares/resolve
+GET        /v1/devices/{device_id}/replacement-eligibility
+GET|POST   /v1/devices/{device_id}/replacement-claims
 ```
 
 Accepted Finder reports are retained for at most 30 days and are bound to the
-active owner and provisioning session. A database trigger evaluates safe-zone
-transitions, lost-mode updates, and movement thresholds idempotently and places
-custom tracker alerts into the existing durable inbox/push outbox. Recovery
-share tokens contain 256 bits of randomness, are stored only as SHA-256 hashes,
+active owner and provisioning session. Main-phone observations are retained for
+at most 24 hours. A database trigger combines the nearest-in-time phone GPS,
+finder-network location, and an authenticated BLE-nearby observation. A tag may
+remain in any safe zone without an alert; an alert is emitted only when the tag
+leaves while the main phone remains there, or their geographic separation
+crosses the configured threshold elsewhere. BLE RSSI is never converted into a
+distance: a recent nearby observation only suppresses false alerts. Movement and
+vehicle alerts use the same owner-close suppression and are idempotent.
+
+Display-dependent lost mode and recovery messages are intentionally absent.
+The recovery report instead summarizes location evidence, recent alerts, safe
+zones, sharing, companion readiness, and replacement eligibility. Paid active
+6- and 12-month plans may submit one zero-price replacement claim per billing
+term for a lost or stolen tag; every claim requires an administrator to approve
+and mark fulfilment. A trial or a 1/3-month plan is not replacement-eligible.
+
+Recovery share tokens contain 256 bits of randomness, are stored only as SHA-256 hashes,
 expire in at most 30 days, and stop resolving if revoked, ownership changes,
 the account is banned, or the subscription is no longer current. The web share
 keeps the plaintext capability in a URL fragment and resolves it in the POST
@@ -442,7 +467,7 @@ immediately; there is no physical-tag delivery step.
 
 The background notification worker creates idempotent inbox/outbox rows seven
 days before the period end, one day before it, at expiry, and for premium
-safe-zone/lost/movement events. Native clients register Expo
+separation/movement events. Native clients register Expo
 destinations at `POST /v1/notifications/push-token`; the worker leases due jobs,
 uses exponential retry for temporary failures, and disables destinations that
 Expo reports as unregistered. `GET /v1/notifications` exposes the durable inbox

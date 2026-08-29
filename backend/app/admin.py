@@ -46,6 +46,22 @@ class AdminSubscriptionGrant(StrictModel):
     )
 
 
+class AdminReplacementClaimUpdate(StrictModel):
+    status: Literal["approved", "rejected", "fulfilled", "cancelled"]
+    review_note: str | None = Field(default=None, max_length=500)
+    replacement_device_id: UUID | None = None
+
+    @field_validator("review_note")
+    @classmethod
+    def safe_review_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized or re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid review note")
+        return normalized
+
+
 class AdminUserAccessUpdate(StrictModel):
     banned: bool
     reason: str | None = Field(default=None, max_length=240)
@@ -903,6 +919,220 @@ class AdminService:
             )
             return {"id": subscription_id, "status": "ended", "queued": queued}
 
+    async def replacement_claims(
+        self,
+        database: Database,
+        principal: Principal,
+        *,
+        claim_status: Literal[
+            "submitted", "approved", "rejected", "fulfilled", "cancelled"
+        ] | None,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        await self.role_for(database, principal)
+        async with database.transaction() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT claim.id, claim.user_id, profile.email,
+                       claim.device_id, device.serial_number,
+                       COALESCE(NULLIF(BTRIM(device.name), ''),
+                                device.serial_number) AS tracker_name,
+                       claim.subscription_id, plan.code AS plan_code,
+                       plan.duration_months, claim.reason, claim.incident_at,
+                       claim.status, claim.notes, claim.review_note,
+                       claim.benefit_period_start, claim.benefit_period_end,
+                       claim.replacement_device_id,
+                       replacement.serial_number AS replacement_serial_number,
+                       provisioning.id AS provisioning_request_id,
+                       claim.submitted_at, claim.reviewed_at,
+                       claim.fulfilled_at, claim.reviewed_by
+                  FROM public.device_replacement_claim claim
+                  JOIN public.profiles profile ON profile.id = claim.user_id
+                  JOIN public.device device ON device.id = claim.device_id
+                  JOIN public.subscription subscription
+                    ON subscription.id = claim.subscription_id
+                  JOIN public.plan plan ON plan.code = subscription.plan_code
+             LEFT JOIN public.device replacement
+                    ON replacement.id = claim.replacement_device_id
+             LEFT JOIN public.provisioning_request provisioning
+                    ON provisioning.replacement_claim_id = claim.id
+                 WHERE (%s::varchar IS NULL OR claim.status = %s)
+                 ORDER BY claim.submitted_at DESC, claim.id DESC
+                 LIMIT %s
+                """,
+                (claim_status, claim_status, limit),
+            )
+            return [dict(row) for row in await cursor.fetchall()]
+
+    async def update_replacement_claim(
+        self,
+        database: Database,
+        principal: Principal,
+        *,
+        claim_id: UUID,
+        update: AdminReplacementClaimUpdate,
+        request_id: UUID,
+    ) -> dict[str, Any]:
+        await self.role_for(database, principal)
+        async with database.transaction() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT claim.id, claim.user_id, claim.device_id,
+                       claim.subscription_id, claim.reason, claim.incident_at,
+                       claim.status, claim.notes, claim.review_note,
+                       claim.benefit_period_start, claim.benefit_period_end,
+                       claim.replacement_device_id, claim.submitted_at,
+                       claim.reviewed_at, claim.fulfilled_at, claim.reviewed_by,
+                       subscription.plan_code
+                  FROM public.device_replacement_claim claim
+                  JOIN public.subscription subscription
+                    ON subscription.id = claim.subscription_id
+                 WHERE claim.id = %s
+                 FOR UPDATE
+                """,
+                (claim_id,),
+            )
+            claim = await cursor.fetchone()
+            if claim is None:
+                raise AdminError("ADMIN_RESOURCE_NOT_FOUND", 404)
+            current = claim["status"]
+            allowed = {
+                "submitted": {"approved", "rejected", "cancelled"},
+                "approved": {"fulfilled", "cancelled"},
+                "rejected": set(),
+                "fulfilled": set(),
+                "cancelled": set(),
+            }
+            if update.status != current and update.status not in allowed[current]:
+                raise AdminError("ADMIN_CONFLICT", 409)
+            if update.status == "fulfilled" and update.replacement_device_id is None:
+                raise AdminError("ADMIN_INVALID_REQUEST", 422)
+            if update.status != "fulfilled" and update.replacement_device_id is not None:
+                raise AdminError("ADMIN_INVALID_REQUEST", 422)
+            if (
+                current == "fulfilled"
+                and update.replacement_device_id != claim["replacement_device_id"]
+            ):
+                raise AdminError("ADMIN_CONFLICT", 409)
+
+            provisioning_request_id: UUID | None = None
+            replacement_serial_number: str | None = None
+            if update.status == "fulfilled" and current != "fulfilled":
+                inventory_query = await connection.execute(
+                    """
+                    SELECT device.id, device.serial_number
+                      FROM public.device device
+                     WHERE device.id = %s
+                       AND device.status = 'unprovisioned'
+                       AND device.provisioning_session_id IS NULL
+                       AND NOT EXISTS (
+                         SELECT 1 FROM public.ownership ownership
+                          WHERE ownership.device_id = device.id
+                            AND ownership.ended_at IS NULL
+                       )
+                       AND NOT EXISTS (
+                         SELECT 1 FROM public.provisioning_request request
+                          WHERE request.device_id = device.id
+                            AND request.status IN (
+                              'pending', 'creating', 'open', 'paid', 'claiming'
+                            )
+                       )
+                     FOR UPDATE
+                    """,
+                    (update.replacement_device_id,),
+                )
+                inventory = await inventory_query.fetchone()
+                if inventory is None:
+                    raise AdminError("ADMIN_CONFLICT", 409)
+                replacement_serial_number = inventory["serial_number"]
+                provisioning_request_id = uuid4()
+
+            await connection.execute(
+                """
+                UPDATE public.device_replacement_claim
+                   SET status = %s,
+                       review_note = %s,
+                       reviewed_by = %s,
+                       reviewed_at = COALESCE(reviewed_at, now()),
+                       replacement_device_id = CASE
+                         WHEN %s = 'fulfilled' THEN %s
+                         ELSE replacement_device_id
+                       END,
+                       fulfilled_at = CASE
+                         WHEN %s = 'fulfilled' THEN COALESCE(fulfilled_at, now())
+                         ELSE fulfilled_at
+                       END,
+                       updated_at = now()
+                 WHERE id = %s
+                """,
+                (
+                    update.status,
+                    update.review_note,
+                    principal.user_id,
+                    update.status,
+                    update.replacement_device_id,
+                    update.status,
+                    claim_id,
+                ),
+            )
+            if provisioning_request_id is not None:
+                await connection.execute(
+                    """
+                    INSERT INTO public.provisioning_request (
+                      id, user_id, device_id, serial_number, idempotency_key,
+                      plan_code, status, expires_at, claim_deadline,
+                      subscription_id, paid_at, replacement_claim_id
+                    ) VALUES (
+                      %s, %s, %s, %s, %s, %s, 'paid',
+                      now() + interval '30 minutes',
+                      now() + interval '30 days', %s, now(), %s
+                    )
+                    """,
+                    (
+                        provisioning_request_id,
+                        claim["user_id"],
+                        update.replacement_device_id,
+                        replacement_serial_number,
+                        f"replacement:{claim_id}",
+                        claim["plan_code"],
+                        claim["subscription_id"],
+                        claim_id,
+                    ),
+                )
+            await self.audit(
+                connection,
+                actor_user_id=principal.user_id,
+                action="replacement_claim.updated",
+                target_type="replacement_claim",
+                target_id=str(claim_id),
+                request_id=request_id,
+                details={"from": current, "to": update.status},
+            )
+            result_query = await connection.execute(
+                """
+                SELECT claim.id, claim.user_id, claim.device_id,
+                       claim.subscription_id, claim.reason, claim.incident_at,
+                       claim.status, claim.notes, claim.review_note,
+                       claim.benefit_period_start, claim.benefit_period_end,
+                       claim.replacement_device_id,
+                       replacement.serial_number AS replacement_serial_number,
+                       provisioning.id AS provisioning_request_id,
+                       claim.submitted_at, claim.reviewed_at,
+                       claim.fulfilled_at, claim.reviewed_by
+                  FROM public.device_replacement_claim claim
+             LEFT JOIN public.device replacement
+                    ON replacement.id = claim.replacement_device_id
+             LEFT JOIN public.provisioning_request provisioning
+                    ON provisioning.replacement_claim_id = claim.id
+                 WHERE claim.id = %s
+                """,
+                (claim_id,),
+            )
+            result = await result_query.fetchone()
+            if result is None:
+                raise AdminError("ADMIN_RESOURCE_NOT_FOUND", 404)
+            return dict(result)
+
     async def register_device(
         self,
         database: Database,
@@ -1284,6 +1514,39 @@ async def admin_revoke_subscription(
         _database(request),
         principal,
         subscription_id=subscription_id,
+        request_id=_request_id(request),
+    )
+
+
+@router.get("/replacement-claims")
+async def admin_replacement_claims(
+    request: Request,
+    principal: AuthenticatedPrincipal,
+    claim_status: Literal[
+        "submitted", "approved", "rejected", "fulfilled", "cancelled"
+    ] | None = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    return await _service(request).replacement_claims(
+        _database(request),
+        principal,
+        claim_status=claim_status,
+        limit=limit,
+    )
+
+
+@router.patch("/replacement-claims/{claim_id}")
+async def admin_update_replacement_claim(
+    claim_id: UUID,
+    update: AdminReplacementClaimUpdate,
+    request: Request,
+    principal: AuthenticatedPrincipal,
+):
+    return await _service(request).update_replacement_claim(
+        _database(request),
+        principal,
+        claim_id=claim_id,
+        update=update,
         request_id=_request_id(request),
     )
 

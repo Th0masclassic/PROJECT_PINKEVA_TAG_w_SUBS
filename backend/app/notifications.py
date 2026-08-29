@@ -24,6 +24,7 @@ from .models import (
 
 logger = logging.getLogger("pinqeva.notifications")
 EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+PREMIUM_ALERT_KINDS = frozenset({"separation_detected", "movement_detected"})
 
 
 class NotificationError(RuntimeError):
@@ -53,6 +54,7 @@ class NotificationJob:
     title: str | None
     body: str | None
     attempt_count: int
+    subscription_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -431,6 +433,7 @@ class NotificationWorker:
                  WHERE notification.id = claim_rows.id
                 RETURNING notification.id, notification.user_id,
                           notification.device_id, notification.kind,
+                          notification.subscription_id,
                           notification.period_end,
                           claim_rows.cancel_at_period_end,
                           claim_rows.device_name,
@@ -452,9 +455,33 @@ class NotificationWorker:
                 title=row["title"],
                 body=row["body"],
                 attempt_count=int(row["attempt_count"]),
+                subscription_id=row["subscription_id"],
             )
             for row in rows
         ]
+
+    async def _premium_access_active(self, job: NotificationJob) -> bool:
+        if job.kind not in PREMIUM_ALERT_KINDS:
+            return True
+        if job.subscription_id is None:
+            return False
+        async with self.database.transaction() as connection:
+            query = await connection.execute(
+                """
+                SELECT EXISTS (
+                  SELECT 1 FROM public.subscription subscription
+                   WHERE subscription.id = %s
+                     AND subscription.user_id = %s
+                     AND subscription.device_id = %s
+                     AND subscription.status IN ('active', 'trialing')
+                     AND subscription.starts_at <= now()
+                     AND subscription.current_period_end > now()
+                ) AS active
+                """,
+                (job.subscription_id, job.user_id, job.device_id),
+            )
+            row = await query.fetchone()
+        return bool(row and row["active"])
 
     async def _tokens(self, job: NotificationJob) -> list[str]:
         async with self.database.transaction() as connection:
@@ -524,6 +551,9 @@ class NotificationWorker:
             )
 
     async def process(self, job: NotificationJob) -> None:
+        if not await self._premium_access_active(job):
+            await self._finish(job, status="skipped", error_code="SUBSCRIPTION_ENDED")
+            return
         tokens = await self._tokens(job)
         if not tokens:
             await self._finish(job, status="no_tokens")
@@ -540,12 +570,7 @@ class NotificationWorker:
             await self._finish(job, status="failed", error_code="PUSH_INVALID_MESSAGE")
             return
         data: dict[str, str] = {"kind": job.kind, "route": "notifications"}
-        if job.kind in {
-            "safe_zone_enter",
-            "safe_zone_exit",
-            "lost_mode_location",
-            "movement_detected",
-        } and job.device_id is not None:
+        if job.kind in PREMIUM_ALERT_KINDS and job.device_id is not None:
             data.update(
                 {
                     "deviceId": str(job.device_id),

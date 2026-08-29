@@ -46,7 +46,7 @@ test('parses premium tracker alerts without a billing period', () => {
     notifications: [
       {
         ...payload.notifications[0],
-        kind: 'safe_zone_exit',
+        kind: 'separation_detected',
         period_end: null,
         title: 'Keys left Home',
         body: 'Keys moved outside your Home safe zone.',
@@ -54,7 +54,7 @@ test('parses premium tracker alerts without a billing period', () => {
     ],
   };
 
-  assert.equal(parseUserNotifications(premiumPayload)[0]?.kind, 'safe_zone_exit');
+  assert.equal(parseUserNotifications(premiumPayload)[0]?.kind, 'separation_detected');
   assert.equal(parseUserNotifications(premiumPayload)[0]?.periodEnd, null);
 });
 

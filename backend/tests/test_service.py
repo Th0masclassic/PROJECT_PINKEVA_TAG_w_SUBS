@@ -93,7 +93,78 @@ def paid_request_row(user_id, device_id, request_id):
         "subscription_status": "active",
         "starts_at": now - timedelta(minutes=1),
         "current_period_end": now + timedelta(days=30),
+        "replacement_claim_id": None,
+        "replacement_claim_status": None,
     }
+
+
+@pytest.mark.asyncio
+async def test_fulfilled_replacement_can_be_claimed_after_subscription_expiry(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    request_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    row = {
+        "id": request_id,
+        "user_id": user_id,
+        "device_id": device_id,
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "status": "paid",
+        "plan_code": "yearly_pro",
+        "claim_deadline": now + timedelta(days=7),
+        "replacement_claim_id": uuid.uuid4(),
+        "subscription_status": "expired",
+        "starts_at": now - timedelta(days=365),
+        "current_period_end": now - timedelta(days=1),
+        "replacement_claim_status": "fulfilled",
+    }
+
+    result = await ProvisioningService(settings)._require_paid_provisioning_request(
+        FakeConnection([row]),
+        user_id=user_id,
+        device_id=device_id,
+        serial_number="PKV-AABBCCDDEEFF",
+        request_id=request_id,
+    )
+
+    assert result == row
+
+
+@pytest.mark.asyncio
+async def test_expired_normal_purchase_cannot_allocate_keys(
+    settings: Settings,
+) -> None:
+    user_id = uuid.uuid4()
+    device_id = uuid.uuid4()
+    request_id = uuid.uuid4()
+    now = datetime.now(UTC)
+    row = {
+        "id": request_id,
+        "user_id": user_id,
+        "device_id": device_id,
+        "serial_number": "PKV-AABBCCDDEEFF",
+        "status": "paid",
+        "plan_code": "monthly_basic",
+        "claim_deadline": now + timedelta(days=7),
+        "replacement_claim_id": None,
+        "subscription_status": "expired",
+        "starts_at": now - timedelta(days=30),
+        "current_period_end": now - timedelta(seconds=1),
+        "replacement_claim_status": None,
+    }
+
+    with pytest.raises(ProvisioningError) as error:
+        await ProvisioningService(settings)._require_paid_provisioning_request(
+            FakeConnection([row]),
+            user_id=user_id,
+            device_id=device_id,
+            serial_number="PKV-AABBCCDDEEFF",
+            request_id=request_id,
+        )
+
+    assert error.value.code == "SUBSCRIPTION_REQUIRED"
 
 
 @pytest.mark.asyncio

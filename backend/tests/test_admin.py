@@ -12,6 +12,7 @@ from app.admin import (
     AdminDeviceRegistration,
     AdminError,
     AdminPlanPriceUpdate,
+    AdminReplacementClaimUpdate,
     AdminService,
 )
 from app.auth import Principal
@@ -205,3 +206,129 @@ def test_admin_mutation_models_reject_unsafe_input() -> None:
         AdminDeviceUpdate(status="active")
     with pytest.raises(ValidationError):
         AdminDeviceUpdate(status="suspended")
+
+
+@pytest.mark.asyncio
+async def test_admin_approves_a_submitted_replacement_claim() -> None:
+    owner_id = uuid4()
+    claim_id = uuid4()
+    now = datetime.now(UTC)
+    database = SequenceDatabase(
+        [
+            {"id": claim_id, "status": "submitted"},
+            None,
+            None,
+            {
+                "id": claim_id,
+                "user_id": uuid4(),
+                "device_id": uuid4(),
+                "subscription_id": uuid4(),
+                "reason": "lost",
+                "incident_at": now,
+                "status": "approved",
+                "notes": None,
+                "review_note": "Identity verified",
+                "benefit_period_start": now,
+                "benefit_period_end": now,
+                "submitted_at": now,
+                "reviewed_at": now,
+                "fulfilled_at": None,
+                "reviewed_by": owner_id,
+            },
+        ]
+    )
+
+    result = await AdminService(settings(owner_id)).update_replacement_claim(
+        database,
+        Principal(user_id=owner_id, assurance_level="aal2"),
+        claim_id=claim_id,
+        update=AdminReplacementClaimUpdate(
+            status="approved", review_note="Identity verified"
+        ),
+        request_id=uuid4(),
+    )
+
+    assert result["status"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_admin_cannot_reopen_a_rejected_replacement_claim() -> None:
+    owner_id = uuid4()
+    with pytest.raises(AdminError) as error:
+        await AdminService(settings(owner_id)).update_replacement_claim(
+            SequenceDatabase([{"id": uuid4(), "status": "rejected"}]),
+            Principal(user_id=owner_id, assurance_level="aal2"),
+            claim_id=uuid4(),
+            update=AdminReplacementClaimUpdate(status="approved"),
+            request_id=uuid4(),
+        )
+
+    assert error.value.code == "ADMIN_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_admin_fulfilment_assigns_a_zero_price_provisioning_request() -> None:
+    owner_id = uuid4()
+    claim_id = uuid4()
+    user_id = uuid4()
+    original_device_id = uuid4()
+    replacement_device_id = uuid4()
+    subscription_id = uuid4()
+    provisioning_request_id = uuid4()
+    now = datetime.now(UTC)
+    database = SequenceDatabase(
+        [
+            {
+                "id": claim_id,
+                "user_id": user_id,
+                "device_id": original_device_id,
+                "subscription_id": subscription_id,
+                "status": "approved",
+                "replacement_device_id": None,
+                "plan_code": "yearly_pro",
+            },
+            {
+                "id": replacement_device_id,
+                "serial_number": "PKV-AABBCCDDEEFF",
+            },
+            None,
+            None,
+            None,
+            {
+                "id": claim_id,
+                "user_id": user_id,
+                "device_id": original_device_id,
+                "subscription_id": subscription_id,
+                "reason": "stolen",
+                "incident_at": now,
+                "status": "fulfilled",
+                "notes": None,
+                "review_note": "Replacement shipped",
+                "benefit_period_start": now,
+                "benefit_period_end": now,
+                "replacement_device_id": replacement_device_id,
+                "replacement_serial_number": "PKV-AABBCCDDEEFF",
+                "provisioning_request_id": provisioning_request_id,
+                "submitted_at": now,
+                "reviewed_at": now,
+                "fulfilled_at": now,
+                "reviewed_by": owner_id,
+            },
+        ]
+    )
+
+    result = await AdminService(settings(owner_id)).update_replacement_claim(
+        database,
+        Principal(user_id=owner_id, assurance_level="aal2"),
+        claim_id=claim_id,
+        update=AdminReplacementClaimUpdate(
+            status="fulfilled",
+            review_note="Replacement shipped",
+            replacement_device_id=replacement_device_id,
+        ),
+        request_id=uuid4(),
+    )
+
+    assert result["status"] == "fulfilled"
+    assert result["replacement_device_id"] == replacement_device_id
+    assert result["provisioning_request_id"] == provisioning_request_id

@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .crypto import b64url_decode_exact
 
@@ -340,19 +340,18 @@ class PremiumFeatureAccessResponse(StrictModel):
     location_history_days: int = Field(ge=0, le=30)
     smart_alerts: bool
     safe_zones: bool
-    lost_mode: bool
+    companion_separation_alerts: bool
     trusted_sharing: bool
     recovery_report: bool
     vehicle_mode: bool
+    replacement_benefit: bool
 
 
 class DeviceSafeZoneCreate(StrictModel):
     name: str = Field(min_length=1, max_length=80)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    radius_meters: int = Field(ge=100, le=100_000)
-    notify_on_enter: bool = True
-    notify_on_exit: bool = True
+    radius_meters: int = Field(ge=50, le=100_000)
 
     @field_validator("name")
     @classmethod
@@ -367,9 +366,7 @@ class DeviceSafeZoneUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
-    radius_meters: int | None = Field(default=None, ge=100, le=100_000)
-    notify_on_enter: bool | None = None
-    notify_on_exit: bool | None = None
+    radius_meters: int | None = Field(default=None, ge=50, le=100_000)
     enabled: bool | None = None
 
     @field_validator("name")
@@ -389,11 +386,9 @@ class DeviceSafeZoneResponse(StrictModel):
     name: str
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
-    radius_meters: int = Field(ge=100, le=100_000)
-    notify_on_enter: bool
-    notify_on_exit: bool
+    radius_meters: int = Field(ge=50, le=100_000)
     enabled: bool
-    last_inside: bool | None = None
+    last_tracker_inside: bool | None = None
     last_evaluated_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -404,36 +399,69 @@ class DeviceSafeZoneListResponse(StrictModel):
 
 
 class DeviceProtectionProfileUpdate(StrictModel):
-    lost_mode: bool | None = None
-    recovery_message: str | None = Field(default=None, max_length=240)
+    separation_alerts: bool | None = None
+    separation_threshold_meters: int | None = Field(
+        default=None, ge=100, le=5_000
+    )
     vehicle_mode: bool | None = None
     movement_alerts: bool | None = None
     movement_threshold_meters: int | None = Field(
         default=None, ge=100, le=10_000
     )
 
-    @field_validator("recovery_message")
-    @classmethod
-    def safe_recovery_message(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        normalized = " ".join(value.split())
-        if not normalized:
-            return None
-        if re.search(r"[\x00-\x1f\x7f]", normalized):
-            raise ValueError("invalid recovery message")
-        return normalized
-
 
 class DeviceProtectionProfileResponse(StrictModel):
     device_id: UUID
-    lost_mode: bool
-    lost_since: datetime | None = None
-    recovery_message: str | None = Field(default=None, max_length=240)
+    separation_alerts: bool
+    separation_threshold_meters: int = Field(ge=100, le=5_000)
     vehicle_mode: bool
     movement_alerts: bool
     movement_threshold_meters: int = Field(ge=100, le=10_000)
     updated_at: datetime
+
+
+class DeviceCompanionObservationCreate(StrictModel):
+    installation_id: UUID
+    platform: Literal["ios", "android"]
+    phone_latitude: float = Field(ge=-90, le=90)
+    phone_longitude: float = Field(ge=-180, le=180)
+    phone_accuracy_meters: float = Field(ge=1, le=1_000)
+    sampled_at: datetime
+    tag_proximity: Literal["nearby", "not_seen", "unknown"] = "unknown"
+    tag_observed_at: datetime | None = None
+    tag_rssi_dbm: int | None = Field(default=None, ge=-127, le=20)
+    scan_duration_seconds: int | None = Field(default=None, ge=5, le=120)
+
+    @model_validator(mode="after")
+    def validate_proximity_evidence(self) -> "DeviceCompanionObservationCreate":
+        if self.tag_proximity == "nearby" and self.tag_observed_at is None:
+            raise ValueError("nearby observations require tag_observed_at")
+        if self.tag_proximity != "nearby" and self.tag_observed_at is not None:
+            raise ValueError("tag_observed_at is accepted only when nearby")
+        if self.tag_proximity != "nearby" and self.tag_rssi_dbm is not None:
+            raise ValueError("RSSI is accepted only for nearby observations")
+        if self.tag_proximity == "not_seen" and self.scan_duration_seconds is None:
+            raise ValueError("not_seen observations require a completed scan duration")
+        return self
+
+
+class DeviceCompanionStatusResponse(StrictModel):
+    device_id: UUID
+    subscription_active: bool
+    configured: bool
+    installation_id: UUID | None = None
+    platform: Literal["ios", "android"] | None = None
+    observation_accepted: bool | None = None
+    last_observation_at: datetime | None = None
+    phone_accuracy_meters: float | None = Field(default=None, ge=1, le=1_000)
+    tag_proximity: Literal["nearby", "not_seen", "unknown"] | None = None
+    tag_observed_at: datetime | None = None
+    tag_rssi_dbm: int | None = Field(default=None, ge=-127, le=20)
+
+
+class DeviceCompanionResetResponse(StrictModel):
+    device_id: UUID
+    status: Literal["removed"] = "removed"
 
 
 class DeviceRecoveryShareCreate(StrictModel):
@@ -476,8 +504,6 @@ class RecoveryShareResolveRequest(StrictModel):
 
 class SharedTrackerResponse(StrictModel):
     tracker_name: str
-    lost_mode: bool
-    recovery_message: str | None = Field(default=None, max_length=240)
     access_level: Literal["latest", "history"]
     expires_at: datetime
     latest_location: DeviceLocationHistoryPoint | None = None
@@ -489,13 +515,18 @@ class DeviceRecoveryReportResponse(StrictModel):
     tracker_name: str
     serial_number: str
     generated_at: datetime
-    lost_mode: bool
-    lost_since: datetime | None = None
-    recovery_message: str | None = Field(default=None, max_length=240)
+    protection_status: Literal["active"] = "active"
+    subscription_period_end: datetime
     last_location: DeviceLocationHistoryPoint | None = None
     location_count_30d: int = Field(ge=0)
     safe_zone_count: int = Field(ge=0)
     active_share_count: int = Field(ge=0)
+    recent_alert_count_30d: int = Field(ge=0)
+    companion_status: Literal["ready", "stale", "not_configured"]
+    replacement_eligible: bool
+    replacement_claim_status: Literal[
+        "submitted", "approved", "rejected", "fulfilled", "cancelled"
+    ] | None = None
 
 
 class PremiumTrackerOverviewResponse(StrictModel):
@@ -505,11 +536,79 @@ class PremiumTrackerOverviewResponse(StrictModel):
     location_status: Literal["current", "stale", "never"]
     last_location_at: datetime | None = None
     firmware_version: str | None = None
-    lost_mode: bool
+    separation_alerts: bool
     vehicle_mode: bool
     movement_alerts: bool
     safe_zone_count: int = Field(ge=0)
     active_share_count: int = Field(ge=0)
+    companion_status: Literal["ready", "stale", "not_configured"]
+    replacement_eligible: bool
+
+
+ReplacementClaimStatus = Literal[
+    "submitted", "approved", "rejected", "fulfilled", "cancelled"
+]
+
+
+class DeviceReplacementClaimCreate(StrictModel):
+    reason: Literal["lost", "stolen"]
+    incident_at: datetime
+    notes: str | None = Field(default=None, max_length=500)
+
+    @field_validator("notes")
+    @classmethod
+    def safe_notes(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = " ".join(value.split())
+        if not normalized:
+            return None
+        if re.search(r"[\x00-\x1f\x7f]", normalized):
+            raise ValueError("invalid replacement notes")
+        return normalized
+
+
+class DeviceReplacementClaimSummary(StrictModel):
+    id: UUID
+    device_id: UUID
+    subscription_id: UUID
+    reason: Literal["lost", "stolen"]
+    incident_at: datetime
+    status: ReplacementClaimStatus
+    notes: str | None = Field(default=None, max_length=500)
+    benefit_period_start: datetime
+    benefit_period_end: datetime
+    replacement_price_minor: Literal[0] = 0
+    replacement_device_id: UUID | None = None
+    replacement_serial_number: str | None = Field(
+        default=None, min_length=16, max_length=16
+    )
+    provisioning_request_id: UUID | None = None
+    submitted_at: datetime
+    reviewed_at: datetime | None = None
+    fulfilled_at: datetime | None = None
+
+
+class DeviceReplacementClaimListResponse(StrictModel):
+    claims: list[DeviceReplacementClaimSummary] = Field(max_length=100)
+
+
+class DeviceReplacementEligibilityResponse(StrictModel):
+    device_id: UUID
+    eligible: bool
+    reason: Literal[
+        "eligible",
+        "subscription_required",
+        "paid_subscription_required",
+        "plan_not_eligible",
+        "already_claimed",
+    ]
+    minimum_plan_months: Literal[6] = 6
+    current_plan_months: Literal[1, 3, 6, 12] | None = None
+    benefit_period_start: datetime | None = None
+    benefit_period_end: datetime | None = None
+    existing_claim_id: UUID | None = None
+    existing_claim_status: ReplacementClaimStatus | None = None
 
 
 class LocationHistoryDeleteResponse(StrictModel):
@@ -595,9 +694,7 @@ NotificationKind = Literal[
     "renewal_1_day",
     "expired",
     "admin_message",
-    "safe_zone_enter",
-    "safe_zone_exit",
-    "lost_mode_location",
+    "separation_detected",
     "movement_detected",
 ]
 
