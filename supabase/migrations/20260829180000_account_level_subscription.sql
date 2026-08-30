@@ -176,23 +176,31 @@ REVOKE EXECUTE ON FUNCTION public.pinkeva_active_subscription_id(UUID)
   FROM PUBLIC, anon, authenticated;
 
 -- Keep the mature phone-aware alert algorithm intact while replacing its old
--- per-device entitlement lookup with the account helper above. The exact
--- fragment is asserted so a future migration cannot silently edit the wrong
--- function body.
+-- per-device entitlement lookup with the account helper above. PostgreSQL's
+-- pg_get_functiondef can preserve line-ending/whitespace differences between
+-- environments, so match the known SQL tokens while remaining strict about
+-- the complete entitlement query being replaced.
 DO $migration$
 DECLARE
   function_definition TEXT;
-  old_fragment TEXT := E'  SELECT subscription.id\n    INTO active_subscription_id\n    FROM public.subscription subscription\n   WHERE subscription.user_id = target_user_id\n     AND subscription.device_id = target_device_id\n     AND subscription.status IN (''active'', ''trialing'')\n     AND subscription.starts_at <= now()\n     AND subscription.current_period_end > now()\n   ORDER BY subscription.current_period_end DESC,\n            subscription.created_at DESC\n   LIMIT 1;';
+  old_pattern TEXT := E'SELECT subscription[.]id[[:space:]]+INTO[[:space:]]+active_subscription_id[[:space:]]+FROM[[:space:]]+public[.]subscription[[:space:]]+subscription[[:space:]]+WHERE[[:space:]]+subscription[.]user_id[[:space:]]*=[[:space:]]*target_user_id[[:space:]]+AND[[:space:]]+subscription[.]device_id[[:space:]]*=[[:space:]]*target_device_id[[:space:]]+AND[[:space:]]+subscription[.]status[[:space:]]+IN[[:space:]]*[(][[:space:]]*(''active''[[:space:]]*,[[:space:]]*''trialing'')[[:space:]]*[)][[:space:]]+AND[[:space:]]+subscription[.]starts_at[[:space:]]*<=[[:space:]]*now[(][)][[:space:]]+AND[[:space:]]+subscription[.]current_period_end[[:space:]]*>[[:space:]]*now[(][)][[:space:]]+ORDER[[:space:]]+BY[[:space:]]+subscription[.]current_period_end[[:space:]]+DESC[[:space:]]*,[[:space:]]*subscription[.]created_at[[:space:]]+DESC[[:space:]]+LIMIT[[:space:]]+1[[:space:]]*;';
   new_fragment TEXT := E'  SELECT public.pinkeva_active_subscription_id(target_user_id)\n    INTO active_subscription_id;';
 BEGIN
   SELECT pg_get_functiondef(
            'public.evaluate_tracker_safety(uuid,uuid,text)'::regprocedure
          )
     INTO function_definition;
-  IF position(old_fragment IN function_definition) = 0 THEN
+  IF function_definition IS NULL
+     OR function_definition !~ old_pattern THEN
     RAISE EXCEPTION 'evaluate_tracker_safety entitlement fragment changed';
   END IF;
-  EXECUTE replace(function_definition, old_fragment, new_fragment);
+  function_definition := regexp_replace(
+    function_definition, old_pattern, new_fragment
+  );
+  IF function_definition ~ old_pattern THEN
+    RAISE EXCEPTION 'evaluate_tracker_safety entitlement replacement incomplete';
+  END IF;
+  EXECUTE function_definition;
 END;
 $migration$;
 
