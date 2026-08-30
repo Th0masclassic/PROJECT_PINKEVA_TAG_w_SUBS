@@ -35,15 +35,19 @@ export type TrackerSummary = {
   last_location_at: string | null;
   last_place: string | null;
   started_at: string;
-  subscription_id: string | null;
-  subscription_status: string | null;
-  plan_code: string | null;
-  current_period_end: string | null;
-  subscription_source: string | null;
+};
+
+export type AccountSubscriptionSummary = {
+  id: string;
+  status: string;
+  plan_code: string;
+  current_period_end: string;
+  source: string;
 };
 
 export type UserTrackers = {
   user: Pick<UserSummary, 'id' | 'display_name' | 'email' | 'created_at'>;
+  subscription: AccountSubscriptionSummary | null;
   trackers: TrackerSummary[];
 };
 

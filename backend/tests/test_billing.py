@@ -102,7 +102,7 @@ class FakeGateway:
             "client_reference_id": str(preparation.reservation_id),
             "metadata": {
                 "user_id": str(preparation.user_id),
-                "device_id": str(preparation.device_id),
+                "scope": "account",
                 "plan_code": preparation.plan_code,
                 "checkout_id": str(preparation.reservation_id),
             },
@@ -240,8 +240,9 @@ def settings() -> Settings:
 
 def checkout_steps(customer_id: str = "cus_12345678") -> list[tuple[str, Any]]:
     return [
-        ("SELECT p.stripe_customer_id", {"stripe_customer_id": customer_id}),
+        ("SELECT stripe_customer_id", {"stripe_customer_id": customer_id}),
         ("SELECT 1 FROM public.subscription", None),
+        ("SELECT 1 FROM public.provisioning_request", None),
         ("SELECT b.id, b.user_id", None),
         (
             "SELECT code, duration_months",
@@ -255,7 +256,7 @@ def checkout_steps(customer_id: str = "cus_12345678") -> list[tuple[str, Any]]:
             },
         ),
         ("INSERT INTO public.billing_checkout_session", None),
-        ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+        ("SELECT 1 FROM public.profiles", {"?column?": 1}),
     ]
 
 
@@ -271,7 +272,7 @@ def checkout_preparation(
     return CheckoutPreparation(
         reservation_id=reservation_id,
         user_id=user_id,
-        device_id=device_id,
+        device_id=None,
         plan_code="monthly_basic",
         price_id="price_MONTH1234567",
         product_id="prod_MONTH1234567",
@@ -300,7 +301,7 @@ def subscription_object(
         "cancel_at_period_end": False,
         "metadata": {
             "user_id": str(user_id),
-            "device_id": str(device_id),
+            "scope": "account",
             "plan_code": "monthly_basic",
             "checkout_id": str(checkout_id),
         },
@@ -334,13 +335,11 @@ def subscription_object(
 
 
 @pytest.mark.asyncio
-async def test_subscription_status_is_per_tag_and_lists_only_configured_plans(
+async def test_account_subscription_status_lists_only_configured_plans(
     settings: Settings,
 ) -> None:
-    device_id = uuid.uuid4()
     connection = ScriptedConnection(
         [
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
             (
                 "SELECT code, name, duration_months",
                 [
@@ -363,17 +362,14 @@ async def test_subscription_status_is_per_tag_and_lists_only_configured_plans(
                 ],
             ),
             ("SELECT s.status, s.plan_code", None),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
         ]
     )
 
-    response = await BillingService(settings, FakeGateway()).get_device_subscription(
+    response = await BillingService(settings, FakeGateway()).get_account_subscription(
         FakeDatabase(connection),
         user_id=uuid.uuid4(),
-        device_id=device_id,
     )
 
-    assert response.device_id == device_id
     assert response.status == "none"
     assert response.plan_code is None
     assert [plan.code for plan in response.available_plans] == ["monthly_basic"]
@@ -416,6 +412,7 @@ async def test_paid_provisioning_subscription_can_bind_before_ownership(
     connection = ScriptedConnection(
         [
             ("SELECT id, user_id, device_id, serial_number, plan_code", request_row),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             ("SELECT user_id FROM public.ownership", None),
             (
                 "SELECT code, duration_months, price_cents",
@@ -482,6 +479,8 @@ async def test_provisioning_checkout_renews_expiry_for_stripe_minimum(
             ("SELECT r.id, r.user_id", request),
             ("SELECT 1 FROM public.ownership", None),
             ("SELECT 1 FROM public.subscription", None),
+            ("SELECT 1 FROM public.provisioning_request", None),
+            ("SELECT 1 FROM public.billing_checkout_session", None),
             ("SELECT code, duration_months", plan),
             ("UPDATE public.provisioning_request", None),
         ]
@@ -517,12 +516,10 @@ async def test_existing_subscription_uses_its_historical_stripe_price(
             return await super().retrieve_price(price_id)
 
     user_id = uuid.uuid4()
-    device_id = uuid.uuid4()
     started_at = datetime.now(UTC) - timedelta(days=10)
     period_end = started_at + timedelta(days=30)
     connection = ScriptedConnection(
         [
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
             (
                 "SELECT code, name, duration_months",
                 [
@@ -554,19 +551,18 @@ async def test_existing_subscription_uses_its_historical_stripe_price(
                     "plan_active": True,
                 },
             ),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
         ]
     )
 
     response = await BillingService(
         settings, HistoricalGateway()
-    ).get_device_subscription(
-        FakeDatabase(connection), user_id=user_id, device_id=device_id
+    ).get_account_subscription(
+        FakeDatabase(connection), user_id=user_id
     )
 
     assert response.amount_minor == 299
     assert response.available_plans[0].amount_minor == 499
-    assert "LEFT JOIN public.plan_price_history" in connection.executions[2][0]
+    assert "LEFT JOIN public.plan_price_history" in connection.executions[1][0]
 
 
 @pytest.mark.parametrize(
@@ -640,7 +636,7 @@ async def test_checkout_uses_server_price_and_existing_customer(
     connection = ScriptedConnection(
         checkout_steps()
         + [
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             ("UPDATE public.billing_checkout_session", {"id": uuid.uuid4()}),
         ]
     )
@@ -649,7 +645,6 @@ async def test_checkout_uses_server_price_and_existing_customer(
     response = await BillingService(settings, gateway).create_checkout(
         FakeDatabase(connection),
         user_id=user_id,
-        device_id=device_id,
         plan_code="monthly_basic",
     )
 
@@ -657,7 +652,7 @@ async def test_checkout_uses_server_price_and_existing_customer(
     assert gateway.customer_calls == []
     preparation, customer_id = gateway.checkout_calls[0]
     assert preparation.user_id == user_id
-    assert preparation.device_id == device_id
+    assert preparation.device_id is None
     assert preparation.price_id == "price_MONTH1234567"
     assert customer_id == "cus_12345678"
     assert connection.steps == []
@@ -672,7 +667,7 @@ async def test_checkout_creates_one_idempotent_account_customer(
             checkout_steps(customer_id=None)
             + [
                 ("UPDATE public.profiles", {"stripe_customer_id": "cus_12345678"}),
-                ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+                ("SELECT 1 FROM public.profiles", {"?column?": 1}),
                 ("UPDATE public.billing_checkout_session", {"id": uuid.uuid4()}),
         ]
     )
@@ -681,7 +676,6 @@ async def test_checkout_creates_one_idempotent_account_customer(
     await BillingService(settings, gateway).create_checkout(
         FakeDatabase(connection),
         user_id=user_id,
-        device_id=uuid.uuid4(),
         plan_code="monthly_basic",
     )
 
@@ -694,18 +688,17 @@ async def test_concurrent_checkout_is_rejected_before_stripe(
     settings: Settings,
 ) -> None:
     steps = checkout_steps()
-    steps[4] = (
+    steps[5] = (
         "INSERT INTO public.billing_checkout_session",
         UniqueViolation("duplicate pending checkout"),
     )
-    steps = steps[:5]
+    steps = steps[:6]
     gateway = FakeGateway()
 
     with pytest.raises(BillingError) as error:
         await BillingService(settings, gateway).create_checkout(
             FakeDatabase(ScriptedConnection(steps)),
             user_id=uuid.uuid4(),
-            device_id=uuid.uuid4(),
             plan_code="monthly_basic",
         )
 
@@ -720,7 +713,7 @@ async def test_post_stripe_database_failure_retains_duplicate_guard(
     connection = ScriptedConnection(
         checkout_steps()
         + [
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             (
                 "UPDATE public.billing_checkout_session",
                 RuntimeError("database temporarily unavailable"),
@@ -733,7 +726,6 @@ async def test_post_stripe_database_failure_retains_duplicate_guard(
         await BillingService(settings, gateway).create_checkout(
             FakeDatabase(connection),
             user_id=uuid.uuid4(),
-            device_id=uuid.uuid4(),
             plan_code="monthly_basic",
         )
 
@@ -754,7 +746,6 @@ async def test_ambiguous_stripe_timeout_retains_duplicate_guard(
         await BillingService(settings, gateway).create_checkout(
             FakeDatabase(connection),
             user_id=uuid.uuid4(),
-            device_id=uuid.uuid4(),
             plan_code="monthly_basic",
         )
 
@@ -786,14 +777,15 @@ async def test_locally_old_checkout_is_reused_when_stripe_says_open(
     gateway.checkout_calls.clear()
     connection = ScriptedConnection(
         [
-            ("SELECT p.stripe_customer_id", {"stripe_customer_id": "cus_12345678"}),
+            ("SELECT stripe_customer_id", {"stripe_customer_id": "cus_12345678"}),
             ("SELECT 1 FROM public.subscription", None),
+            ("SELECT 1 FROM public.provisioning_request", None),
             (
                 "SELECT b.id, b.user_id",
                 {
                     "id": reservation_id,
                     "user_id": user_id,
-                    "device_id": device_id,
+                    "device_id": None,
                     "plan_code": "monthly_basic",
                     "provider_session_id": "cs_test_12345678",
                     "provider_customer_id": "cus_12345678",
@@ -812,8 +804,8 @@ async def test_locally_old_checkout_is_reused_when_stripe_says_open(
                     "provider_product_id": "prod_MONTH1234567",
                 },
             ),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             ("UPDATE public.billing_checkout_session", {"id": reservation_id}),
         ]
     )
@@ -821,7 +813,6 @@ async def test_locally_old_checkout_is_reused_when_stripe_says_open(
     response = await BillingService(settings, gateway).create_checkout(
         FakeDatabase(connection),
         user_id=user_id,
-        device_id=device_id,
         plan_code="monthly_basic",
     )
 
@@ -864,7 +855,7 @@ async def test_only_stripe_expiration_releases_checkout_reservation(
     existing = {
         "id": old_reservation_id,
         "user_id": user_id,
-        "device_id": device_id,
+        "device_id": None,
         "plan_code": "monthly_basic",
         "provider_session_id": "cs_test_12345678",
         "provider_customer_id": "cus_12345678",
@@ -873,19 +864,21 @@ async def test_only_stripe_expiration_releases_checkout_reservation(
     }
     connection = ScriptedConnection(
         [
-            ("SELECT p.stripe_customer_id", {"stripe_customer_id": "cus_12345678"}),
+            ("SELECT stripe_customer_id", {"stripe_customer_id": "cus_12345678"}),
             ("SELECT 1 FROM public.subscription", None),
+            ("SELECT 1 FROM public.provisioning_request", None),
             ("SELECT b.id, b.user_id", existing),
             ("SELECT code, duration_months", plan),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             ("UPDATE public.billing_checkout_session", {"id": old_reservation_id}),
-            ("SELECT p.stripe_customer_id", {"stripe_customer_id": "cus_12345678"}),
+            ("SELECT stripe_customer_id", {"stripe_customer_id": "cus_12345678"}),
             ("SELECT 1 FROM public.subscription", None),
+            ("SELECT 1 FROM public.provisioning_request", None),
             ("SELECT b.id, b.user_id", None),
             ("SELECT code, duration_months", plan),
             ("INSERT INTO public.billing_checkout_session", None),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             ("UPDATE public.billing_checkout_session", {"id": uuid.uuid4()}),
         ]
     )
@@ -893,7 +886,6 @@ async def test_only_stripe_expiration_releases_checkout_reservation(
     response = await BillingService(settings, gateway).create_checkout(
         FakeDatabase(connection),
         user_id=user_id,
-        device_id=device_id,
         plan_code="monthly_basic",
     )
 
@@ -904,16 +896,16 @@ async def test_only_stripe_expiration_releases_checkout_reservation(
 
 
 @pytest.mark.asyncio
-async def test_ownership_lost_after_checkout_creation_expires_remote_session(
+async def test_account_disabled_after_checkout_creation_expires_remote_session(
     settings: Settings,
 ) -> None:
     connection = ScriptedConnection(
         checkout_steps()
         + [
-            ("SELECT 1 FROM public.ownership", None),
+            ("SELECT 1 FROM public.profiles", None),
             ("UPDATE public.billing_checkout_session", {"id": uuid.uuid4()}),
             ("UPDATE public.billing_checkout_session", {"id": uuid.uuid4()}),
-            ("SELECT p.stripe_customer_id", None),
+            ("SELECT stripe_customer_id", None),
         ]
     )
     gateway = FakeGateway()
@@ -922,17 +914,16 @@ async def test_ownership_lost_after_checkout_creation_expires_remote_session(
         await BillingService(settings, gateway).create_checkout(
             FakeDatabase(connection),
             user_id=uuid.uuid4(),
-            device_id=uuid.uuid4(),
             plan_code="monthly_basic",
         )
 
-    assert error.value.code == "TAG_UNAVAILABLE"
+    assert error.value.code == "BILLING_UNAVAILABLE"
     assert gateway.expire_checkout_calls == ["cs_test_12345678"]
 
 
 @pytest.mark.parametrize("action", ["update", "cancel"])
 @pytest.mark.asyncio
-async def test_portal_is_scoped_to_exact_tag_subscription(
+async def test_portal_is_scoped_to_account_subscription(
     settings: Settings, action: str
 ) -> None:
     connection = ScriptedConnection(
@@ -944,7 +935,7 @@ async def test_portal_is_scoped_to_exact_tag_subscription(
                     "provider_subscription_id": "sub_12345678",
                 },
             ),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
         ]
     )
     gateway = FakeGateway()
@@ -952,7 +943,6 @@ async def test_portal_is_scoped_to_exact_tag_subscription(
     response = await BillingService(settings, gateway).create_portal(
         FakeDatabase(connection),
         user_id=uuid.uuid4(),
-        device_id=uuid.uuid4(),
         action=action,
     )
 
@@ -1040,7 +1030,7 @@ async def test_gateway_checkout_uses_only_fixed_server_values(
     preparation = CheckoutPreparation(
         reservation_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
-        device_id=uuid.uuid4(),
+        device_id=None,
         plan_code="monthly_basic",
         price_id="price_MONTH1234567",
         product_id="prod_MONTH1234567",
@@ -1065,7 +1055,7 @@ async def test_gateway_checkout_uses_only_fixed_server_values(
     assert captured["subscription_data"]["metadata"] == captured["metadata"]
     assert captured["metadata"] == {
         "user_id": str(preparation.user_id),
-        "device_id": str(preparation.device_id),
+        "scope": "account",
         "plan_code": "monthly_basic",
         "checkout_id": str(preparation.reservation_id),
     }
@@ -1232,7 +1222,7 @@ async def test_recognized_webhook_ahead_of_checkout_binding_is_deferred(
                 {
                     "id": checkout_id,
                     "user_id": user_id,
-                    "device_id": device_id,
+                    "device_id": None,
                     "plan_code": "monthly_basic",
                     "provider_session_id": None,
                     "provider_customer_id": None,
@@ -1313,7 +1303,7 @@ async def test_subscription_price_is_reverse_mapped_unambiguously_on_update(
                 {
                     "id": checkout_id,
                     "user_id": user_id,
-                    "device_id": device_id,
+                    "device_id": None,
                     "plan_code": "monthly_basic",
                     "provider_session_id": "cs_test_12345678",
                     "provider_customer_id": "cus_12345678",
@@ -1321,7 +1311,7 @@ async def test_subscription_price_is_reverse_mapped_unambiguously_on_update(
                     "status": "completed",
                 },
             ),
-            ("SELECT 1 FROM public.ownership", {"?column?": 1}),
+            ("SELECT 1 FROM public.profiles", {"?column?": 1}),
             (
                 "SELECT code, duration_months",
                 {
@@ -1345,7 +1335,7 @@ async def test_subscription_price_is_reverse_mapped_unambiguously_on_update(
         "cancel_at_period_end": False,
         "metadata": {
             "user_id": str(user_id),
-            "device_id": str(device_id),
+            "scope": "account",
             "plan_code": "monthly_basic",
             "checkout_id": str(checkout_id),
         },
@@ -1396,7 +1386,7 @@ async def test_subscription_price_is_reverse_mapped_unambiguously_on_update(
 
 
 @pytest.mark.asyncio
-async def test_subscription_webhook_queues_billing_cancellation_for_former_owner(
+async def test_subscription_webhook_queues_cancellation_for_disabled_account(
     settings: Settings,
 ) -> None:
     user_id = uuid.uuid4()
@@ -1416,7 +1406,7 @@ async def test_subscription_webhook_queues_billing_cancellation_for_former_owner
                 {
                     "id": checkout_id,
                     "user_id": user_id,
-                    "device_id": device_id,
+                    "device_id": None,
                     "plan_code": "monthly_basic",
                     "provider_session_id": "cs_test_12345678",
                     "provider_customer_id": "cus_12345678",
@@ -1424,7 +1414,7 @@ async def test_subscription_webhook_queues_billing_cancellation_for_former_owner
                     "status": "completed",
                 },
             ),
-            ("SELECT 1 FROM public.ownership", None),
+            ("SELECT 1 FROM public.profiles", None),
             (
                 "SELECT code, duration_months",
                 {
@@ -1454,9 +1444,10 @@ async def test_subscription_webhook_queues_billing_cancellation_for_former_owner
     insert_parameters = connection.executions[3][1]
     assert insert_parameters[3] == "ended"
     assert insert_parameters[-2] is None
-    assert insert_parameters[-1] == "ownership_lost_checkout"
+    assert insert_parameters[-1] == "account_unavailable_checkout"
     queue_parameters = connection.executions[4][1]
     assert queue_parameters[1] == "sub_12345678"
+    assert queue_parameters[2] == "account_unavailable_checkout"
 
 
 @pytest.mark.asyncio
@@ -1470,7 +1461,7 @@ async def test_checkout_webhook_never_calls_stripe_while_holding_database_locks(
     checkout_row = {
         "id": checkout_id,
         "user_id": user_id,
-        "device_id": device_id,
+        "device_id": None,
         "plan_code": "monthly_basic",
         "provider_session_id": "cs_test_12345678",
         "provider_customer_id": "cus_12345678",
@@ -1483,23 +1474,6 @@ async def test_checkout_webhook_never_calls_stripe_while_holding_database_locks(
                 "SELECT id, user_id, device_id, plan_code",
                 checkout_row,
             ),
-            ("SELECT 1 FROM public.ownership", None),
-            ("SELECT id, user_id, device_id, plan_code", checkout_row),
-            ("SELECT 1 FROM public.ownership", None),
-            (
-                "SELECT code, duration_months",
-                {
-                    "code": "monthly_basic",
-                    "duration_months": 1,
-                    "price_cents": 299,
-                    "currency": "EUR",
-                    "active": True,
-                    "provider_product_id": "prod_MONTH1234567",
-                },
-            ),
-            ("INSERT INTO public.subscription", {"id": uuid.uuid4()}),
-            ("INSERT INTO public.subscription_cancellation_outbox", None),
-            ("UPDATE public.billing_checkout_session", None),
             ("UPDATE public.billing_checkout_session", None),
         ]
     )
@@ -1511,7 +1485,7 @@ async def test_checkout_webhook_never_calls_stripe_while_holding_database_locks(
         "mode": "subscription",
         "metadata": {
             "user_id": str(user_id),
-            "device_id": str(device_id),
+            "scope": "account",
             "plan_code": "monthly_basic",
             "checkout_id": str(checkout_id),
         },
@@ -1530,7 +1504,7 @@ async def test_checkout_webhook_never_calls_stripe_while_holding_database_locks(
     )
 
     assert gateway.cancel_calls == []
-    assert len(connection.executions) == 9
+    assert len(connection.executions) == 2
 
 
 @pytest.mark.asyncio

@@ -329,8 +329,6 @@ class PostgresCancellationRepository:
                   FROM public.subscription_cancellation_outbox queue
                   JOIN public.subscription subscription
                     ON subscription.id = queue.subscription_id
-                  JOIN public.device device
-                    ON device.id = subscription.device_id
                   LEFT JOIN public.device_release release
                     ON release.id = queue.device_release_id
                  WHERE queue.id = %s
@@ -377,16 +375,34 @@ class PostgresCancellationRepository:
                                   AND active_ownership.ended_at IS NULL
                            )
                        )
-                       OR
-                       (
-                           queue.cancellation_reason = 'admin_revoked'
+                        OR
+                        (
+                            queue.cancellation_reason = 'account_unavailable_checkout'
+                            AND queue.device_release_id IS NULL
+                            AND subscription.status IN ('cancelled', 'ended')
+                            AND subscription.ended_reason =
+                                'account_unavailable_checkout'
+                            AND subscription.provider_terminal_event_at IS NULL
+                        )
+                        OR
+                        (
+                            queue.cancellation_reason = 'account_consolidation'
+                            AND queue.device_release_id IS NULL
+                            AND subscription.status IN ('cancelled', 'ended')
+                            AND subscription.ended_reason =
+                                'account_subscription_consolidated'
+                            AND subscription.provider_terminal_event_at IS NULL
+                        )
+                        OR
+                        (
+                            queue.cancellation_reason = 'admin_revoked'
                            AND queue.device_release_id IS NULL
                            AND subscription.status IN ('cancelled', 'ended')
                            AND subscription.ended_reason = 'admin_revoked'
                            AND subscription.provider_terminal_event_at IS NULL
                        )
                    )
-                 FOR UPDATE OF queue, subscription, device
+                  FOR UPDATE OF queue, subscription
                 """,
                 (
                     job.id,

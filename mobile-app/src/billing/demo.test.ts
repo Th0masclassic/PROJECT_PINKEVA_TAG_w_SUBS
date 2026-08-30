@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import { createDemoSubscription } from './demo.ts';
 
-test('demo subscriptions are stable and scoped per tag', () => {
+test('one demo account subscription is projected onto every owned tag', () => {
   const card = createDemoSubscription('pinkeva-card');
   const keys = createDemoSubscription('keys');
   const bag = createDemoSubscription('backpack');
@@ -12,7 +12,10 @@ test('demo subscriptions are stable and scoped per tag', () => {
   assert.equal(card.status, 'active');
   assert.equal(card.cancelAtPeriodEnd, false);
   assert.equal(keys.deviceId, 'keys');
-  assert.equal(keys.status, 'none');
+  assert.equal(keys.status, 'active');
+  assert.equal(keys.planCode, card.planCode);
   assert.equal(bag.deviceId, 'backpack');
-  assert.equal(bag.cancelAtPeriodEnd, true);
+  assert.equal(bag.status, 'active');
+  assert.equal(bag.planCode, card.planCode);
+  assert.equal(bag.cancelAtPeriodEnd, false);
 });

@@ -31,6 +31,21 @@ def request_with_id() -> Request:
     return request
 
 
+def test_subscription_routes_are_account_scoped_only() -> None:
+    paths = {
+        route.path for route in app.routes if hasattr(route, "path")
+    }
+
+    assert {
+        "/v1/subscription",
+        "/v1/subscription/checkout",
+        "/v1/subscription/portal",
+    } <= paths
+    assert "/v1/devices/{device_id}/subscription" not in paths
+    assert "/v1/devices/{device_id}/subscription/checkout" not in paths
+    assert "/v1/devices/{device_id}/subscription/portal" not in paths
+
+
 class ReadinessConnection:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error

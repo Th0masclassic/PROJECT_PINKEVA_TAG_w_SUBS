@@ -28,7 +28,7 @@ function sha256(value: Uint8Array): Uint8Array {
   return new Uint8Array(createHash('sha256').update(value).digest());
 }
 
-test('installs both network identities and selects only Google on Android setup', async () => {
+test('installs both network identities and persists the requested startup preference', async () => {
   const serialNumber = 'PKV-AABBCCDDEEFF';
   const challenge = Uint8Array.from({ length: 32 }, (_, index) => index + 1);
   const appleKey = Uint8Array.from({ length: 28 }, (_, index) => 0xa0 + index);

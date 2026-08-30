@@ -91,7 +91,10 @@ class NativeTagRadio implements TagRadio {
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
     return new TagProvisioner(this.manager, backend).provision({
       ...input,
-      findingNetwork: Platform.OS === 'android' ? 'google' : 'apple',
+      // Protocol 1.8 advertises both identities. This legacy write-once value
+      // only selects the first 500 ms slot after boot, so provisioning must not
+      // vary the tag's finder-network behavior by phone platform.
+      findingNetwork: 'apple',
     });
   }
 

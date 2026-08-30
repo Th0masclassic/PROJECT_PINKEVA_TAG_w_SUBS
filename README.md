@@ -37,22 +37,23 @@ The complete architecture and proposed communication contract are documented in 
 |---|---|---|
 | ESP32 application startup | Implemented | Initializes the status LED and starts BLE initialization in a FreeRTOS task. |
 | Device identity | Implemented | Derives a stable `PKV-XXXXXXXXXXXX` identifier from the factory MAC address. |
-| Firmware mode selection | Implemented provisioning slice | An incomplete dual-network bundle enters setup; both identities plus one selected network enter tracker mode. Subscription state is not stored on the tag. |
+| Firmware mode selection | Implemented provisioning slice | An incomplete dual-network bundle enters setup; both identities plus a setup preference enter tracker mode. Subscription state is not stored on the tag. |
 | Setup mode | Implemented prototype | Advertises the provisioning service plus `PKV-XXXXXXXXXXXX`. The checked-in development profile bypasses bootstrap authentication and OS pairing/bonding; production still needs an authenticated application-layer confidential channel. |
-| Tracker mode | Implemented identity gate | Finder advertising starts after the complete bundle is committed, emits only the selected Apple or Google frame, and resumes after reboot. Subscription expiry never disables the radio. |
-| GATT event handling | Implemented provisioning and OTA slice | Protocol v1.7 adds both network identities, a write-once selector, QR-free per-connection challenge/proof authorization, a five-second physical maintenance gesture, and signed dual-slot BLE firmware updates. |
+| Tracker mode | Experimental dual-network implementation | One legacy BLE set alternates 500 ms Apple and Google slots at a 250 ms interval, targeting two frames from each network per second. Subscription expiry never disables the radio. |
+| GATT event handling | Implemented provisioning, sound, and OTA slice | Protocol v1.8 adds both identities, a setup preference, QR-free per-connection authorization, public DULT non-owner sound control, a five-second maintenance gesture, and signed dual-slot BLE firmware updates. |
 | Firmware updates | Implemented, hardware validation pending | The backend publishes an owner-scoped signed release, the native app streams and verifies it over BLE, and the ESP32 boots the inactive slot with rollback protection. The first partition-layout migration is wired. |
 | Persistent storage | Implemented provisioning slice | Validates and reads back both identity fingerprints, selector, and control key; refuses replacement; authenticates destructive erasure; and clears BLE bonds after reset disconnect. |
 | LED feedback | Implemented prototype | Provides setup and error feedback. Production patterns and non-blocking timing still need refinement. |
-| Finder report integration | Experimental | Apple report retrieval is backend-integrated; Google-selected tags use a fail-closed isolated provider-bridge contract while official Find Hub partner approval remains external. |
-| Supabase database | Premium backend implemented | Adds encrypted key custody, one-active-owner enforcement, per-tag subscriptions, 30-day location retention, safe zones, lost/vehicle protection, hashed recovery shares, smart alert delivery, admin RBAC/audit, and provider outbox rows. |
+| Piezo sound | Implemented firmware path | Drives the CPT-9019A-SMT-TR on configurable GPIO25 at 4 kHz and implements 12-second DULT non-owner start/stop indications. Apple owner Play Sound still requires MFi. |
+| Finder report integration | Experimental | The backend queries every configured Apple and Google identity independently, retains provider-tagged reports, and deterministically projects the newest report across both. Official platform approval remains external. |
+| Supabase database | Premium backend implemented | Adds encrypted key custody, one-active-owner enforcement, one account subscription, provider-tagged 30-day location retention, safe zones, separation/vehicle protection, hashed recovery shares, smart alert delivery, admin RBAC/audit, and provider outbox rows. |
 | Architecture and protocol | Draft complete | Defines the proposed hardware, software, BLE, HTTPS, vehicle, and subscription design. |
-| Mobile client | Provisioning and firmware UI implemented | The authenticated product UI provisions both identities, selects Google on Android and Apple on iOS, verifies the complete binding, and supports signed BLE updates with interrupted-acknowledgement retry. Physical-device validation is still required. |
-| Backend API and worker | Provisioning, premium location, firmware, billing, notification, and admin modules | Key custody, claims/releases, 1–30 day report requests, retained history, safe-zone/lost/movement alerts, recovery sharing/reporting, signed firmware, Stripe reconciliation, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. |
+| Mobile client | Provisioning and firmware UI implemented | The authenticated product UI provisions the same dual-identity bundle on Android and iOS, verifies the complete binding, and supports signed BLE updates with interrupted-acknowledgement retry. Physical-device validation is still required. |
+| Backend API and worker | Provisioning, premium location, firmware, billing, notification, and admin modules | Key custody, claims/releases, account billing, continuous Apple/Google report collection, 1–30 day retained history, phone-aware separation/movement alerts, recovery sharing/reporting, signed firmware, Stripe reconciliation, push scheduling, cancellation worker, MFA-gated administration, and audit are implemented. |
 | Pinqeva map and vehicle UI | Map UI implemented; premium UI pending | iOS/Android use native Google Maps for stored tracker coordinates. Backend vehicle protection and movement alerts are implemented; the customer-facing controls still need to be wired to the new APIs. |
 | Admin console | Implemented baseline | Separate in-memory-session browser console with Supabase TOTP MFA, server-enforced owner/admin roles, users, tracker maps, subscription grants/revocations, Stripe price versioning, device registration, and append-only audit. |
 | Admin mobile app | Implemented baseline | Separate native iOS/Android app with its own bundle identity and encrypted session, Supabase TOTP MFA, role-gated operations, native tracker maps, subscriptions, pricing, device registration, administrator management, and audit views. |
-| Subscription enforcement | Implemented cloud-side | Active/trialing periods unlock cloud location, 30-day history, alerts, safe zones, lost mode, recovery sharing/reporting, and vehicle protection. The ESP32 needs only its public key to advertise. |
+| Subscription enforcement | Implemented cloud-side | One active/trialing account period unlocks cloud location, 30-day history, alerts, safe zones, recovery sharing/reporting, and vehicle protection for every currently owned tag. The ESP32 needs only its finder identities to advertise. |
 
 ## Current tag behavior
 
@@ -62,7 +63,7 @@ At startup, the provisioning firmware follows this decision:
 stateDiagram-v2
     [*] --> Boot
     Boot --> Setup: identity bundle incomplete
-    Boot --> Tracker: both identities + selector valid
+    Boot --> Tracker: both identities + preference valid
     Setup --> Setup: client disconnects
     Setup --> Tracker: dual identity bundle committed
     Tracker --> Tracker: subscription changes or device reboots
@@ -70,16 +71,16 @@ stateDiagram-v2
 ```
 
 - **Setup mode:** the LED indicates setup mode and the tag advertises `PKV-XXXXXXXXXXXX`. A phone can discover and connect to it.
-- **Provisioning:** the app requires the dual-network/non-bonding capabilities, reads both fingerprints and the selector, installs the control key, 20-byte Google EID, network selection, and 28-byte Apple key only when empty, then waits for flash read-back confirmation. Android selects Google and iOS selects Apple. The checked-in development transport is not confidential and must be replaced by a reviewed application-layer secure channel for production.
-- **Tracker mode:** the selected identity continuously drives one non-connectable Apple or Google finder frame; both networks are never advertised at the same time. Holding the physical button for five seconds opens maintenance advertising for two minutes without permanently stopping the finder identity.
+- **Provisioning:** the app requires the dual-network/non-bonding capabilities, reads both fingerprints and the legacy startup preference, installs the control key, 20-byte Google EID, startup preference, and 28-byte Apple key only when empty, then waits for flash read-back confirmation. Android and iOS install the same bundle; the preference only selects the first 500 ms slot after boot. The checked-in development transport is not confidential and must be replaced by a reviewed application-layer secure channel for production.
+- **Tracker mode:** one classic-ESP32 advertising set alternates 500 ms Apple and Google slots, each at a 250 ms interval. The frames are connectable for the public DULT non-owner sound service. Holding the physical button for five seconds opens Pinkeva maintenance advertising for two minutes, then dual advertising resumes.
 - **Firmware update:** during that physical maintenance window, an authorized owner can install a strictly newer backend-signed ESP32 image into the inactive OTA slot. The tag verifies the signature, size, digest, and version before rebooting, and rolls back if the new image cannot initialize BLE.
-- **Release/transfer:** the active owner obtains a backend-authenticated reset command. The tag erases both identities, selector, and control key; the backend ends the single ownership and cancels device subscriptions; and the next owner receives a new dual-network bundle.
+- **Release/transfer:** the active owner obtains a backend-authenticated reset command. The tag erases both identities, selector, and control key; the backend ends that tag's ownership while leaving the account subscription unchanged; and the next owner receives a new dual-network bundle.
 
 The implemented subscription boundary is:
 
 ```mermaid
 stateDiagram-v2
-    TagIdentity --> FinderAdvertising: valid dual bundle + selected network
+    TagIdentity --> FinderAdvertising: valid dual bundle; Apple + Google slots
     Subscription --> PremiumCloud: active or trialing paid period
     Subscription --> NoPremiumCloud: expired or absent
     NoPremiumCloud -. does not change .-> FinderAdvertising
@@ -87,12 +88,11 @@ stateDiagram-v2
 
 ## Cloud subscription model
 
-The physical tag keeps advertising whenever it has a valid public key. An active per-tag subscription is required for Pinqeva's cloud service and premium safety tools.
+The physical tag keeps advertising whenever it has a valid finder identity. One active account subscription is required for Pinqeva's cloud service and premium safety tools.
 
-- Billing is per physical tag, not per account. An account with several tags needs one subscription for each tag.
-- A tag can have at most one current/nonterminal subscription; cancelled and ended rows remain as billing history.
-- Active/trialing periods unlock cloud location requests and up to 30 days of retained history.
-- Premium safety tools include safe-zone enter/exit alerts, lost mode, movement alerts, vehicle mode, expiring recovery links, recovery reports, and tracker health/freshness overview.
+- Billing is per account. One current/nonterminal subscription covers every tag the account currently owns; cancelled and ended rows remain as billing history.
+- Active/trialing periods unlock cloud location requests and continuously collected, provider-tagged history retained for up to 30 days.
+- Premium safety tools include phone-aware safe-zone departure and separation alerts, movement alerts, vehicle mode, expiring recovery links, recovery reports, eligible replacement claims, and tracker health/freshness overview.
 - Recovery tokens are returned once, stored only as SHA-256 hashes, expire automatically, and can be revoked by the owner.
 - When payment expires, cloud endpoints return a subscription-required response and premium links stop resolving; the ESP32 finder payload continues.
 - Renewals are reconciled by signed Stripe webhooks and never require the phone to copy a new date to the tag.
@@ -132,6 +132,7 @@ The tag does not currently provide speed, fuel level, engine state, mileage, or 
 | [`admin-panel`](admin-panel) | MFA-gated browser console for user, tracker, subscription, price, device, role, and audit operations. |
 | [`admin-mobile-app`](admin-mobile-app) | Separate native Pinkeva Admin application for iOS and Android. |
 | [`app-client`](app-client) | React Native App-to-Tag provisioning bridge and protocol tests. |
+| [`google-findhub-bridge`](google-findhub-bridge) | Separately deployable experimental GPL service around the pinned GoogleFindMyTools development integration. |
 | [`mobile-app`](mobile-app) | Customer-facing Expo/React Native product application for iOS, Android, and web; it contains no Admin console or privileged Admin API surface. |
 | [`docs/provisioning-security-review.md`](docs/provisioning-security-review.md) | Threat scenarios, implemented controls, residual risks, and recovery decisions. |
 | [`docs/supabase-cloud-deployment.md`](docs/supabase-cloud-deployment.md) | Hosted database, Auth-provider, backend-secret, and mobile setup. |
@@ -168,8 +169,8 @@ The next milestone validates key-based advertising and premium cloud boundaries 
 
 1. Validate the implemented per-device challenge-response on hardware, then add a reviewed application-layer encrypted no-bond channel, physical presence/OOB, and a tag-signed provisioning receipt.
 2. Test scan, no-bond connection, dual-identity persistence, one-network-only advertising, reboot, OTA writes, disconnect, power loss, digest/signature rejection, rollback, and confirmation on the target ESP32 hardware with iOS and Android.
-3. Validate provisioning, billing, 30-day history, safe zones, lost mode, movement alerts, recovery sharing, and expiry/renewal behavior on physical iOS and Android devices.
-4. Move private-key envelope encryption to a managed KMS/HSM and implement location-worker-only decryption.
+3. Validate provisioning, account billing, 30-day history, safe zones, separation/movement alerts, recovery sharing, and expiry/renewal behavior on physical iOS and Android devices.
+4. Move private-key envelope encryption to a managed KMS/HSM and restrict decryption to the location collector.
 
 After this contract is tested end to end, the rest of the client, backend, map, vehicle profile, and payment experience can be developed against a stable interface.
 

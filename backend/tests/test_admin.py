@@ -128,7 +128,7 @@ async def test_integrity_summary_reports_operational_warnings() -> None:
                 "devices_missing_bootstrap_credentials": 1,
                 "claimed_devices_without_active_owner": 0,
                 "active_ownership_device_state_mismatches": 0,
-                "current_subscriptions_without_active_ownership": 0,
+                "current_subscriptions_without_active_account": 0,
                 "failed_cancellation_jobs": 2,
                 "overdue_provisioning_requests": 0,
                 "active_database_admins": 3,

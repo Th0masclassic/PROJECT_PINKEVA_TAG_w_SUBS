@@ -637,8 +637,9 @@ class DeviceProvisioningRequestResponse(StrictModel):
     available_plans: list[PlanSummary] = Field(default_factory=list)
 
 
-class DeviceSubscriptionResponse(StrictModel):
-    device_id: UUID
+class AccountSubscriptionResponse(StrictModel):
+    """The one subscription shared by every tracker in an account."""
+
     status: str
     plan_code: str | None = None
     plan_name: str | None = None

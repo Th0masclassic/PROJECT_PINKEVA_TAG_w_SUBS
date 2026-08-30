@@ -153,6 +153,10 @@ nav button:hover, nav button.active { background: #122b57; color: #fff; }
 .tracker-card dd { margin: 0; overflow-wrap: anywhere; font-size: 13px; }
 .inline-form { display: flex; gap: 8px; }
 .inline-form select { min-width: 0; }
+.account-subscription-card { display: flex; justify-content: space-between; align-items: center; gap: 18px; margin-bottom: 18px; padding: 20px; border: 1px solid #cfe0ff; border-radius: 16px; background: #f7faff; }
+.account-subscription-card h3 { margin: 7px 0 4px; }
+.account-subscription-card p { margin: 0; color: #68758a; }
+.account-subscription-card .inline-form { min-width: min(430px, 48%); }
 
 .section-intro { margin-bottom: 20px; }
 .section-intro h2 { margin-bottom: 6px; }
@@ -237,6 +241,8 @@ td code { font-size: 11px; overflow-wrap: anywhere; }
   .user-map { height: min(58vw, 250px); }
   .tracker-card dl { grid-template-columns: 1fr; }
   .inline-form, .search { flex-direction: column; }
+  .account-subscription-card { align-items: stretch; flex-direction: column; }
+  .account-subscription-card .inline-form { min-width: 0; }
   .inline-form button, .search button, .tracker-card > .danger, .form-card > .primary, .plan-card > .primary, .admin-grant > .primary { width: 100%; }
   .plan-grid { grid-template-columns: 1fr; }
   .table-wrap { overflow: visible; border: 0; background: transparent; box-shadow: none; }

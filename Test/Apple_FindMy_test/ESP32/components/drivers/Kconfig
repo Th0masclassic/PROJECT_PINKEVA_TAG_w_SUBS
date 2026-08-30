@@ -41,4 +41,22 @@ config PINQEVA_MAINTENANCE_BUTTON_HOLD_MS
         Continuous physical hold required before connectable BLE maintenance
         advertising is opened.
 
+config PINQEVA_BUZZER_GPIO
+    int "CPT-9019A-SMT-TR drive GPIO"
+    range 0 39
+    default 25
+    help
+        GPIO connected to one terminal of the externally driven piezo buzzer.
+        The other terminal is connected to ground for the direct 3.3 Vpp
+        development drive. Production PCBs can use a transistor or bridge
+        driver for greater acoustic output within the buzzer rating.
+
+config PINQEVA_BUZZER_FREQUENCY_HZ
+    int "Piezo drive frequency (Hz)"
+    range 3000 5000
+    default 4000
+    help
+        CPT-9019A-SMT-TR rated frequency. Keep this at 4000 Hz unless acoustic
+        measurements on the assembled enclosure justify another value.
+
 endmenu

@@ -87,8 +87,7 @@ class PremiumService:
                            plan.duration_months
                       FROM public.subscription subscription
                       JOIN public.plan plan ON plan.code = subscription.plan_code
-                     WHERE subscription.device_id = device.id
-                       AND subscription.user_id = ownership.user_id
+                     WHERE subscription.user_id = ownership.user_id
                        AND subscription.status IN ('active', 'trialing')
                        AND subscription.starts_at <= now()
                        AND subscription.current_period_end > now()
@@ -826,8 +825,7 @@ class PremiumService:
                    )
                    AND EXISTS (
                      SELECT 1 FROM public.subscription subscription
-                      WHERE subscription.device_id = share.device_id
-                        AND subscription.user_id = share.user_id
+                      WHERE subscription.user_id = share.user_id
                         AND subscription.status IN ('active', 'trialing')
                         AND subscription.starts_at <= now()
                         AND subscription.current_period_end > now()

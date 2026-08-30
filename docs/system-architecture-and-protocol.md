@@ -9,7 +9,7 @@
 
 This is a living architecture document. It explicitly separates behavior already implemented in the test project from behavior proposed for the complete Pinqeva product.
 
-> **Current subscription boundary:** a provisioned tag advertises whenever both finder identities and one valid network selection are present. Subscription state is enforced by the backend for cloud location, retained history, alerts, safe zones, lost mode, recovery sharing/reporting, and vehicle protection. Billing state is never sent to the tag.
+> **Current subscription boundary:** a provisioned tag advertises whenever both finder identities and one valid network selection are present. One account subscription is enforced by the backend for cloud location, retained history, alerts, safe zones, recovery sharing/reporting, and vehicle protection across all currently owned tags. Billing state is never sent to the tag.
 
 ## Motivation
 
@@ -74,7 +74,7 @@ When the tracker is placed in a car, Pinqeva retrieves the latest location repor
 - **Explicit device states:** firmware distinguishes unprovisioned, provisioning, active tracker, bounded maintenance, and error states.
 - **Server authority:** identity, ownership, payments, subscription state, and location access are enforced by the backend.
 - **No invented precision:** the UI shows the timestamp and freshness of crowd-sourced reports instead of presenting them as real-time GPS.
-- **Cloud subscription enforcement:** the backend requires an active/trialing per-device period for location retrieval and premium safety services.
+- **Cloud subscription enforcement:** the backend requires one active/trialing account period for location retrieval and premium safety services across all currently owned tags.
 - **Radio independence:** subscription changes never require physical BLE synchronization and never disable a provisioned tag's public-key advertisement.
 
 ## 2. Hardware Architecture
@@ -110,11 +110,12 @@ The microcontroller is responsible for:
 
 - Initializing non-volatile storage and Bluetooth.
 - Deriving a stable device identifier from the factory MAC address.
-- Determining whether the Apple key, Google EID, network selector, and control key form a complete bundle.
+- Determining whether the Apple key, Google EID, startup-slot preference, and control key form a complete bundle.
 - Starting connectable setup advertising when that bundle is incomplete.
 - Exposing the provisioning GATT service to the mobile application.
-- Validating and persistently storing both finder identities and the write-once selector.
-- Starting non-connectable advertising for exactly one selected network whenever provisioning is complete.
+- Validating and persistently storing both finder identities and the write-once startup-slot preference.
+- Alternating connectable Apple and Google finder advertisements whenever provisioning is complete.
+- Exposing the public DULT non-owner sound command and driving the piezo buzzer.
 - Controlling the status LED and reporting initialization errors.
 
 The microcontroller does not process payments, receive renewals, or decide whether a subscription is paid. The backend is authoritative for billing and cloud feature access. The microcontroller is also not responsible for user authentication, private-key storage, map rendering, or global report retrieval.
@@ -124,18 +125,18 @@ The microcontroller does not process payments, receive renewals, or decide wheth
 | Mode | Advertising | Address | Interval | Connectable | Purpose |
 |---|---|---|---|---|---|
 | Setup | BLE setup advertisement | Public | 100–250 ms | Yes | Allow the mobile client to discover and provision a new tracker. |
-| Tracker | Selected finder-network advertisement | Random, derived from selected identity | 1–2 s in prototype | No | Broadcast exactly one Apple or Google frame after complete provisioning. |
+| Tracker | Alternating Apple and Google advertisements | Random, derived independently from each identity | 250 ms events; 500 ms network slots | Yes | Target two Apple and two Google advertisement events per second and accept DULT sound commands. |
 | Maintenance | Provisioning service plus continuing tracker identity | Dedicated setup address during window | 120-second physical window | Yes | Allow authorized reset, diagnostics, and firmware updates. |
 
 During setup, the current firmware advertises the name `PKV-XXXXXXXXXXXX`, where the final twelve hexadecimal characters are derived from the factory MAC address. This identifier supports discovery and technical support, but it is not proof of ownership.
 
 ### 2.5 Persistent storage
 
-**Current:** firmware stores the factory bootstrap key, Apple advertisement key, Google EID, selected network, and reset-control key as NVS blobs. It rejects invalid values, refuses ordinary replacement, commits and reads back identities, and exposes only their SHA-256 fingerprints. An owner release must carry a valid per-allocation HMAC before both identities, selector, and control key are erased; the factory bootstrap key survives transfer. NVS initialization removes the exact obsolete development `entitlement` blob and otherwise fails closed instead of silently erasing provisioned data.
+**Current:** firmware stores the factory bootstrap key, Apple advertisement key, Google EID, startup-slot preference, and reset-control key as NVS blobs. It rejects invalid values, refuses ordinary replacement, commits and reads back identities, and exposes only their SHA-256 fingerprints. An owner release must carry a valid per-allocation HMAC before both identities, the preference, and control key are erased; the factory bootstrap key survives transfer. No subscription or entitlement state is stored on the tag.
 
 **Proposed:** the storage module provides:
 
-- Atomic storage of both finder identities and one network selection.
+- Atomic storage of both finder identities and one startup-slot preference.
 - A provisioning marker and storage-format version.
 - Detection of erased values such as all `0xFF` bytes and invalid values such as all zeroes.
 - Read-back verification before tracker activation.
@@ -183,11 +184,12 @@ The tracker communicates directly only with nearby BLE clients and the finder ne
 The firmware is divided into these responsibilities:
 
 - **Application entry point:** initializes the LED and starts Bluetooth initialization in a FreeRTOS task.
-- **BLE driver:** configures GAP advertising, registers GATT callbacks, manages connections, and selects setup or tracker behavior.
+- **BLE driver:** configures GAP advertising, registers GATT callbacks, manages connections, and schedules setup or dual-network tracker behavior.
 - **Storage driver:** initializes NVS and will provide validated key save, load, and erase operations.
 - **Utility and LED module:** controls GPIO output and provides visible error feedback.
 - **Provisioning service:** owns the GATT database, characteristic handles, protocol validation, and transition to tracker mode.
-- **Finder-frame selector:** builds either the Apple manufacturer frame or Google Fast Pair service-data frame from the persisted selection.
+- **Finder-frame scheduler:** builds both finder frames and alternates Apple and Google slots every 500 ms.
+- **Buzzer driver:** drives the CPT-9019A-SMT-TR through ESP-IDF LEDC at the configured GPIO and 4 kHz nominal frequency.
 
 ### 3.3 Firmware state model
 
@@ -214,8 +216,8 @@ The mobile client acts as the BLE central and GATT client. It is responsible for
 - Connecting to the selected tracker.
 - Reading device identifier, firmware version, protocol version, and a fresh connection challenge.
 - Relaying that challenge to the authenticated backend and writing the returned one-time authorization proof before sensitive operations.
-- Requesting one Apple advertisement key, one Google development EID, and a selected network from the backend.
-- Writing both identities while selecting Google on Android and Apple on iOS.
+- Requesting one Apple advertisement key, one Google development EID, and a startup-slot preference from the backend.
+- Writing the same dual-identity bundle on Android and iOS; the phone platform does not change tracker behavior.
 - Waiting for explicit success before displaying completion.
 - Registering the device and ownership relationship with the backend.
 - Displaying owned devices, subscription status, latest location, and location history.
@@ -233,12 +235,12 @@ The backend is the authority for identity, ownership, subscriptions, and locatio
 - Authenticating users and validating sessions.
 - Decrypting a device-specific factory bootstrap key only long enough to issue a challenge-bound BLE authorization proof; never returning that reusable key to the app.
 - Atomically starting/resuming permanent per-device key allocations and completing ownership only after tag fingerprint confirmation.
-- Enforcing one active owner and coordinating authenticated release plus subscription cancellation before transfer.
+- Enforcing one active owner and coordinating authenticated release without changing the account subscription.
 - Generating or securely importing finder-network key pairs.
 - Keeping private keys in protected server-side storage.
 - Returning only the advertisement public key to the authorized client.
 - Enforcing active/trialing subscription access for cloud location and premium services without contacting the tag.
-- Retaining accepted reports for at most 30 days and evaluating safe-zone, lost-mode, and movement alerts idempotently.
+- Continuously collecting provider-tagged reports, retaining them for at most 30 days, and evaluating phone-aware safe-zone, separation, and movement alerts idempotently.
 - Issuing hashed, expiring, revocable recovery shares and owner recovery reports.
 - Binding a device identifier to its owner after successful provisioning.
 - Enforcing ownership checks on every device and location request.
@@ -289,10 +291,11 @@ The existing Supabase migrations define these entities:
 | `device` | Tracker identity, name, status, and firmware version. |
 | `ownership` | Time-bounded relationship between a user and a device. |
 | `plan` | Available subscription plan, duration, and price. |
-| `subscription` | Per-device cloud-service billing period; `user_id` records the payer/owner account. |
+| `subscription` | Account cloud-service billing period; nullable `device_id` is historical checkout-origin context only. |
+| `device_location_sync_state` | Backend-only leased collector schedule for eligible premium trackers. |
 | `device_location_report` | Owner/session-bound premium report retained for at most 30 days. |
 | `device_safe_zone` | Premium geofence definition and last evaluated transition state. |
-| `device_protection_profile` | Lost mode, recovery message, and movement/vehicle settings. |
+| `device_protection_profile` | Phone-aware separation and movement/vehicle settings. |
 | `device_recovery_share` | Hashed, expiring, revocable scoped recovery link. |
 | `invoice` | Financial record associated with a subscription. |
 | `payment_event` | Idempotent record of payment-provider webhook events. |
@@ -301,9 +304,13 @@ Row Level Security currently limits profile, ownership, and device reads to the 
 
 ### 3.8 Subscription architecture
 
-A subscription belongs to one physical tag, not to the account as a whole. `subscription.device_id` is the subscribed resource; `subscription.user_id` records the account paying for or currently owning it. One account may therefore hold several current subscriptions, but only one current/nonterminal subscription may exist for any one tag. Terminal `cancelled` and `ended` rows remain as billing history and do not prevent a later subscription for that tag.
+A subscription belongs to `subscription.user_id` and covers every tracker that
+account currently owns. At most one current/nonterminal row may exist per
+account. `subscription.device_id` is nullable historical checkout-origin data,
+not an entitlement key. Terminal `cancelled` and `ended` rows remain as billing
+history and do not prevent a later account subscription.
 
-The backend is authoritative for billing. An active or trialing period unlocks cloud location requests, up to 30 days of retained history, safe-zone alerts, lost mode, movement alerts, vehicle protection, recovery links/reports, and tracker freshness/health information. Expired or absent periods receive HTTP 402 from premium endpoints. Existing configurations remain stored so they can resume after renewal, while expiring share links stop resolving immediately.
+The backend is authoritative for billing. An active or trialing account period unlocks cloud location requests, continuously collected history retained for up to 30 days, phone-aware safe-zone/separation alerts, movement alerts, vehicle protection, recovery links/reports, and tracker freshness/health information. Expired or absent periods receive HTTP 402 from premium endpoints. Existing configurations remain stored so they can resume after renewal, while expiring share links stop resolving immediately and the location collector removes the account's jobs.
 
 The tag has no permanent Internet connection and does not need one for this model. Its finder payload is derived only from the stored identities and selector. A signed Stripe webhook advances or ends cloud access immediately, without a BLE maintenance session. The removed development entitlement transport has no route, table, or radio role in the current system.
 
@@ -335,7 +342,7 @@ The most important trust boundaries are:
 - Between the payment provider and webhook receiver.
 - Between location data and any requester.
 
-Protocol v1.7 retains capability `0x20` for the current non-bonding development transport, `0x40` for authenticated UTC synchronization, `0x80` for signed dual-slot BLE firmware updates, and adds `0x0100` for dual-network provisioning. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
+Protocol v1.8 retains capability `0x20` for the current non-bonding development transport, `0x40` for authenticated UTC synchronization, `0x80` for signed dual-slot BLE firmware updates, `0x0100` for dual-network provisioning, and adds `0x0200` for the implemented public DULT sound command. Manufacturing injects one random 32-byte bootstrap key into each production tag and stores an independently encrypted copy in the backend. On every connection the tag generates a fresh challenge; an authenticated app relays it to the backend and writes back the HMAC proof. Firmware rejects sensitive writes before verification, disconnects an invalid proof immediately, and closes a connection that remains unauthorized for 30 seconds. The checked-in development profile bypasses bootstrap verification and OS-level GATT encryption for hardware testing; production must replace that transport with an audited application-layer confidential channel plus physical presence/OOB.
 
 ## 4. Communication Protocol
 
@@ -358,7 +365,7 @@ The client scans for the service UUID, displays candidate device identifiers, an
 
 ### 4.3 Pinqeva Provisioning GATT service
 
-The following UUIDs define implemented provisioning protocol version 1.7.
+The following UUIDs define implemented provisioning protocol version 1.8.
 
 | Attribute | UUID | Properties | Value |
 |---|---|---|---|
@@ -380,9 +387,18 @@ The following UUIDs define implemented provisioning protocol version 1.7.
 | Firmware Status | `a6f0f00f-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | State, result, and big-endian received-byte count. |
 | Exact Firmware Version | `a6f0f010-3e4d-4b1a-9c2e-72d24c8f0a01` | Read | Three bytes: major, minor, and patch. |
 | Google Key Fingerprint | `a6f0f011-3e4d-4b1a-9c2e-72d24c8f0a01` | Read; application-channel protection required in production | SHA-256 of the 20-byte Google EID, or 32 zero bytes when empty. |
-| Finding Network | `a6f0f012-3e4d-4b1a-9c2e-72d24c8f0a01` | Read/write with response | One byte: `0x00` empty, `0x01` Apple, or `0x02` Google. Write-once until authenticated reset. |
+| Finding Network | `a6f0f012-3e4d-4b1a-9c2e-72d24c8f0a01` | Read/write with response | Legacy one-byte startup preference: `0x00` empty, `0x01` Apple first, or `0x02` Google first. Both networks are advertised. Write-once until authenticated reset. |
 
 GATT values are raw binary, not Base64 text. The client requests a suitable MTU, while firmware supports handle-bound prepared writes for every sensitive value, including authorization proof, UTC value, both identities, reset command, and firmware manifest. Partial, mixed-handle, or uncommitted data is zeroed and never reaches storage.
+
+The tracker also exposes the public DULT service
+`15190001-12F4-C226-88ED-2AC5579F2A85` and non-owner accessory-control
+characteristic `8E0C0001-1D68-FB92-BF61-48377421680E`. The implemented subset accepts
+little-endian Sound Start (`0x0300`) and Sound Stop (`0x0301`), indicates command
+responses (`0x0302`), and indicates natural or requested completion (`0x0303`). A
+start drives the configured buzzer for at most 12 seconds. This public anti-stalking
+command is not a substitute for Apple MFi owner Play Sound or Google's certified
+Find Hub ring path.
 
 ### 4.4 Protocol Information value
 
@@ -398,7 +414,7 @@ An incompatible major version stops provisioning. A newer minor version can be a
 
 Capability flags are little-endian. The implemented update path requires both
 the challenge/proof flag `0x0010` and signed-OTA flag `0x0080`. Dual setup also
-requires `0x0100`. The
+requires `0x0100`; the public DULT sound subset is advertised with `0x0200`. The
 Protocol Information value carries only firmware major and minor for backward
 compatibility; update clients read the exact three-byte Firmware Version
 characteristic before comparing or acknowledging a release.
@@ -430,39 +446,48 @@ Provisioning Status contains two bytes: one state byte followed by one result by
 
 ### 4.6 Key lifecycle
 
-The finder allocation contains an Apple P-224 key pair, a Google 32-byte identity key with a derived 20-byte EID, and one selected network. Its lifecycle is deliberately separate from the factory bootstrap key:
+The finder allocation contains an Apple P-224 key pair, a Google 32-byte identity key with a derived 20-byte EID, and one startup-slot preference. Its lifecycle is deliberately separate from the factory bootstrap key:
 
 1. Manufacturing injects a unique bootstrap key into protected tag NVS and stores an encrypted backend copy. Owner reset never erases this factory key.
 2. For each connection, the backend returns only a challenge-bound HMAC proof; the app never receives the reusable bootstrap key.
 3. After firmware accepts the proof, the backend locks the device and checks the permanent allocation against both tag-read fingerprints and selector.
 4. If an allocation exists, the backend resumes that exact bundle. It generates material only when no live allocation exists and all three tag values report empty.
 5. The backend encrypts both private identity secrets with session-bound AES-256-GCM and binds the allocation to the device in the same transaction.
-6. The backend sends only the 28-byte Apple advertisement key, 20-byte Google EID, selected network, and domain-separated control key to the app.
+6. The backend sends only the 28-byte Apple advertisement key, 20-byte Google EID, startup-slot preference, and domain-separated control key to the app.
 7. The mobile client installs the control key, Google EID, selector, and Apple key over protected BLE. Each value is write-once and an identical interrupted retry is accepted.
 8. The tracker validates, stores, reads back, and exposes only both SHA-256 fingerprints plus the selector.
 9. Backend ownership is created only after the complete binding is relayed and matched.
-10. The tracker derives its address and emits only the selected network's advertising payload.
-11. The backend routes report retrieval to the matching provider, subject to cloud subscription access.
+10. The tracker derives an address for each identity and alternates both advertising payloads.
+11. The backend queries every configured provider concurrently, validates all reports, and projects the newest report across Apple and Google, subject to account-level cloud subscription access.
 
 Neither the Apple private scalar nor Google identity key may be written to the tracker, displayed in administration, logged, or stored in ordinary mobile application storage.
 
-### 4.7 Switchable finding-network protocol
+### 4.7 Experimental dual finding-network scheduler
 
-The tag stores both public advertising identities but has exactly one active
-network. The Apple frame is a 31-byte manufacturer advertisement using company
-identifier `0x004C`, offline-finding type `0x12`, and the 28-byte P-224 X
-coordinate. The Google development frame is Fast Pair service data beginning
-`AA FE 40` followed by a 20-byte secp160r1 EID. Advertising both frames at once
-is forbidden.
+The tag stores both public advertising identities. The Apple slot is a 31-byte
+manufacturer advertisement using company identifier `0x004C`, offline-finding
+type `0x12`, and the 28-byte P-224 X coordinate. The Google slot is the 29-byte
+legacy Find Hub Network frame `02 01 06 19 16 AA FE 41`, followed by the 20-byte
+secp160r1 EID and a hashed-flags byte. One legacy BLE advertising set alternates
+between Apple and Google every 500 ms with a 250 ms event interval, targeting two
+advertisements per network per second. The stored preference only decides which
+slot is emitted first after boot.
+
+This dual schedule is an interoperability experiment, not a certifiable product
+claim. Google's published Find Hub Network specification says a switchable
+accessory must activate only one network at a time. Apple owner-network accessory
+behavior requires the MFi/Find My program. Shipping dual broadcasts therefore
+requires written platform approval, RF/power testing, anti-stalking review, and
+the official onboarding/certification paths.
 
 The current Google EID is derived from the encrypted 32-byte identity key using
-the published AES-256/secp160r1 algorithm at counter zero. This is sufficient
-for protocol development and an isolated report-provider experiment, but not a
-certified rotating Find Hub accessory. Production requires Google partner
-onboarding, Fast Pair/Find Hub Network behavior, rotating EIDs, ring support,
-unwanted-tracking protections, and certification. The report API fails closed
-unless the selected network's provider is configured; it never queries Apple
-for a Google-selected tag.
+the published AES-256/secp160r1 algorithm at counter zero. The GitHub bridge
+refreshes every registered development identity in one account-wide background
+operation every three days, before the four-day deadline, while the
+20-byte value stored in the tag remains unchanged; that avoids recurring BLE
+writes but remains a development integration with no Google service guarantee.
+The backend attempts both configured providers for every location refresh and
+still returns one provider's valid reports if the other is unavailable.
 
 ### 4.8 Signed firmware-update protocol
 
@@ -527,7 +552,7 @@ sequenceDiagram
     App->>API: Complete claim (complete binding + completion capability)
     API->>Store: Create ownership
     API-->>App: Registered device (claimed; next action ready)
-    Tag-->>App: Selected finder advertising already enabled
+    Tag-->>App: Dual finder advertising already enabled
 ```
 
 The unpaid request expires after a bounded short-lived window. A paid request receives the
@@ -538,16 +563,19 @@ never causes automatic regeneration. The mobile client polls request status
 instead of depending on a socket connection; the signed provider webhook is
 the source of truth and polling only observes the committed state.
 
-Transfer is another two-phase operation: the current owner requests a reset command after both fingerprints and the selector match, the tag verifies the HMAC and erases both identities, selector, and control key, and the app confirms all three public values are empty. Only then does the backend end ownership, revoke the allocation, cancel local subscriptions, queue external billing cancellation, and allow a new owner to generate a fresh dual-network bundle.
+Transfer is another two-phase operation: the current owner requests a reset command after both fingerprints and the selector match, the tag verifies the HMAC and erases both identities, selector, and control key, and the app confirms all three public values are empty. Only then does the backend end ownership, revoke the allocation, clear that tag's retained location binding, and allow a new owner to generate a fresh dual-network bundle. The former owner's account subscription is unchanged.
 
 ### 4.10 Tracker advertising protocol
 
-The firmware constructs either the 31-byte Apple manufacturer frame or the
-28-byte Google service-data frame described in section 4.7. Both public
-identities and one valid selector are required before tracker mode starts.
-Subscription state remains in the backend and never changes the selected frame.
+The firmware constructs the 31-byte Apple manufacturer frame and the 29-byte
+Google service-data frame described in section 4.7, then time-slices them on one
+legacy advertising set. Both public identities and one valid startup preference
+are required before tracker mode starts. Account subscription state remains in
+the backend and never changes either frame or requests a tag synchronization.
 
-Tracker advertising is non-connectable in the prototype. Future nearby commands require a controlled connectable window, maintenance mode, or alternative scheduling strategy. That choice affects both battery life and security.
+Tracker advertising is connectable so the public DULT sound service can receive
+anti-stalking sound commands. Connection scheduling, battery life, abuse resistance,
+and compatibility must be measured on physical hardware before production.
 
 ### 4.11 Proposed application HTTPS API
 
@@ -572,12 +600,14 @@ Tracker advertising is non-connectable in the prototype. Future nearby commands 
 | Read premium capability flags | `GET /v1/devices/{deviceId}/premium/features` | Active owner |
 | Read tracker protection overview | `GET /v1/devices/{deviceId}/premium/overview` | Active subscribed owner |
 | Manage safe zones | `GET/POST/PATCH/DELETE /v1/devices/{deviceId}/safe-zones` | Active subscribed owner |
-| Manage lost/vehicle protection | `GET/PATCH /v1/devices/{deviceId}/protection` | Active subscribed owner |
+| Manage separation/movement/vehicle protection | `GET/PATCH /v1/devices/{deviceId}/protection` | Active owner whose account is subscribed |
 | Create/list/revoke recovery shares | `/v1/devices/{deviceId}/recovery-shares` | Active subscribed owner |
 | Resolve scoped recovery share | `POST /v1/recovery-shares/resolve` | Valid hashed-token capability in the non-logged request body |
 | Generate recovery report | `GET /v1/devices/{deviceId}/recovery-report` | Active subscribed owner |
 | List plans | `GET /v1/plans` | Public or authenticated according to policy |
-| Manage subscription | `POST /v1/subscriptions` | Authenticated owner |
+| Read account subscription | `GET /v1/subscription` | Authenticated account |
+| Start account subscription Checkout | `POST /v1/subscription/checkout` | Authenticated account + server plan code |
+| Open account billing portal | `POST /v1/subscription/portal` | Authenticated account with manageable subscription |
 | Check firmware release | `GET /v1/devices/{deviceId}/firmware` | Active owner |
 | Start/reconcile firmware update | `POST /v1/devices/{deviceId}/firmware/session` | Active owner + fresh tag challenge |
 | Download firmware image | `GET /v1/devices/{deviceId}/firmware/image` | Active owner + exact release version |
@@ -594,7 +624,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - A storage failure keeps the device in setup mode and activates an error indication.
 - An unexpected disconnect restarts setup advertising.
 - A provisioned device rejects key replacement unless an authorized reset flow is active.
-- A complete stored bundle resumes its selected tracker advertisement directly after reboot.
+- A complete stored bundle resumes alternating Apple and Google advertisements directly after reboot.
 - Cloud premium APIs reject expired/absent subscriptions without changing the tag.
 - Renewal advances cloud access immediately after the authoritative Stripe event and requires no BLE session.
 - An interrupted OTA transfer leaves the current boot partition selected; an invalid new image rolls back, and an interrupted final acknowledgement can be reconciled without reflashing.
@@ -611,14 +641,15 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Device identifier derived from the factory MAC address.
 - Setup, key-based tracker, and bounded physical maintenance modes for the provisioning slice.
 - Connectable advertisement containing the provisioning service UUID, with the `PKV-` name in scan response data.
-- Protocol-v1.7 GATT service with per-connection challenge/proof, explicit no-bond development capability, dual-network identity characteristics, write-once selector, authenticated UTC synchronization, signed OTA, and prepared writes.
+- Protocol-v1.8 GATT service with per-connection challenge/proof, explicit no-bond development capability, dual-network identity characteristics, write-once startup preference, authenticated UTC synchronization, signed OTA, public DULT sound commands, and prepared writes.
 - Validated factory-bootstrap plus one-time NVS identity/control persistence, complete read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
 - React Native claim/release services that verify both fingerprints and the selector, avoid replacement, install partial retries safely, and confirm complete reset before backend release.
-- Apple or Google advertising selected at provisioning, restored after reboot, and independent of subscription changes. The old entitlement transport is removed.
-- Cloud-side premium feature access, 30-day owner/session-bound history, safe-zone/lost/movement alerts, vehicle protection, recovery shares/reports, and privacy deletion.
-- Authenticated API that issues nonce-bound proofs, generates Apple P-224 and Google EIK/EID material once, encrypts private identities, binds allocations atomically, routes reports by selected network, completes one ownership, and performs two-phase release.
+- Experimental 500 ms Apple/Google time-sliced advertising, restored after reboot and independent of subscription changes. The old entitlement transport is removed.
+- CPT-9019A-SMT-TR LEDC driver and the public DULT non-owner sound start/stop/complete subset.
+- Cloud-side account premium feature access, 30-day owner/session-bound provider history, safe-zone/separation/movement alerts, vehicle protection, recovery shares/reports, and privacy deletion.
+- Authenticated API that issues nonce-bound proofs, generates Apple P-224 and Google EIK/EID material once, encrypts private identities, binds allocations atomically, queries both configured report providers, deterministically projects the newest report, completes one ownership, and performs two-phase release.
 - Supabase migrations for backend-only bootstrap credentials, encrypted key custody, permanent allocation markers, one active owner, release audit, subscription cancellation, and provider outbox delivery.
-- Classic ESP32 build baseline verified with ESP-IDF 5.4.
+- Protocol-v1.8/firmware-v0.5.0 classic ESP32 build verified with ESP-IDF 5.4.4.
 - Experimental key generation and report-retrieval scripts.
 - Supabase tables for profiles, devices, ownership, plans, subscriptions, invoices, and payment events.
 - Initial Row Level Security for profiles, ownership, and devices.
@@ -627,24 +658,24 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 
 - Physical-presence gating, MITM-resistant BLE association, and tag-signed provisioning receipts beyond the implemented backend-authentication proof.
 - Product mobile UI around the checked-in provisioning service.
-- Production KMS/HSM private-key wrapping and report-worker integration.
-- Customer-facing UI for the newly implemented safe-zone, recovery, lost-mode, and vehicle-protection APIs.
-- Scheduled report polling beyond the existing authenticated on-demand report requests.
+- Production KMS/HSM private-key wrapping and a horizontally scalable report-worker deployment.
+- Customer-facing UI for the newly implemented safe-zone, recovery-report, trusted-sharing, and vehicle-protection APIs.
+- Production scheduling, batching, backoff, and capacity validation for the implemented durable dual-provider polling worker.
 - Physical key-based advertising integration testing and production-grade payment/provider operations.
 - Administrative roles, policies, audit events, and operator UI.
-- Official Apple and Google accessory onboarding, rotating Google EIDs, ring/DULT behavior, and production power, RF, security, anti-stalking, and certification tests.
+- Official Apple and Google accessory onboarding, certified owner ring/play-sound behavior, complete DULT compliance, rotating Google EIDs, and production power, RF, security, anti-stalking, and certification tests.
 
 ### 5.3 Next milestone
 
 The next milestone validates authorization and the key-based subscription boundary on physical hardware:
 
 1. Add an authenticated application-layer encrypted no-bond channel, physical presence/OOB, and a cryptographic provisioning receipt.
-2. Reboot the tracker and verify that both identities persist while only the selected network resumes, without billing synchronization.
+2. Reboot the tracker and verify that both identities persist and both schedules resume, without billing synchronization.
 3. Expire and renew the cloud subscription and verify that premium APIs stop/resume while the BLE finder payload remains unchanged.
-4. Validate Apple selection from iOS, Google selection from Android, scan, persistence, reboot, maintenance, reset, and OTA on the target ESP32.
+4. Validate identical iOS/Android provisioning plus both Apple and Google captures, persistence, reboot, DULT sound, maintenance, reset, and OTA on the target ESP32.
 5. Replace the development envelope key with KMS/HSM-backed per-record data keys.
 
-The milestone is complete when a blank tracker can be provisioned from either mobile platform, survives a reboot, advertises exactly one selected finder identity regardless of billing state, and exposes premium cloud features only during an active/trialing period under the correct authenticated account.
+The milestone is complete when a blank tracker can be provisioned identically from either mobile platform, survives a reboot, emits the experimental dual finder schedule regardless of billing state, and exposes premium cloud features for all trackers only while the owning account is active or trialing.
 
 ## 6. Conclusion
 
@@ -652,4 +683,4 @@ Pinqeva is an end-to-end Bluetooth tracking platform rather than only an embedde
 
 The architecture separates low-power hardware from mobile onboarding, cloud location processing, subscriptions, vehicle and map presentation, and administration. The tracker stores only the material needed to advertise and reset safely, while the backend protects the private key and controls paid cloud access.
 
-The current firmware distinguishes a complete dual-network identity bundle from a device that must remain in setup mode. A complete bundle and selector are sufficient for one-network finder advertising after provisioning and reboot. Subscription expiry pauses location retrieval and premium safety services in the backend, not the radio. The remaining work includes official finder-program integration, rotating Google identities, an authenticated and confidential no-bond transport with physical presence/OOB, customer UI wiring for premium APIs, and physical hardware testing.
+The current firmware distinguishes a complete dual-network identity bundle from a device that must remain in setup mode. A complete bundle and startup preference are sufficient for experimental alternating Apple and Google advertising after provisioning and reboot. Subscription expiry pauses location retrieval and premium safety services for the account in the backend, not the radio. The remaining work includes official finder-program integration, a certifiable Google rotation design, certified owner sound, an authenticated and confidential no-bond transport with physical presence/OOB, customer UI wiring for premium APIs, and physical hardware testing.

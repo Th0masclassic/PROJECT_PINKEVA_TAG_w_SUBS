@@ -53,6 +53,11 @@ class FinderReport:
     confidence: int
     status: int
     timestamp: datetime
+    # Stable provider identity for overlapping polling windows. Apple does
+    # not expose a separate report id after decryption, so this is SHA-256 of
+    # the encrypted report payload. Other providers may supply their own
+    # already-hashed source identity.
+    source_fingerprint: bytes | None = None
 
 
 FindMyCredentials = AppleSession
@@ -140,6 +145,7 @@ def _decrypt_report(private_key: bytes, payload: bytes) -> FinderReport:
         confidence=confidence,
         status=status,
         timestamp=report_time,
+        source_fingerprint=hashlib.sha256(payload).digest(),
     )
 
 

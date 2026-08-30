@@ -318,12 +318,11 @@ class AdminService:
                       FROM public.subscription subscription
                      WHERE subscription.status NOT IN ('cancelled', 'ended')
                        AND NOT EXISTS (
-                         SELECT 1 FROM public.ownership ownership
-                          WHERE ownership.user_id = subscription.user_id
-                            AND ownership.device_id = subscription.device_id
-                            AND ownership.ended_at IS NULL
+                         SELECT 1 FROM public.profiles profile
+                          WHERE profile.id = subscription.user_id
+                            AND profile.account_status = 'active'
                        )
-                  ) AS current_subscriptions_without_active_ownership,
+                  ) AS current_subscriptions_without_active_account,
                   (
                     SELECT count(*)
                       FROM public.subscription_cancellation_outbox cancellation
@@ -380,8 +379,8 @@ class AdminService:
             "active_ownership_device_state_mismatches": int(
                 result["active_ownership_device_state_mismatches"]
             ),
-            "current_subscriptions_without_active_ownership": int(
-                result["current_subscriptions_without_active_ownership"]
+            "current_subscriptions_without_active_account": int(
+                result["current_subscriptions_without_active_account"]
             ),
             "failed_cancellation_jobs": int(result["failed_cancellation_jobs"]),
             "overdue_provisioning_requests": int(
@@ -392,7 +391,7 @@ class AdminService:
             "configured_owners_missing_profiles",
             "claimed_devices_without_active_owner",
             "active_ownership_device_state_mismatches",
-            "current_subscriptions_without_active_ownership",
+            "current_subscriptions_without_active_account",
         }
         critical_issues = sum(checks[name] for name in critical_names)
         warnings = sum(
@@ -483,28 +482,27 @@ class AdminService:
             profile = await profile_cursor.fetchone()
             if profile is None:
                 raise AdminError("ADMIN_RESOURCE_NOT_FOUND", 404)
+            subscription_cursor = await connection.execute(
+                """
+                SELECT id, status, plan_code, current_period_end, source
+                  FROM public.subscription
+                 WHERE user_id = %s
+                   AND status NOT IN ('cancelled', 'ended')
+                 ORDER BY created_at DESC
+                 LIMIT 1
+                """,
+                (user_id,),
+            )
+            subscription = await subscription_cursor.fetchone()
             cursor = await connection.execute(
                 """
                 SELECT device.id, device.serial_number, device.name,
                        device.status, device.firmware_version,
                        device.last_latitude, device.last_longitude,
                        device.last_location_at, device.last_place,
-                       ownership.started_at,
-                       subscription.id AS subscription_id,
-                       subscription.status AS subscription_status,
-                       subscription.plan_code,
-                       subscription.current_period_end,
-                       subscription.source AS subscription_source
+                       ownership.started_at
                   FROM public.ownership ownership
                   JOIN public.device device ON device.id = ownership.device_id
-                  LEFT JOIN LATERAL (
-                    SELECT current_subscription.*
-                      FROM public.subscription current_subscription
-                     WHERE current_subscription.device_id = device.id
-                       AND current_subscription.status NOT IN ('cancelled', 'ended')
-                     ORDER BY current_subscription.created_at DESC
-                     LIMIT 1
-                  ) subscription ON true
                  WHERE ownership.user_id = %s AND ownership.ended_at IS NULL
                  ORDER BY ownership.started_at DESC
                 """,
@@ -512,6 +510,7 @@ class AdminService:
             )
             return {
                 "user": dict(profile),
+                "subscription": dict(subscription) if subscription else None,
                 "trackers": [dict(row) for row in await cursor.fetchall()],
             }
 
@@ -789,22 +788,21 @@ class AdminService:
         principal: Principal,
         *,
         user_id: UUID,
-        device_id: UUID,
         grant: AdminSubscriptionGrant,
         request_id: UUID,
     ) -> dict[str, Any]:
         await self.role_for(database, principal)
         subscription_id = uuid4()
         async with database.transaction() as connection:
-            ownership = await connection.execute(
+            account = await connection.execute(
                 """
-                SELECT 1 FROM public.ownership
-                 WHERE user_id = %s AND device_id = %s AND ended_at IS NULL
+                SELECT 1 FROM public.profiles
+                 WHERE id = %s AND account_status = 'active'
                  FOR UPDATE
                 """,
-                (user_id, device_id),
+                (user_id,),
             )
-            if await ownership.fetchone() is None:
+            if await account.fetchone() is None:
                 raise AdminError("ADMIN_RESOURCE_NOT_FOUND", 404)
             plan_cursor = await connection.execute(
                 """
@@ -824,17 +822,16 @@ class AdminService:
                         current_period_end, cancel_at_period_end, source,
                         created_by_admin_user_id
                     ) VALUES (
-                        %s, %s, %s, %s, 'active', now(),
+                        %s, %s, NULL, %s, 'active', now(),
                         now() + (%s * interval '1 month'), false,
                         'admin_grant', %s
                     )
-                    RETURNING id, user_id, device_id, plan_code, status,
+                    RETURNING id, user_id, plan_code, status,
                               starts_at, current_period_end, source
                     """,
                     (
                         subscription_id,
                         user_id,
-                        device_id,
                         grant.plan_code,
                         plan["duration_months"],
                         principal.user_id,
@@ -852,8 +849,8 @@ class AdminService:
                 request_id=request_id,
                 details={
                     "user_id": str(user_id),
-                    "device_id": str(device_id),
                     "plan_code": grant.plan_code,
+                    "scope": "account",
                 },
             )
             return dict(result)
@@ -1484,12 +1481,11 @@ async def admin_update_price(
 
 
 @router.post(
-    "/users/{user_id}/devices/{device_id}/subscriptions",
+    "/users/{user_id}/subscriptions",
     status_code=status.HTTP_201_CREATED,
 )
 async def admin_grant_subscription(
     user_id: UUID,
-    device_id: UUID,
     grant: AdminSubscriptionGrant,
     request: Request,
     principal: AuthenticatedPrincipal,
@@ -1498,7 +1494,6 @@ async def admin_grant_subscription(
         _database(request),
         principal,
         user_id=user_id,
-        device_id=device_id,
         grant=grant,
         request_id=_request_id(request),
     )

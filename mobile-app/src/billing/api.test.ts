@@ -3,17 +3,14 @@ import test from 'node:test';
 
 import {
   BillingApiError,
-  createDeviceCheckout,
-  createDevicePortal,
-  getDeviceSubscription,
-  parseDeviceSubscription,
+  createAccountCheckout,
+  createAccountPortal,
+  getAccountSubscription,
+  parseAccountSubscription,
   safeBillingErrorCode,
 } from './api.ts';
 
-const DEVICE_ID = '11111111-1111-4111-8111-111111111111';
-
 const subscriptionPayload = {
-  device_id: DEVICE_ID,
   status: 'active',
   plan_code: 'monthly_basic',
   plan_name: 'Monthly',
@@ -38,9 +35,8 @@ const subscriptionPayload = {
   ],
 };
 
-test('parses the per-device subscription contract', () => {
-  assert.deepEqual(parseDeviceSubscription(subscriptionPayload, DEVICE_ID), {
-    deviceId: DEVICE_ID,
+test('parses the account subscription contract', () => {
+  assert.deepEqual(parseAccountSubscription(subscriptionPayload), {
     status: 'active',
     planCode: 'monthly_basic',
     planName: 'Monthly',
@@ -66,18 +62,14 @@ test('parses the per-device subscription contract', () => {
   });
 });
 
-test('rejects a subscription for a different device', () => {
+test('rejects malformed account subscription plans', () => {
   assert.throws(
-    () =>
-      parseDeviceSubscription(
-        subscriptionPayload,
-        '22222222-2222-4222-8222-222222222222',
-      ),
+    () => parseAccountSubscription({ ...subscriptionPayload, available_plans: [null] }),
     (error) => error instanceof BillingApiError && error.code === 'invalid_response',
   );
 });
 
-test('API calls send bearer auth and exact per-tag routes', async () => {
+test('API calls send bearer auth and exact account routes', async () => {
   const originalFetch = globalThis.fetch;
   const calls: { input: string; init?: RequestInit }[] = [];
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -102,16 +94,16 @@ test('API calls send bearer auth and exact per-tag routes', async () => {
 
   try {
     const config = { baseUrl: 'https://api.pinkeva.example' };
-    await getDeviceSubscription(config, 'access-token', DEVICE_ID);
-    await createDeviceCheckout(config, 'access-token', DEVICE_ID, 'monthly_basic');
-    await createDevicePortal(config, 'access-token', DEVICE_ID);
-    await createDevicePortal(config, 'access-token', DEVICE_ID, 'cancel');
+    await getAccountSubscription(config, 'access-token');
+    await createAccountCheckout(config, 'access-token', 'monthly_basic');
+    await createAccountPortal(config, 'access-token');
+    await createAccountPortal(config, 'access-token', 'cancel');
 
     assert.deepEqual(calls.map((call) => call.input), [
-      `https://api.pinkeva.example/v1/devices/${DEVICE_ID}/subscription`,
-      `https://api.pinkeva.example/v1/devices/${DEVICE_ID}/subscription/checkout`,
-      `https://api.pinkeva.example/v1/devices/${DEVICE_ID}/subscription/portal`,
-      `https://api.pinkeva.example/v1/devices/${DEVICE_ID}/subscription/portal`,
+      'https://api.pinkeva.example/v1/subscription',
+      'https://api.pinkeva.example/v1/subscription/checkout',
+      'https://api.pinkeva.example/v1/subscription/portal',
+      'https://api.pinkeva.example/v1/subscription/portal',
     ]);
     for (const call of calls) {
       assert.equal((call.init?.headers as Record<string, string>).Authorization, 'Bearer access-token');
@@ -135,7 +127,7 @@ test('maps server errors without exposing response details', async () => {
     })) as typeof fetch;
   try {
     await assert.rejects(
-      () => getDeviceSubscription({ baseUrl: 'https://api.example' }, 'token', DEVICE_ID),
+      () => getAccountSubscription({ baseUrl: 'https://api.example' }, 'token'),
       (error) =>
         error instanceof BillingApiError &&
         error.code === 'authentication' &&
@@ -151,17 +143,6 @@ test('safe errors expose stable categories only', () => {
   assert.equal(safeBillingErrorCode(new Error('private transport detail')), 'network');
 });
 
-test('rejects non-UUID device IDs before making a billing request', async () => {
-  await assert.rejects(
-    () => getDeviceSubscription(
-      { baseUrl: 'https://api.example' },
-      'token',
-      'local-demo-id',
-    ),
-    (error) => error instanceof BillingApiError && error.code === 'invalid_response',
-  );
-});
-
 test('accepts only the expected Stripe host for each billing destination', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () =>
@@ -172,16 +153,15 @@ test('accepts only the expected Stripe host for each billing destination', async
   try {
     await assert.rejects(
       () =>
-        createDeviceCheckout(
+        createAccountCheckout(
           { baseUrl: 'https://api.example' },
           'token',
-          DEVICE_ID,
           'monthly_basic',
         ),
       (error) => error instanceof BillingApiError && error.code === 'invalid_response',
     );
     await assert.rejects(
-      () => createDevicePortal({ baseUrl: 'https://api.example' }, 'token', DEVICE_ID),
+      () => createAccountPortal({ baseUrl: 'https://api.example' }, 'token'),
       (error) => error instanceof BillingApiError && error.code === 'invalid_response',
     );
   } finally {
@@ -192,10 +172,9 @@ test('accepts only the expected Stripe host for each billing destination', async
 test('rejects plan codes outside the backend contract', async () => {
   await assert.rejects(
     () =>
-      createDeviceCheckout(
+      createAccountCheckout(
         { baseUrl: 'https://api.example' },
         'token',
-        DEVICE_ID,
         '_not-valid',
       ),
     (error) => error instanceof BillingApiError && error.code === 'invalid_response',

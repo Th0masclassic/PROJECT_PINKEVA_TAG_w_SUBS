@@ -17,8 +17,8 @@ from psycopg.types.json import Jsonb
 from .config import Settings
 from .database import Database
 from .models import (
+    AccountSubscriptionResponse,
     BillingUrlResponse,
-    DeviceSubscriptionResponse,
     DeviceProvisioningRequestResponse,
     PlanSummary,
     ProvisioningRequestCheckoutResponse,
@@ -70,7 +70,7 @@ class BillingEventDeferred(RuntimeError):
 class CheckoutPreparation:
     reservation_id: UUID
     user_id: UUID
-    device_id: UUID
+    device_id: UUID | None
     plan_code: str
     price_id: str
     product_id: str
@@ -183,17 +183,25 @@ def _invoice_subscription_id(invoice: Mapping[str, Any]) -> str | None:
     return subscription_id
 
 
-def _binding(metadata_value: Any) -> tuple[UUID, UUID, str, UUID]:
+def _binding(metadata_value: Any) -> tuple[UUID, UUID | None, str, UUID]:
     if not isinstance(metadata_value, Mapping):
         raise BillingEventIgnored("missing binding")
     try:
         user_id = UUID(str(metadata_value["user_id"]))
-        device_id = UUID(str(metadata_value["device_id"]))
         checkout_id = UUID(str(metadata_value["checkout_id"]))
         plan_code = str(metadata_value["plan_code"])
     except (KeyError, TypeError, ValueError):
         raise BillingEventIgnored("invalid binding") from None
-    if not plan_code or len(plan_code) > 64:
+    device_value = metadata_value.get("device_id")
+    try:
+        device_id = UUID(str(device_value)) if device_value is not None else None
+    except ValueError:
+        raise BillingEventIgnored("invalid binding") from None
+    if (
+        not plan_code
+        or len(plan_code) > 64
+        or (device_id is None and metadata_value.get("scope") != "account")
+    ):
         raise BillingEventIgnored("invalid binding")
     return user_id, device_id, plan_code, checkout_id
 
@@ -283,7 +291,7 @@ class StripeGateway:
     ) -> Mapping[str, Any]:
         metadata = {
             "user_id": str(preparation.user_id),
-            "device_id": str(preparation.device_id),
+            "scope": "account",
             "plan_code": preparation.plan_code,
             "checkout_id": str(preparation.reservation_id),
         }
@@ -577,11 +585,10 @@ class BillingService:
         ):
             raise BillingError("BILLING_UNAVAILABLE", 503)
 
-    async def get_device_subscription(
-        self, database: Database, *, user_id: UUID, device_id: UUID
-    ) -> DeviceSubscriptionResponse:
+    async def get_account_subscription(
+        self, database: Database, *, user_id: UUID
+    ) -> AccountSubscriptionResponse:
         async with database.transaction() as connection:
-            await self._require_owner(connection, user_id, device_id)
             plan_query = await connection.execute(
                 """
                 SELECT code, name, duration_months, price_cents, currency,
@@ -617,13 +624,12 @@ class BillingService:
                   LEFT JOIN public.plan_price_history history
                     ON history.plan_code = s.plan_code
                    AND history.provider_price_id = s.provider_price_id
-                 WHERE s.device_id = %s
-                   AND s.user_id = %s
+                 WHERE s.user_id = %s
                    AND s.status NOT IN ('cancelled', 'ended')
                  ORDER BY s.created_at DESC
                  LIMIT 1
                 """,
-                (device_id, user_id),
+                (user_id,),
             )
             subscription = await subscription_query.fetchone()
 
@@ -645,11 +651,6 @@ class BillingService:
                     ],
                 }
             )
-        if not await self._ownership_is_active(
-            database, user_id=user_id, device_id=device_id
-        ):
-            raise BillingError("TAG_UNAVAILABLE", 404)
-
         available_plans = [
             PlanSummary(
                 code=row["code"],
@@ -665,13 +666,11 @@ class BillingService:
             for row in configured_plans
         ]
         if subscription is None:
-            return DeviceSubscriptionResponse(
-                device_id=device_id,
+            return AccountSubscriptionResponse(
                 status="none",
                 available_plans=available_plans,
             )
-        return DeviceSubscriptionResponse(
-            device_id=device_id,
+        return AccountSubscriptionResponse(
             status=subscription["status"],
             plan_code=subscription["plan_code"],
             plan_name=subscription["plan_name"],
@@ -942,14 +941,36 @@ class BillingService:
         subscription_query = await connection.execute(
             """
             SELECT 1 FROM public.subscription
-             WHERE device_id = %s
+             WHERE user_id = %s
                AND status NOT IN ('cancelled', 'ended')
              FOR UPDATE
             """,
-            (request["device_id"],),
+            (user_id,),
         )
         if await subscription_query.fetchone() is not None:
             raise BillingError("SUBSCRIPTION_EXISTS", 409)
+
+        competing_provisioning_query = await connection.execute(
+            """
+            SELECT 1 FROM public.provisioning_request
+             WHERE user_id = %s AND id <> %s
+               AND status IN ('creating', 'open')
+             FOR UPDATE
+            """,
+            (user_id, request_id),
+        )
+        if await competing_provisioning_query.fetchone() is not None:
+            raise BillingError("CHECKOUT_IN_PROGRESS", 409)
+        account_checkout_query = await connection.execute(
+            """
+            SELECT 1 FROM public.billing_checkout_session
+             WHERE user_id = %s AND status IN ('creating', 'pending')
+             FOR UPDATE
+            """,
+            (user_id,),
+        )
+        if await account_checkout_query.fetchone() is not None:
+            raise BillingError("CHECKOUT_IN_PROGRESS", 409)
 
         plan_query = await connection.execute(
             """
@@ -1118,7 +1139,7 @@ class BillingService:
     ) -> None:
         request_query = await connection.execute(
             """
-            SELECT status, subscription_id, provider_subscription_id
+            SELECT status
               FROM public.provisioning_request
              WHERE id = %s
              FOR UPDATE
@@ -1136,30 +1157,9 @@ class BillingService:
             """,
             (request_id,),
         )
-        if request["subscription_id"] is None:
-            return
-        subscription_query = await connection.execute(
-            """
-            UPDATE public.subscription
-               SET status = 'ended', cancel_at_period_end = false,
-                   ended_reason = 'provisioning_request_expired', updated_at = now()
-             WHERE id = %s AND status NOT IN ('cancelled', 'ended')
-             RETURNING id, provider_subscription_id
-            """,
-            (request["subscription_id"],),
-        )
-        subscription = await subscription_query.fetchone()
-        provider_subscription_id = (
-            subscription["provider_subscription_id"]
-            if subscription is not None
-            else request["provider_subscription_id"]
-        )
-        if provider_subscription_id:
-            await self._enqueue_former_owner_cancellation(
-                connection,
-                subscription_id=request["subscription_id"],
-                provider_subscription_id=provider_subscription_id,
-            )
+        # A provisioning reservation belongs to one tag, but billing belongs
+        # to the account. Letting this reservation expire must never end the
+        # account plan or remove premium access from its other tags.
 
     async def _mark_provisioning_checkout_failed(
         self, database: Database, request_id: UUID
@@ -1186,7 +1186,6 @@ class BillingService:
         database: Database,
         *,
         user_id: UUID,
-        device_id: UUID,
         plan_code: str,
     ) -> BillingUrlResponse:
         # One authoritative reconciliation can retire an expired/former-owner
@@ -1197,7 +1196,6 @@ class BillingService:
                 preparation = await self._prepare_checkout(
                     connection,
                     user_id=user_id,
-                    device_id=device_id,
                     plan_code=plan_code,
                 )
 
@@ -1214,12 +1212,10 @@ class BillingService:
                     }
                 )
                 customer_id = preparation.customer_id
-                owner_active = await self._ownership_is_active(
-                    database,
-                    user_id=preparation.user_id,
-                    device_id=preparation.device_id,
+                account_active = await self._account_is_active(
+                    database, user_id=preparation.user_id
                 )
-                if customer_id is None and not owner_active:
+                if customer_id is None and not account_active:
                     # Checkout cannot be attempted before the profile Customer
                     # is durably stored, so this reservation is provably local.
                     await self._mark_checkout_failed(
@@ -1264,12 +1260,10 @@ class BillingService:
                     )
                     continue
                 if details["status"] == "complete":
-                    still_owner = await self._ownership_is_active(
-                        database,
-                        user_id=preparation.user_id,
-                        device_id=preparation.device_id,
+                    account_active = await self._account_is_active(
+                        database, user_id=preparation.user_id
                     )
-                    if not still_owner:
+                    if not account_active:
                         subscription_id = details["subscription_id"]
                         if subscription_id is None:
                             raise BillingError("BILLING_UNAVAILABLE", 503)
@@ -1284,18 +1278,18 @@ class BillingService:
                         status="completed",
                         subscription_id=details["subscription_id"],
                     )
-                    if not still_owner:
+                    if not account_active:
                         continue
                     raise BillingError("SUBSCRIPTION_EXISTS", 409)
 
-                owner_after_creation = await self._persist_open_checkout(
+                account_after_creation = await self._persist_open_checkout(
                     database,
                     preparation=preparation,
                     customer_id=customer_id,
                     session_id=details["session_id"],
                     provider_expires_at=details["expires_at"],
                 )
-                if not owner_after_creation:
+                if not account_after_creation:
                     expired = await self.gateway.expire_checkout_session(
                         details["session_id"]
                     )
@@ -1343,22 +1337,18 @@ class BillingService:
         database: Database,
         *,
         user_id: UUID,
-        device_id: UUID,
         action: str = "update",
     ) -> BillingUrlResponse:
         async with database.transaction() as connection:
             preparation = await self._prepare_portal(
                 connection,
                 user_id=user_id,
-                device_id=device_id,
                 action=action,
             )
         try:
             session = await self.gateway.create_portal_session(preparation)
-            if not await self._ownership_is_active(
-                database, user_id=user_id, device_id=device_id
-            ):
-                raise BillingError("TAG_UNAVAILABLE", 404)
+            if not await self._account_is_active(database, user_id=user_id):
+                raise BillingError("BILLING_UNAVAILABLE", 503)
             return BillingUrlResponse(
                 url=_safe_stripe_url(session.get("url"), "billing.stripe.com")
             )
@@ -1541,35 +1531,43 @@ class BillingService:
         connection: AsyncConnection,
         *,
         user_id: UUID,
-        device_id: UUID,
         plan_code: str,
     ) -> CheckoutPreparation:
-        owner_query = await connection.execute(
+        account_query = await connection.execute(
             """
-            SELECT p.stripe_customer_id
-              FROM public.ownership o
-              JOIN public.profiles p ON p.id = o.user_id
-             WHERE o.user_id = %s AND o.device_id = %s
-               AND o.ended_at IS NULL
-             FOR UPDATE OF o, p
+            SELECT stripe_customer_id
+              FROM public.profiles
+             WHERE id = %s AND account_status = 'active'
+             FOR UPDATE
             """,
-            (user_id, device_id),
+            (user_id,),
         )
-        owner = await owner_query.fetchone()
-        if owner is None:
-            raise BillingError("TAG_UNAVAILABLE", 404)
+        account = await account_query.fetchone()
+        if account is None:
+            raise BillingError("BILLING_UNAVAILABLE", 503)
 
         subscription_query = await connection.execute(
             """
             SELECT 1 FROM public.subscription
-             WHERE device_id = %s
+             WHERE user_id = %s
                AND status NOT IN ('cancelled', 'ended')
              FOR UPDATE
             """,
-            (device_id,),
+            (user_id,),
         )
         if await subscription_query.fetchone() is not None:
             raise BillingError("SUBSCRIPTION_EXISTS", 409)
+
+        provisioning_checkout_query = await connection.execute(
+            """
+            SELECT 1 FROM public.provisioning_request
+             WHERE user_id = %s AND status IN ('creating', 'open')
+             FOR UPDATE
+            """,
+            (user_id,),
+        )
+        if await provisioning_checkout_query.fetchone() is not None:
+            raise BillingError("CHECKOUT_IN_PROGRESS", 409)
 
         existing_query = await connection.execute(
             """
@@ -1578,13 +1576,13 @@ class BillingService:
                    b.expires_at, p.stripe_customer_id AS profile_customer_id
               FROM public.billing_checkout_session b
               JOIN public.profiles p ON p.id = b.user_id
-             WHERE b.device_id = %s
+             WHERE b.user_id = %s
                AND b.status IN ('creating', 'pending')
              ORDER BY b.created_at DESC
              LIMIT 1
              FOR UPDATE OF b
             """,
-            (device_id,),
+            (user_id,),
         )
         existing = await existing_query.fetchone()
         effective_plan_code = existing["plan_code"] if existing else plan_code
@@ -1609,7 +1607,7 @@ class BillingService:
             return CheckoutPreparation(
                 reservation_id=existing["id"],
                 user_id=existing["user_id"],
-                device_id=existing["device_id"],
+                device_id=None,
                 plan_code=effective_plan_code,
                 price_id=price_id,
                 product_id=product_id,
@@ -1635,21 +1633,21 @@ class BillingService:
                     id, user_id, device_id, plan_code, status, expires_at
                 ) VALUES (%s, %s, %s, %s, 'creating', %s)
                 """,
-                (reservation_id, user_id, device_id, plan_code, expires_at),
+                (reservation_id, user_id, None, plan_code, expires_at),
             )
         except UniqueViolation:
             raise BillingError("CHECKOUT_IN_PROGRESS", 409) from None
         return CheckoutPreparation(
             reservation_id=reservation_id,
             user_id=user_id,
-            device_id=device_id,
+            device_id=None,
             plan_code=effective_plan_code,
             price_id=price_id,
             product_id=product_id,
             amount_minor=int(plan["price_cents"]),
             currency=str(plan["currency"]).upper(),
             duration_months=int(plan["duration_months"]),
-            customer_id=owner["stripe_customer_id"],
+            customer_id=account["stripe_customer_id"],
             expires_at=expires_at,
             provider_session_id=None,
             existing=False,
@@ -1682,6 +1680,19 @@ class BillingService:
                  WHERE user_id = %s AND device_id = %s AND ended_at IS NULL
                 """,
                 (user_id, device_id),
+            )
+            return await query.fetchone() is not None
+
+    async def _account_is_active(
+        self, database: Database, *, user_id: UUID
+    ) -> bool:
+        async with database.transaction() as connection:
+            query = await connection.execute(
+                """
+                SELECT 1 FROM public.profiles
+                 WHERE id = %s AND account_status = 'active'
+                """,
+                (user_id,),
             )
             return await query.fetchone() is not None
 
@@ -1765,15 +1776,15 @@ class BillingService:
         provider_expires_at: datetime,
     ) -> bool:
         async with database.transaction() as connection:
-            owner_query = await connection.execute(
+            account_query = await connection.execute(
                 """
-                SELECT 1 FROM public.ownership
-                 WHERE user_id = %s AND device_id = %s AND ended_at IS NULL
+                SELECT 1 FROM public.profiles
+                 WHERE id = %s AND account_status = 'active'
                  FOR UPDATE
                 """,
-                (preparation.user_id, preparation.device_id),
+                (preparation.user_id,),
             )
-            owner_active = await owner_query.fetchone() is not None
+            account_active = await account_query.fetchone() is not None
             query = await connection.execute(
                 """
                 UPDATE public.billing_checkout_session
@@ -1794,7 +1805,7 @@ class BillingService:
             )
             if await query.fetchone() is None:
                 raise BillingError("CHECKOUT_IN_PROGRESS", 409)
-            return owner_active
+            return account_active
 
     async def _mark_checkout_provider_terminal(
         self,
@@ -1871,6 +1882,7 @@ class BillingService:
         *,
         subscription_id: UUID,
         provider_subscription_id: str,
+        reason: str = "account_unavailable_checkout",
     ) -> None:
         # This queue is committed atomically with the fail-safe local terminal
         # subscription state. A separately deployed worker performs the immediate,
@@ -1883,11 +1895,11 @@ class BillingService:
                 provider_subscription_id, cancellation_reason, status
             ) VALUES (
                 gen_random_uuid(), %s, NULL, %s,
-                'ownership_lost_checkout', 'pending'
+                %s, 'pending'
             )
             ON CONFLICT DO NOTHING
             """,
-            (subscription_id, provider_subscription_id),
+            (subscription_id, provider_subscription_id, reason),
         )
 
     async def _mark_checkout_failed(
@@ -1915,28 +1927,24 @@ class BillingService:
         connection: AsyncConnection,
         *,
         user_id: UUID,
-        device_id: UUID,
         action: str,
     ) -> PortalPreparation:
         query = await connection.execute(
             """
             SELECT p.stripe_customer_id, s.provider_subscription_id
-              FROM public.ownership o
-              JOIN public.profiles p ON p.id = o.user_id
+              FROM public.profiles p
               LEFT JOIN public.subscription s
-                ON s.device_id = o.device_id
-               AND s.user_id = o.user_id
+                ON s.user_id = p.id
                AND s.status NOT IN ('cancelled', 'ended')
-             WHERE o.user_id = %s AND o.device_id = %s
-               AND o.ended_at IS NULL
+             WHERE p.id = %s AND p.account_status = 'active'
              ORDER BY s.created_at DESC NULLS LAST
              LIMIT 1
             """,
-            (user_id, device_id),
+            (user_id,),
         )
         row = await query.fetchone()
         if row is None:
-            raise BillingError("TAG_UNAVAILABLE", 404)
+            raise BillingError("BILLING_UNAVAILABLE", 503)
         if not row["stripe_customer_id"] or not row["provider_subscription_id"]:
             raise BillingError("SUBSCRIPTION_NOT_MANAGEABLE", 409)
         return PortalPreparation(
@@ -2054,7 +2062,7 @@ class BillingService:
         connection: AsyncConnection,
         *,
         metadata: Any,
-    ) -> tuple[dict[str, Any], UUID, UUID, str, UUID]:
+    ) -> tuple[dict[str, Any], UUID, UUID | None, str, UUID]:
         request_id, user_id, device_id, serial_number, plan_code = (
             _provisioning_binding(metadata)
         )
@@ -2169,7 +2177,7 @@ class BillingService:
         connection: AsyncConnection,
         *,
         metadata: Any,
-    ) -> tuple[dict[str, Any], UUID, UUID, str, UUID]:
+    ) -> tuple[dict[str, Any], UUID, UUID | None, str, UUID]:
         user_id, device_id, plan_code, checkout_id = _binding(metadata)
         query = await connection.execute(
             """
@@ -2202,7 +2210,7 @@ class BillingService:
         event_created: int,
         checkout: Mapping[str, Any],
     ) -> None:
-        row, user_id, device_id, _, checkout_id = await self._bound_checkout(
+        row, _, _, _, checkout_id = await self._bound_checkout(
             connection, metadata=checkout.get("metadata")
         )
         session_id = _identifier(checkout.get("id"), "cs_")
@@ -2224,38 +2232,6 @@ class BillingService:
             )
         ):
             raise BillingEventIgnored("checkout mismatch")
-        owner_query = await connection.execute(
-            """
-            SELECT 1 FROM public.ownership
-             WHERE user_id = %s AND device_id = %s AND ended_at IS NULL
-             FOR UPDATE
-            """,
-            (user_id, device_id),
-        )
-        # A completed Checkout can race a device release. Stripe reconciliation
-        # happens before this transaction. If ownership is already gone, use
-        # the reconciled Subscription to stop local access and atomically queue
-        # compensation without making any provider call under database locks.
-        owner_active = await owner_query.fetchone() is not None
-        if not owner_active:
-            authoritative_subscription = checkout.get(
-                "_pinqeva_authoritative_subscription"
-            )
-            if (
-                not isinstance(authoritative_subscription, Mapping)
-                or _object_id(authoritative_subscription.get("id"))
-                != subscription_id
-            ):
-                raise BillingEventDeferred(
-                    "authoritative subscription is unavailable"
-                )
-            await self._apply_subscription(
-                connection,
-                event_id,
-                "checkout.session.completed",
-                event_created,
-                authoritative_subscription,
-            )
         await connection.execute(
             """
             UPDATE public.billing_checkout_session
@@ -2328,6 +2304,17 @@ class BillingService:
         ):
             raise BillingEventIgnored("subscription mismatch")
 
+        account_query = await connection.execute(
+            """
+            SELECT 1 FROM public.profiles
+             WHERE id = %s AND account_status = 'active'
+             FOR UPDATE
+            """,
+            (user_id,),
+        )
+        account_active = await account_query.fetchone() is not None
+        owner = None
+        request_owner_matches = True
         if is_provisioning:
             owner_query = await connection.execute(
                 """
@@ -2337,22 +2324,8 @@ class BillingService:
                 """,
                 (device_id,),
             )
-        else:
-            owner_query = await connection.execute(
-                """
-                SELECT 1 FROM public.ownership
-                 WHERE user_id = %s AND device_id = %s AND ended_at IS NULL
-                 FOR UPDATE
-                """,
-                (user_id, device_id),
-            )
-        owner = await owner_query.fetchone()
-        owner_active = owner is not None
-        owner_matches = (
-            owner_active
-            if not is_provisioning
-            else owner is not None and owner["user_id"] == user_id
-        )
+            owner = await owner_query.fetchone()
+            request_owner_matches = owner is None or owner["user_id"] == user_id
         raw_status = subscription.get("status")
         provider_terminal = raw_status in {"canceled", "incomplete_expired"}
 
@@ -2396,9 +2369,11 @@ class BillingService:
             provider_status = str(raw_status)
         else:
             raise BillingEventIgnored("unknown subscription status")
+        request_active = True
         if is_provisioning:
             request_active = (
                 row["status"] not in {"expired", "failed"}
+                and request_owner_matches
                 and (
                     row["status"] not in {"paid", "claiming"}
                     or (
@@ -2407,11 +2382,10 @@ class BillingService:
                     )
                 )
             )
-            access_allowed = request_active and (
-                owner is None or owner_matches
-            )
-        else:
-            access_allowed = owner_matches
+        # Provider billing is account-scoped. The state of the physical tag
+        # that originally opened Checkout may affect that provisioning request,
+        # but can never remove the account subscription itself.
+        access_allowed = account_active
         status = provider_status if access_allowed else "ended"
 
         plan_query = await connection.execute(
@@ -2469,11 +2443,7 @@ class BillingService:
                 ended_reason = reason[:64]
         cancellation_pending = not access_allowed and not provider_terminal
         if not access_allowed:
-            ended_reason = (
-                "provisioning_request_expired"
-                if is_provisioning
-                else "ownership_lost_checkout"
-            )
+            ended_reason = "account_unavailable_checkout"
         provider_terminal_event_at = (
             provider_event_at if provider_terminal else None
         )
@@ -2507,7 +2477,6 @@ class BillingService:
                 ended_reason = EXCLUDED.ended_reason,
                 updated_at = now()
             WHERE public.subscription.user_id = EXCLUDED.user_id
-              AND public.subscription.device_id = EXCLUDED.device_id
               AND (
                 public.subscription.provider_event_created_at IS NULL
                 OR (
@@ -2551,10 +2520,10 @@ class BillingService:
                 """
                 SELECT id FROM public.subscription
                  WHERE provider_subscription_id = %s
-                   AND user_id = %s AND device_id = %s
+                   AND user_id = %s
                  FOR UPDATE
                 """,
-                (provider_subscription_id, user_id, device_id),
+                (provider_subscription_id, user_id),
             )
             local_subscription = await subscription_query.fetchone()
         if local_subscription is None:
@@ -2569,7 +2538,11 @@ class BillingService:
             request_status = row["status"]
             claim_deadline = row["claim_deadline"]
             paid_at = None
-            if status in {"active", "trialing"} and access_allowed:
+            if (
+                status in {"active", "trialing"}
+                and access_allowed
+                and request_active
+            ):
                 if request_status != "completed":
                     request_status = "paid"
                 claim_deadline = claim_deadline or (

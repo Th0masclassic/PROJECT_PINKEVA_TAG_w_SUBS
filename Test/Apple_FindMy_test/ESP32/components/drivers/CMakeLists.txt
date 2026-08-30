@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "src/app_api.cpp"
         "src/ble_driver.cpp"
+        "src/buzzer.cpp"
         "src/nvs_driver.cpp"
         "src/ota_update.cpp"
         "src/utils.cpp"

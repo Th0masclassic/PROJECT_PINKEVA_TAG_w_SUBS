@@ -21,6 +21,7 @@ from .config import get_settings
 from .database import Database
 from .firmware import FirmwareError, FirmwareService
 from .location import LocationError, LocationService
+from .location_worker import LocationSyncWorker
 from .notifications import (
     ExpoPushGateway,
     NotificationError,
@@ -34,6 +35,7 @@ from .premium import (
     router as premium_router,
 )
 from .models import (
+    AccountSubscriptionResponse,
     DeviceClaimComplete,
     DeviceClaimResponse,
     DeviceClaimStart,
@@ -52,7 +54,6 @@ from .models import (
     DeviceLocationHistoryResponse,
     DeviceLocationReportResponse,
     BillingUrlResponse,
-    DeviceSubscriptionResponse,
     StripeWebhookResponse,
     SubscriptionCheckoutRequest,
     SubscriptionPortalRequest,
@@ -119,8 +120,8 @@ SAFE_BILLING_MESSAGES = {
     "PROVISIONING_REQUEST_NOT_FOUND": "This setup request is no longer available.",
     "PROVISIONING_REQUEST_EXPIRED": "This setup request expired. Start again to continue.",
     "PLAN_UNAVAILABLE": "This subscription plan is unavailable.",
-    "SUBSCRIPTION_EXISTS": "This tag already has a current subscription.",
-    "CHECKOUT_IN_PROGRESS": "A checkout is already in progress for this tag.",
+    "SUBSCRIPTION_EXISTS": "This account already has a current subscription.",
+    "CHECKOUT_IN_PROGRESS": "A subscription checkout is already in progress for this account.",
     "SUBSCRIPTION_NOT_MANAGEABLE": "This subscription cannot be managed yet.",
     "BILLING_UNAVAILABLE": "Billing is temporarily unavailable. Please try again.",
     "INVALID_WEBHOOK": "The webhook could not be accepted.",
@@ -218,6 +219,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     background_stop = asyncio.Event()
     notification_task: asyncio.Task[None] | None = None
     premium_retention_task: asyncio.Task[None] | None = None
+    location_sync_task: asyncio.Task[None] | None = None
     try:
         if settings.findmy_anisette_provider == "native":
             native_anisette = NativeAnisetteService(
@@ -279,6 +281,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             premium_retention_worker.run(background_stop),
             name="premium-location-retention-worker",
         )
+        enabled_location_networks: set[str] = set()
+        if findmy_auth is not None or (
+            settings.findmy_dsid and settings.findmy_search_party_token
+        ):
+            enabled_location_networks.add("apple")
+        if settings.google_findhub_bridge_url:
+            enabled_location_networks.add("google")
+        if settings.location_sync_worker_enabled and enabled_location_networks:
+            location_sync_worker = LocationSyncWorker(
+                database,
+                app.state.location,
+                enabled_networks=frozenset(enabled_location_networks),
+                interval_seconds=settings.location_sync_interval_seconds,
+                batch_size=settings.location_sync_batch_size,
+            )
+            app.state.location_sync_worker = location_sync_worker
+            location_sync_task = asyncio.create_task(
+                location_sync_worker.run(background_stop),
+                name="provider-location-sync-worker",
+            )
         if settings.notification_worker_enabled:
             notification_worker = NotificationWorker(
                 database,
@@ -295,6 +317,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         background_stop.set()
         if notification_task is not None:
             await notification_task
+        if location_sync_task is not None:
+            await location_sync_task
         if premium_retention_task is not None:
             await premium_retention_task
         if opened_database is not None:
@@ -730,52 +754,46 @@ async def provisioning_request_checkout(
 
 
 @app.get(
-    "/v1/devices/{device_id}/subscription",
-    response_model=DeviceSubscriptionResponse,
+    "/v1/subscription",
+    response_model=AccountSubscriptionResponse,
 )
-async def device_subscription(
-    device_id: UUID,
+async def account_subscription(
     principal: AuthenticatedPrincipal,
-) -> DeviceSubscriptionResponse:
-    return await app.state.billing.get_device_subscription(
+) -> AccountSubscriptionResponse:
+    return await app.state.billing.get_account_subscription(
         app.state.database,
         user_id=principal.user_id,
-        device_id=device_id,
     )
 
 
 @app.post(
-    "/v1/devices/{device_id}/subscription/checkout",
+    "/v1/subscription/checkout",
     response_model=BillingUrlResponse,
     status_code=201,
 )
 async def subscription_checkout(
-    device_id: UUID,
     request: SubscriptionCheckoutRequest,
     principal: AuthenticatedPrincipal,
 ) -> BillingUrlResponse:
     return await app.state.billing.create_checkout(
         app.state.database,
         user_id=principal.user_id,
-        device_id=device_id,
         plan_code=request.plan_code,
     )
 
 
 @app.post(
-    "/v1/devices/{device_id}/subscription/portal",
+    "/v1/subscription/portal",
     response_model=BillingUrlResponse,
     status_code=201,
 )
 async def subscription_portal(
-    device_id: UUID,
     principal: AuthenticatedPrincipal,
     request: SubscriptionPortalRequest | None = None,
 ) -> BillingUrlResponse:
     return await app.state.billing.create_portal(
         app.state.database,
         user_id=principal.user_id,
-        device_id=device_id,
         action=request.action if request else "update",
     )
 

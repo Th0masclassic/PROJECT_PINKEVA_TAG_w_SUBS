@@ -16,8 +16,9 @@ Cross-platform Expo/React Native app for iPhone, Android, and web. The app mirro
   30-day history; non-members see only its current or last reported location.
 - Per-tag advertising interval and signed BLE software-update flows with real
   backend release discovery, transfer progress, reboot verification, and retry.
-- Pinkeva Cloud + account membership with lost mode, separation alerts,
-  30-day history, custom tracker icons, and member purchase discounts.
+- Pinkeva Cloud + account membership with phone-aware safe zones and
+  separation alerts, 30-day history, recovery tools, eligible replacement
+  claims, custom tracker icons, and member purchase discounts.
 - Hosted plan selection, renewal, cancellation-at-period-end, management, and
   a durable notification inbox. Subscription changes are cloud-only and never
   require a BLE synchronization with the tag.
@@ -117,15 +118,15 @@ Google must also be configured in Supabase and Google Cloud. For Apple, enable t
 Set `EXPO_PUBLIC_API_URL` to the HTTPS backend. The app authenticates each
 billing request with the current Supabase access token and uses these routes:
 
-- `GET /v1/devices/{device_id}/subscription`
-- `POST /v1/devices/{device_id}/subscription/checkout` with a `plan_code`
-- `POST /v1/devices/{device_id}/subscription/portal` with
+- `GET /v1/subscription`
+- `POST /v1/subscription/checkout` with a `plan_code`
+- `POST /v1/subscription/portal` with
   `{ "action": "update" }` or `{ "action": "cancel" }`
 
-The frontend treats one current subscription as Cloud + access for the entire
-signed-in account. The existing device-addressed routes remain a compatibility
-transport until the account-level billing backend contract replaces them. No
-Stripe secret, publishable key, or card form belongs in the mobile app;
+The frontend fetches the one current subscription once and applies Cloud +
+access to every tracker in the signed-in account. No device-addressed
+subscription route or per-device billing request remains. No Stripe secret,
+publishable key, or card form belongs in the mobile app;
 checkout and portal URLs are validated and opened in the system's secure
 browser.
 

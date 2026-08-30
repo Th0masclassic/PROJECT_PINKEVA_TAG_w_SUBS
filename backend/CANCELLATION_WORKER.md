@@ -1,12 +1,14 @@
 # Subscription cancellation worker
 
-Device release stops local access and inserts a cancellation-outbox row in the
-same database transaction. The same queue compensates a Checkout that becomes
-authoritative only after its purchaser has lost ownership. This worker delivers
-the corresponding immediate Stripe cancellation without holding a database
-transaction open during the network call.
+The account-level billing model does not cancel a subscription when one tag is
+released. This queue instead delivers immediate Stripe cancellations after an
+administrator revokes account billing, a post-Checkout account becomes
+unavailable, or the migration consolidates old duplicate per-tag plans. It also
+retains validation for legacy device-release and ownership-lost rows created
+before the account migration. Provider calls never hold a database transaction
+open.
 
-Two database bindings are accepted:
+Five reason-specific database bindings are accepted:
 
 - `cancellation_reason = 'device_release'` requires a non-null
   `device_release_id` and the exact completed release/ended-ownership proof.
@@ -14,6 +16,12 @@ Two database bindings are accepted:
   `device_release_id`, terminal local status with
   `ended_reason = 'ownership_lost_checkout'`, and no active ownership for the
   subscription's user/device pair. This does not fabricate a release record.
+- `cancellation_reason = 'account_unavailable_checkout'` requires terminal
+  local account state with the matching ended reason.
+- `cancellation_reason = 'account_consolidation'` requires a duplicate legacy
+  row ended by the account migration.
+- `cancellation_reason = 'admin_revoked'` requires a terminal row with an
+  audited administrator revocation.
 
 ## State and safety model
 

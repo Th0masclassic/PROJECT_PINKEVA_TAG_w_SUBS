@@ -15,7 +15,7 @@ enum class FindingNetwork : uint8_t {
     GOOGLE = 0x02,
 };
 
-/** Initialize NVS and erase the obsolete development entitlement blob. */
+/** Initialize the NVS partition used for finder identities and control data. */
 esp_err_t nvs_init();
 
 bool advertisement_key_is_valid(const uint8_t *key, size_t length);

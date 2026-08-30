@@ -362,6 +362,7 @@ function UserDetailScreen({
           {data.user.account_status === 'banned' ? <SecondaryButton label={accessBusy ? 'Restoring…' : 'Restore access'} compact icon="lock-open-outline" disabled={accessBusy} onPress={() => void updateAccess(false)} /> : <View style={styles.formStack}><Field label="Reason for suspension" value={banReason} onChangeText={setBanReason} maxLength={240} placeholder="Required for the audit record" /><SecondaryButton label={accessBusy ? 'Suspending…' : 'Suspend account'} compact icon="ban-outline" danger disabled={accessBusy} onPress={() => void updateAccess(true)} /></View>}
         </Surface>
       ) : <Surface style={styles.protectedCard}><Text style={styles.cardTitle}>Protected administrator account</Text><Text style={styles.cardBody}>Administrator accounts are never suspended from this screen.</Text></Surface>}
+      <AccountSubscriptionCard subscription={data.subscription} plans={plans} userId={data.user.id} onMutate={mutate} />
       {region ? (
         <Surface style={styles.mapCard}>
           <MapView style={styles.map} initialRegion={region}>
@@ -371,36 +372,47 @@ function UserDetailScreen({
       ) : <Surface><EmptyState icon="map-outline" title="No reported locations" body="This account’s tags do not have an accepted location report yet." /></Surface>}
 
       <View style={styles.trackerStack}>
-        {data.trackers.map((tracker) => <TrackerCard key={tracker.id} tracker={tracker} plans={plans} onMutate={mutate} userId={data.user.id} />)}
+        {data.trackers.map((tracker) => <TrackerCard key={tracker.id} tracker={tracker} />)}
         {data.trackers.length === 0 ? <Surface><EmptyState icon="pricetag-outline" title="No trackers" body="No active tracker ownerships belong to this account." /></Surface> : null}
       </View>
     </ScrollView>
   );
 }
 
-function TrackerCard({
-  tracker,
+function AccountSubscriptionCard({
+  subscription,
   plans,
   userId,
   onMutate,
 }: {
-  tracker: TrackerSummary;
+  subscription: UserTrackers['subscription'];
   plans: Plan[];
   userId: string;
   onMutate: (path: string, init: RequestInit, success: string) => Promise<void>;
 }) {
   const activePlans = plans.filter((plan) => plan.active);
   const [planCode, setPlanCode] = useState(activePlans[0]?.code ?? '');
+  useEffect(() => {
+    if (!planCode && activePlans[0]?.code) setPlanCode(activePlans[0].code);
+  }, [activePlans, planCode]);
   const cancel = async () => {
-    if (!tracker.subscription_id || !await confirmAction('End this subscription?', 'The subscription will end and Stripe cancellation will be queued when required.', true)) return;
-    await onMutate(`/v1/admin/subscriptions/${tracker.subscription_id}`, { method: 'DELETE' }, 'Subscription ended.');
+    if (!subscription || !await confirmAction('End this account subscription?', 'Premium access will end for every tracker on the account. Stripe cancellation will be queued when required.', true)) return;
+    await onMutate(`/v1/admin/subscriptions/${subscription.id}`, { method: 'DELETE' }, 'Account subscription ended.');
   };
   const grant = async () => {
     if (!planCode) return;
     const plan = activePlans.find((row) => row.code === planCode);
-    if (!await confirmAction('Grant subscription?', `Grant ${plan?.name || planCode} to this tag?`)) return;
-    await onMutate(`/v1/admin/users/${userId}/devices/${tracker.id}/subscriptions`, { method: 'POST', body: JSON.stringify({ plan_code: planCode }) }, 'Subscription granted.');
+    if (!await confirmAction('Grant account subscription?', `Grant ${plan?.name || planCode} to every tracker on this account?`)) return;
+    await onMutate(`/v1/admin/users/${userId}/subscriptions`, { method: 'POST', body: JSON.stringify({ plan_code: planCode }) }, 'Account subscription granted.');
   };
+
+  return <Surface style={styles.operatorCard}>
+    <View style={styles.operatorHeader}><View style={styles.operatorIcon}><Ionicons name="card-outline" size={23} color={colors.blue} /></View><View style={styles.operatorCopy}><Text style={styles.cardTitle}>Account subscription</Text><Text style={styles.cardBody}>{subscription ? `${subscription.plan_code} · ${subscription.status} · until ${formatDate(subscription.current_period_end)}` : 'One plan covers every tracker owned by this account.'}</Text></View></View>
+    {subscription ? <SecondaryButton label="End subscription" icon="close-circle-outline" danger onPress={() => void cancel()} /> : <View style={styles.subscriptionBox}><Text style={styles.fieldLabel}>Choose a plan</Text><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.planChips}>{activePlans.map((plan) => { const selected = plan.code === planCode; return <Pressable key={plan.code} accessibilityRole="radio" accessibilityState={{ checked: selected }} onPress={() => setPlanCode(plan.code)} style={[styles.planChip, selected && styles.planChipSelected]}><Text style={[styles.planChipText, selected && styles.planChipTextSelected]}>{plan.duration_months} mo · {(plan.price_cents / 100).toFixed(2)} {plan.currency}</Text></Pressable>; })}</ScrollView><PrimaryButton label="Grant account subscription" compact disabled={!planCode} onPress={() => void grant()} /></View>}
+  </Surface>;
+}
+
+function TrackerCard({ tracker }: { tracker: TrackerSummary }) {
 
   return (
     <Surface style={styles.trackerCard}>
@@ -416,22 +428,7 @@ function TrackerCard({
         <Fact label="Last place" value={tracker.last_place || 'No location yet'} />
         <Fact label="Last report" value={formatDate(tracker.last_location_at)} />
         <Fact label="Firmware" value={tracker.firmware_version || '—'} />
-        <Fact label="Subscription" value={tracker.subscription_status ? `${tracker.plan_code} · ${tracker.subscription_status}` : 'None'} />
       </View>
-      {tracker.subscription_id ? (
-        <SecondaryButton label="End subscription" icon="close-circle-outline" danger onPress={() => void cancel()} />
-      ) : (
-        <View style={styles.subscriptionBox}>
-          <Text style={styles.fieldLabel}>Choose a plan</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.planChips}>
-            {activePlans.map((plan) => {
-              const selected = plan.code === planCode;
-              return <Pressable key={plan.code} accessibilityRole="radio" accessibilityState={{ checked: selected }} onPress={() => setPlanCode(plan.code)} style={[styles.planChip, selected && styles.planChipSelected]}><Text style={[styles.planChipText, selected && styles.planChipTextSelected]}>{plan.duration_months} mo · {(plan.price_cents / 100).toFixed(2)} {plan.currency}</Text></Pressable>;
-            })}
-          </ScrollView>
-          <PrimaryButton label="Grant subscription" compact disabled={!planCode} onPress={() => void grant()} />
-        </View>
-      )}
     </Surface>
   );
 }
@@ -454,7 +451,7 @@ function PlansScreen({ client, apiUrl, refreshKey, showNotice }: CommonProps) {
 
   return (
     <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void load(true)} tintColor={colors.blue} />}>
-      <ScreenHeader title="Plans" subtitle="Per-tag subscription prices" />
+      <ScreenHeader title="Plans" subtitle="Account subscription prices" />
       <SectionIntro title="Stripe price versions" body="Price changes apply to new purchases. Existing subscriptions keep their historical Stripe price." />
       {loading ? <LoadingState /> : <View style={styles.planStack}>{plans.map((plan) => <PlanEditor key={`${plan.code}:${plan.price_version}`} plan={plan} client={client} apiUrl={apiUrl} onDone={() => load()} showNotice={showNotice} />)}</View>}
     </ScrollView>

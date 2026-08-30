@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import logging
+import struct
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -15,6 +18,7 @@ from .crypto import (
     EncryptedSecret,
     decrypt_google_identity_key,
     decrypt_private_key,
+    derive_google_advertisement_key,
 )
 from .database import Database
 from .findmy import (
@@ -49,13 +53,24 @@ class LocationError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class _ProviderBinding:
+    finding_network: str
+    advertisement_key_sha256: bytes
+    finder_secret: bytes
+
+
+@dataclass(frozen=True)
 class _ReportBinding:
     device_id: UUID
     serial_number: str
     session_id: UUID
-    finding_network: str
-    advertisement_key_sha256: bytes
-    finder_secret: bytes
+    providers: tuple[_ProviderBinding, ...]
+
+
+@dataclass(frozen=True)
+class _SourcedReport:
+    provider: _ProviderBinding
+    report: FinderReport
 
 
 @dataclass(frozen=True)
@@ -82,6 +97,111 @@ class LocationService:
             lookback_hours=self.settings.findmy_lookback_hours,
         )
 
+    def _apple_configured(self) -> bool:
+        return self.auth_manager is not None or bool(
+            self.settings.findmy_auth_file
+            or (
+                self.settings.findmy_dsid
+                and self.settings.findmy_search_party_token
+            )
+        )
+
+    def _google_configured(self) -> bool:
+        return bool(
+            self.settings.google_findhub_bridge_url
+            and self.settings.google_findhub_bridge_token
+        )
+
+    async def _fetch_provider_reports(
+        self,
+        binding: _ReportBinding,
+        *,
+        current: datetime,
+        apple_lookback_hours: int,
+        google_lookback_hours: int,
+    ) -> list[_SourcedReport]:
+        requests_by_provider = []
+        for provider in binding.providers:
+            if provider.finding_network == "apple" and self._apple_configured():
+                request = asyncio.to_thread(
+                    self._client().fetch_reports,
+                    advertisement_key_sha256=provider.advertisement_key_sha256,
+                    private_key=provider.finder_secret,
+                    now=current,
+                    lookback_hours=apple_lookback_hours,
+                )
+            elif provider.finding_network == "google" and self._google_configured():
+                request = asyncio.to_thread(
+                    self._google_client().fetch_reports,
+                    device_id=binding.device_id,
+                    serial_number=binding.serial_number,
+                    identity_key=provider.finder_secret,
+                    advertisement_key_sha256=provider.advertisement_key_sha256,
+                    now=current,
+                    lookback_hours=google_lookback_hours,
+                )
+            else:
+                continue
+            requests_by_provider.append((provider, request))
+
+        if not requests_by_provider:
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            )
+
+        results = await asyncio.gather(
+            *(request for _provider, request in requests_by_provider),
+            return_exceptions=True,
+        )
+        successful_providers = 0
+        reports: list[_SourcedReport] = []
+        for (provider, _request), result in zip(
+            requests_by_provider, results, strict=True
+        ):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, BaseException):
+                if isinstance(
+                    result,
+                    (FindMyConfigurationError, GoogleFindHubConfigurationError),
+                ):
+                    event = "finder_configuration_unavailable"
+                    log = logger.warning
+                elif isinstance(
+                    result, (FindMyRequestError, GoogleFindHubRequestError)
+                ):
+                    event = "finder_request_failed"
+                    log = logger.warning
+                else:
+                    event = "finder_decode_failed"
+                    log = logger.error
+                log(
+                    "%s device=%s network=%s error_type=%s",
+                    event,
+                    binding.device_id,
+                    provider.finding_network,
+                    type(result).__name__,
+                )
+                continue
+            successful_providers += 1
+            reports.extend(
+                _SourcedReport(provider=provider, report=report)
+                for report in result
+            )
+
+        # One ecosystem being temporarily unavailable must not hide a newer
+        # report successfully returned by the other. Fail only when neither
+        # configured provider completed an authoritative request.
+        if successful_providers == 0:
+            raise LocationError(
+                "LOCATION_UNAVAILABLE",
+                "Location reports are temporarily unavailable",
+                503,
+            )
+        return reports
+
     async def request_report(
         self,
         database: Database,
@@ -90,60 +210,25 @@ class LocationService:
         device_id: UUID,
     ) -> DeviceLocationReportResponse:
         binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
-        try:
-            if binding.finding_network == "apple":
-                report = await asyncio.to_thread(
-                    self._client().fetch_latest,
-                    advertisement_key_sha256=binding.advertisement_key_sha256,
-                    private_key=binding.finder_secret,
-                )
-            else:
-                report = await asyncio.to_thread(
-                    self._google_client().fetch_latest,
-                    device_id=binding.device_id,
-                    serial_number=binding.serial_number,
-                    identity_key=binding.finder_secret,
-                    advertisement_key_sha256=binding.advertisement_key_sha256,
-                )
-        except (FindMyConfigurationError, GoogleFindHubConfigurationError) as exc:
-            logger.warning(
-                "finder_configuration_unavailable device=%s network=%s error_type=%s",
-                device_id,
-                binding.finding_network,
-                type(exc).__name__,
-            )
-            raise LocationError(
-                "LOCATION_UNAVAILABLE",
-                "Location reports are temporarily unavailable",
-                503,
-            ) from None
-        except (FindMyRequestError, GoogleFindHubRequestError) as exc:
-            logger.warning(
-                "finder_request_failed device=%s network=%s error_type=%s",
-                device_id,
-                binding.finding_network,
-                type(exc).__name__,
-            )
-            raise LocationError(
-                "LOCATION_UNAVAILABLE",
-                "Location reports are temporarily unavailable",
-                503,
-            ) from None
-        except Exception as exc:  # pragma: no cover - defensive production guard
-            logger.error(
-                "finder_decode_failed device=%s network=%s error_type=%s",
-                device_id,
-                binding.finding_network,
-                type(exc).__name__,
-            )
-            raise LocationError(
-                "LOCATION_UNAVAILABLE",
-                "Location reports are temporarily unavailable",
-                503,
-            ) from None
+        current = datetime.now(UTC)
+        reports = await self._fetch_provider_reports(
+            binding,
+            current=current,
+            apple_lookback_hours=min(
+                self.settings.findmy_lookback_hours,
+                APPLE_PROVIDER_LOOKBACK_HOURS,
+            ),
+            google_lookback_hours=self.settings.findmy_lookback_hours,
+        )
 
         async with database.transaction() as connection:
-            if report is None:
+            sourced_report = await self._ingest_reports(
+                connection,
+                user_id=user_id,
+                binding=binding,
+                reports=reports,
+            )
+            if sourced_report is None:
                 return await self._current_projection(
                     connection,
                     user_id=user_id,
@@ -154,7 +239,7 @@ class LocationService:
                 connection,
                 user_id=user_id,
                 binding=binding,
-                report=report,
+                sourced_report=sourced_report,
             )
 
     async def request_report_history_24h(
@@ -187,74 +272,28 @@ class LocationService:
             )
         binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
         current = datetime.now(UTC)
-        try:
-            if binding.finding_network == "apple":
-                reports = await asyncio.to_thread(
-                    self._client().fetch_reports,
-                    advertisement_key_sha256=binding.advertisement_key_sha256,
-                    private_key=binding.finder_secret,
-                    now=current,
-                    # Apple's private report endpoint currently accepts at
-                    # most seven days. Older premium history comes from the
-                    # backend's own 30-day, session-bound retention table.
-                    lookback_hours=min(
-                        days * 24, APPLE_PROVIDER_LOOKBACK_HOURS
-                    ),
-                )
-            else:
-                reports = await asyncio.to_thread(
-                    self._google_client().fetch_reports,
-                    device_id=binding.device_id,
-                    serial_number=binding.serial_number,
-                    identity_key=binding.finder_secret,
-                    advertisement_key_sha256=binding.advertisement_key_sha256,
-                    now=current,
-                    lookback_hours=days * 24,
-                )
-        except (FindMyConfigurationError, GoogleFindHubConfigurationError) as exc:
-            logger.warning(
-                "finder_configuration_unavailable device=%s network=%s error_type=%s",
-                device_id,
-                binding.finding_network,
-                type(exc).__name__,
-            )
-            raise LocationError(
-                "LOCATION_UNAVAILABLE",
-                "Location reports are temporarily unavailable",
-                503,
-            ) from None
-        except (FindMyRequestError, GoogleFindHubRequestError) as exc:
-            logger.warning(
-                "finder_request_failed device=%s network=%s error_type=%s",
-                device_id,
-                binding.finding_network,
-                type(exc).__name__,
-            )
-            raise LocationError(
-                "LOCATION_UNAVAILABLE",
-                "Location reports are temporarily unavailable",
-                503,
-            ) from None
-        except Exception as exc:  # pragma: no cover - defensive production guard
-            logger.error(
-                "finder_decode_failed device=%s network=%s error_type=%s",
-                device_id,
-                binding.finding_network,
-                type(exc).__name__,
-            )
-            raise LocationError(
-                "LOCATION_UNAVAILABLE",
-                "Location reports are temporarily unavailable",
-                503,
-            ) from None
+        reports = await self._fetch_provider_reports(
+            binding,
+            current=current,
+            # Apple's reverse-engineered endpoint currently exposes at most
+            # seven days. Older premium history is served from our own table.
+            apple_lookback_hours=min(days * 24, APPLE_PROVIDER_LOOKBACK_HOURS),
+            google_lookback_hours=days * 24,
+        )
 
         async with database.transaction() as connection:
-            for report in reports:
-                await self._persist_report(
+            latest = await self._ingest_reports(
+                connection,
+                user_id=user_id,
+                binding=binding,
+                reports=reports,
+            )
+            if latest is not None:
+                await self._accept_report(
                     connection,
                     user_id=user_id,
                     binding=binding,
-                    report=report,
+                    sourced_report=latest,
                 )
             history_query = await connection.execute(
                 """
@@ -265,7 +304,8 @@ class LocationService:
                    AND provisioning_session_id = %s
                    AND recorded_at >= %s
                    AND recorded_at <= %s
-                 ORDER BY recorded_at DESC, id DESC
+                 ORDER BY recorded_at DESC, finding_network DESC,
+                          source_fingerprint DESC, id DESC
                  LIMIT %s
                 """,
                 (
@@ -316,7 +356,6 @@ class LocationService:
                          SELECT 1
                            FROM public.subscription subscription
                           WHERE subscription.user_id = o.user_id
-                            AND subscription.device_id = d.id
                             AND subscription.status IN ('active', 'trialing')
                             AND subscription.starts_at <= now()
                             AND subscription.current_period_end > now()
@@ -350,44 +389,46 @@ class LocationService:
             )
 
         try:
-            finding_network = str(row["finding_network"])
-            if finding_network == "apple":
-                encrypted = EncryptedSecret(
-                    version=int(row["private_key_envelope_version"]),
-                    nonce=bytes(row["private_key_nonce"]),
-                    ciphertext=bytes(row["private_key_ciphertext"]),
-                )
-                finder_secret = decrypt_private_key(
-                    encrypted,
-                    self.settings.key_encryption_key,
-                    f"pinqeva:v1:{row['session_id']}:{user_id}:{device_id}".encode(
-                        "ascii"
-                    ),
-                )
-                advertisement_hash = bytes(row["advertisement_key_sha256"])
-                if len(finder_secret) != 28:
-                    raise ValueError("invalid Apple private key size")
-            elif finding_network == "google":
-                encrypted = EncryptedSecret(
-                    version=int(row["google_identity_key_envelope_version"]),
-                    nonce=bytes(row["google_identity_key_nonce"]),
-                    ciphertext=bytes(row["google_identity_key_ciphertext"]),
-                )
-                finder_secret = decrypt_google_identity_key(
-                    encrypted,
-                    self.settings.key_encryption_key,
-                    (
-                        f"pinqeva:google-eik:v1:{row['session_id']}:"
-                        f"{user_id}:{device_id}"
-                    ).encode("ascii"),
-                )
-                advertisement_hash = bytes(
-                    row["google_advertisement_key_sha256"]
-                )
-            else:
-                raise ValueError("invalid finding network")
-            if len(advertisement_hash) != 32:
-                raise ValueError("invalid advertisement hash size")
+            if str(row["finding_network"]) not in {"apple", "google"}:
+                raise ValueError("invalid preferred finding network")
+
+            apple_encrypted = EncryptedSecret(
+                version=int(row["private_key_envelope_version"]),
+                nonce=bytes(row["private_key_nonce"]),
+                ciphertext=bytes(row["private_key_ciphertext"]),
+            )
+            apple_secret = decrypt_private_key(
+                apple_encrypted,
+                self.settings.key_encryption_key,
+                f"pinqeva:v1:{row['session_id']}:{user_id}:{device_id}".encode(
+                    "ascii"
+                ),
+            )
+            apple_hash = bytes(row["advertisement_key_sha256"])
+            if len(apple_secret) != 28 or len(apple_hash) != 32:
+                raise ValueError("invalid Apple finder key material")
+
+            google_encrypted = EncryptedSecret(
+                version=int(row["google_identity_key_envelope_version"]),
+                nonce=bytes(row["google_identity_key_nonce"]),
+                ciphertext=bytes(row["google_identity_key_ciphertext"]),
+            )
+            google_secret = decrypt_google_identity_key(
+                google_encrypted,
+                self.settings.key_encryption_key,
+                (
+                    f"pinqeva:google-eik:v1:{row['session_id']}:"
+                    f"{user_id}:{device_id}"
+                ).encode("ascii"),
+            )
+            google_hash = bytes(row["google_advertisement_key_sha256"])
+            if len(google_hash) != 32 or not hmac.compare_digest(
+                hashlib.sha256(
+                    derive_google_advertisement_key(google_secret)
+                ).digest(),
+                google_hash,
+            ):
+                raise ValueError("Google identity does not match tag fingerprint")
         except (InvalidTag, KeyError, TypeError, ValueError) as exc:
             logger.error(
                 "finder_key_unwrap_failed device=%s error_type=%s",
@@ -404,9 +445,18 @@ class LocationService:
             device_id=row["device_id"],
             serial_number=row["serial_number"],
             session_id=row["session_id"],
-            finding_network=finding_network,
-            advertisement_key_sha256=advertisement_hash,
-            finder_secret=finder_secret,
+            providers=(
+                _ProviderBinding(
+                    finding_network="apple",
+                    advertisement_key_sha256=apple_hash,
+                    finder_secret=apple_secret,
+                ),
+                _ProviderBinding(
+                    finding_network="google",
+                    advertisement_key_sha256=google_hash,
+                    finder_secret=google_secret,
+                ),
+            ),
         )
 
     async def _accept_report(
@@ -415,18 +465,15 @@ class LocationService:
         *,
         user_id: UUID,
         binding: _ReportBinding,
-        report: FinderReport,
+        sourced_report: _SourcedReport,
     ) -> DeviceLocationReportResponse:
         # Only accept reports for the same active owner/session that supplied the
         # decrypted key. A release or transfer racing this request therefore
         # cannot write a location into a future owner's device projection.
+        provider = sourced_report.provider
+        report = sourced_report.report
         place = f"{report.latitude:.5f}, {report.longitude:.5f}"
-        await self._persist_report(
-            connection,
-            user_id=user_id,
-            binding=binding,
-            report=report,
-        )
+        source_fingerprint = self._source_fingerprint(provider, report)
         query = await connection.execute(
             """
             UPDATE public.device d
@@ -434,6 +481,8 @@ class LocationService:
                    last_longitude = %s,
                    last_location_at = %s,
                    last_place = %s,
+                   last_location_finding_network = %s,
+                   last_location_source_fingerprint = %s,
                    updated_at = now()
              WHERE d.id = %s
                AND d.provisioning_session_id = %s
@@ -446,6 +495,19 @@ class LocationService:
                AND (
                    d.last_location_at IS NULL
                    OR d.last_location_at < %s
+                   OR (
+                     d.last_location_at = %s
+                     AND (
+                       COALESCE(
+                         d.last_location_source_fingerprint,
+                         decode(repeat('00', 32), 'hex')
+                       ) < %s
+                       OR (
+                         d.last_location_source_fingerprint = %s
+                         AND COALESCE(d.last_location_finding_network, '') < %s
+                       )
+                     )
+                   )
                )
              RETURNING d.id AS device_id, d.serial_number,
                        d.last_latitude, d.last_longitude,
@@ -456,10 +518,16 @@ class LocationService:
                 report.longitude,
                 report.timestamp,
                 place,
+                provider.finding_network,
+                source_fingerprint,
                 binding.device_id,
                 binding.session_id,
                 user_id,
                 report.timestamp,
+                report.timestamp,
+                source_fingerprint,
+                source_fingerprint,
+                provider.finding_network,
             ),
         )
         row = await query.fetchone()
@@ -487,24 +555,28 @@ class LocationService:
         *,
         user_id: UUID,
         binding: _ReportBinding,
-        report: FinderReport,
+        sourced_report: _SourcedReport,
     ) -> None:
         """Persist only while the owner/session binding used to decrypt is active.
 
-        The database trigger evaluates safe-zone, lost-mode, and movement alerts
+        The database trigger evaluates safe-zone, separation, and movement alerts
         only for a newly inserted report. The uniqueness key makes retries and
         overlapping app requests idempotent.
         """
 
+        provider = sourced_report.provider
+        report = sourced_report.report
         place = f"{report.latitude:.5f}, {report.longitude:.5f}"
+        source_fingerprint = self._source_fingerprint(provider, report)
         await connection.execute(
             """
             INSERT INTO public.device_location_report (
                 user_id, device_id, provisioning_session_id,
+                finding_network, source_fingerprint,
                 latitude, longitude, confidence, status_code,
                 place, recorded_at
             )
-            SELECT %s, device.id, %s, %s, %s, %s, %s, %s, %s
+            SELECT %s, device.id, %s, %s, %s, %s, %s, %s, %s, %s, %s
               FROM public.device device
              WHERE device.id = %s
                AND device.provisioning_session_id = %s
@@ -516,19 +588,21 @@ class LocationService:
                )
                AND EXISTS (
                  SELECT 1 FROM public.subscription subscription
-                  WHERE subscription.device_id = device.id
-                    AND subscription.user_id = %s
+                  WHERE subscription.user_id = %s
                     AND subscription.status IN ('active', 'trialing')
                     AND subscription.starts_at <= now()
                     AND subscription.current_period_end > now()
                )
             ON CONFLICT (
-                device_id, provisioning_session_id, recorded_at
+                device_id, provisioning_session_id,
+                finding_network, source_fingerprint
             ) DO NOTHING
             """,
             (
                 user_id,
                 binding.session_id,
+                provider.finding_network,
+                source_fingerprint,
                 report.latitude,
                 report.longitude,
                 report.confidence,
@@ -541,6 +615,61 @@ class LocationService:
                 user_id,
             ),
         )
+
+    async def _ingest_reports(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        binding: _ReportBinding,
+        reports: list[_SourcedReport],
+    ) -> _SourcedReport | None:
+        """Store reports chronologically and return one deterministic latest."""
+
+        ordered = sorted(
+            reports,
+            key=lambda sourced_report: (
+                sourced_report.report.timestamp,
+                self._source_fingerprint(
+                    sourced_report.provider, sourced_report.report
+                ),
+                sourced_report.provider.finding_network,
+            ),
+        )
+        for sourced_report in ordered:
+            await self._persist_report(
+                connection,
+                user_id=user_id,
+                binding=binding,
+                sourced_report=sourced_report,
+            )
+        return ordered[-1] if ordered else None
+
+    @staticmethod
+    def _source_fingerprint(
+        provider: _ProviderBinding, report: FinderReport
+    ) -> bytes:
+        if report.source_fingerprint is not None:
+            fingerprint = bytes(report.source_fingerprint)
+            if len(fingerprint) != 32:
+                raise ValueError("provider report fingerprint must be 32 bytes")
+            return fingerprint
+        timestamp = report.timestamp.astimezone(UTC)
+        fallback = b"\x00".join(
+            (
+                b"pinqeva-location-v1",
+                provider.finding_network.encode("ascii"),
+                timestamp.isoformat(timespec="microseconds").encode("ascii"),
+                struct.pack(
+                    ">ddBB",
+                    report.latitude,
+                    report.longitude,
+                    report.confidence,
+                    report.status,
+                ),
+            )
+        )
+        return hashlib.sha256(fallback).digest()
 
     async def _current_projection(
         self,

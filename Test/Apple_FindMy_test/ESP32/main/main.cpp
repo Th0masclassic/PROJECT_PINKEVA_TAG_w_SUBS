@@ -11,6 +11,7 @@
 #include "esp_ota_ops.h"
 #include "esp_pm.h"
 #include "ble_driver.hpp"
+#include "buzzer.hpp"
 #include "sdkconfig.h"
 #include "utils.hpp"
 
@@ -177,6 +178,7 @@ extern "C" void app_main(void)
     ESP_ERROR_CHECK(esp_pm_configure(&power_configuration));
 #endif
     ESP_ERROR_CHECK(init_led());
+    ESP_ERROR_CHECK(buzzer_init());
     ESP_ERROR_CHECK(init_maintenance_button());
     xTaskCreate(task_ble_init, "ble_init_task", 2048 * 4, NULL, 5, NULL);
 }

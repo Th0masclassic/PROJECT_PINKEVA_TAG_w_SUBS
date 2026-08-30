@@ -9,11 +9,12 @@ not the legacy OpenHaystack image. During setup the tag advertises its
 The service is present both in the GATT database and in the setup advertisement
 so iOS and Android can find the tag before it is claimed.
 
-After provisioning, normal finder advertising is non-connectable. A continuous
-five-second press on `CONFIG_PINQEVA_MAINTENANCE_BUTTON_GPIO` opens a
-connectable Pinkeva maintenance advertisement for 120 seconds. The phone must
-scan and create a fresh BLE connection; a disconnected BLE link cannot be
-resumed. GPIO0 is the development default and is a boot-strapping pin on common
+After provisioning, finder advertisements remain connectable so an iOS or
+Android non-owner detection client can reach the public DULT sound service. A
+continuous five-second press on `CONFIG_PINQEVA_MAINTENANCE_BUTTON_GPIO` switches
+to the Pinkeva maintenance advertisement for 120 seconds. The phone must scan
+and create a fresh BLE connection; a disconnected BLE link cannot be resumed.
+GPIO0 is the development button default and is a boot-strapping pin on common
 boards, so production hardware should select a dedicated non-strapping GPIO.
 
 ## Build
@@ -54,8 +55,9 @@ credential.
 
 ## Signed BLE firmware updates
 
-Firmware `0.4.0` implements protocol `1.7`. Capability `0x0080` identifies
-signed OTA support and `0x0100` identifies dual-network provisioning.
+Firmware `0.5.0` implements protocol `1.8`. Capability `0x0080` identifies
+signed OTA support, `0x0100` identifies dual-network provisioning, and `0x0200`
+identifies the public DULT non-owner sound control.
 During the physical two-minute maintenance window, an authorized phone can
 install a newer classic-ESP32 application into the inactive OTA slot. The
 tracker accepts a transfer only when its fixed 115-byte manifest:
@@ -84,30 +86,50 @@ preserved unless `--erase-nvs` is explicitly supplied.
 ## Dual-network advertising
 
 Provisioning stores a 28-byte Apple advertisement key, a 20-byte Google Find
-Hub development EID, and a write-once network selector. Both identities must be
-present, but the firmware emits only the selected network's frame. Android
-setup selects Google and iOS setup selects Apple. The selected frame is restored
-after every reboot and is never controlled by billing state.
+Hub development EID, and a write-once setup preference. Both identities must be
+present. The classic ESP32 has one legacy advertising set, so firmware alternates
+500 ms Apple and Google slots. Each slot uses a 250 ms advertising interval,
+targeting two Apple events followed by two Google events per second. The stored
+preference only decides which frame starts first; both are restored after every
+reboot and neither is controlled by billing state.
 
-The former development entitlement characteristic, verifier, timer, and API
-transport have been removed. NVS initialization erases only the exact obsolete
-`entitlement` blob if one exists; this one-time cleanup does not affect the
-bootstrap credential or either finder identity. UTC synchronization remains for
-authorized maintenance and future rotating-identity work, not subscription
-enforcement.
+The former development entitlement characteristic, verifier, timer, NVS key,
+erase path, and API transport have been removed. The ESP32 contains no
+subscription state. UTC synchronization remains for authorized maintenance and
+future rotating-identity work, not subscription enforcement.
 
-The current Google frame uses the published 20-byte Find Hub EID format with a
-development counter-zero identity. Commercial Find Hub operation still needs
-Google's partner onboarding, Fast Pair/Find Hub Network requirements, rotating
-EIDs, unwanted-tracking protections, ring behavior, and certification.
+The current 29-byte Google frame matches the pinned GoogleFindMyTools development
+format: service UUID `0xFEAA`, frame type `0x41`, a 20-byte counter-zero EID, and
+one hashed-flags byte. The isolated bridge refreshes the server-side future-slot
+announcement about every four days; the EID stored on the tag does not change.
+This is experimental. Google's published switchable-protocol guidance requires
+only one finder network at a time, so simultaneous Apple/Google advertising is
+not a certifiable Find Hub implementation. Commercial operation still needs
+partner onboarding, rotating EIDs, Fast Pair/FHN behavior, and certification.
 
-Normal finder frames use a two-second interval and are non-connectable. Setup
-and maintenance advertisements are connectable only for their bounded setup
-window. The build uses BLE-only mode, one controller connection, Bluetooth
-modem sleep, automatic light sleep, tickless idle, and 40–80 MHz dynamic
-frequency scaling. These settings reduce radio and CPU duty cycle, but final
-battery life still requires current measurements on the production PCB,
-battery, antenna, and chosen advertising interval.
+Finder frames are connectable for DULT and switch every 500 ms. Setup and
+maintenance advertisements remain bounded by their respective workflow. The
+faster radio schedule and connectability materially increase power use compared
+with the former two-second non-connectable frame; final battery life requires
+current measurements on the production PCB, battery, antenna, and enclosure.
+The build still uses BLE-only mode, one controller connection, Bluetooth modem
+sleep, automatic light sleep, tickless idle, and 40–80 MHz dynamic scaling.
+
+## CPT-9019A sound and platform commands
+
+`CONFIG_PINQEVA_BUZZER_GPIO` defaults to GPIO25. Firmware drives one terminal of
+the CPT-9019A-SMT-TR at its rated 4 kHz with a 50% duty square wave; the direct
+development wiring connects the other terminal to ground. Production hardware
+may use a transistor or bridge driver when enclosure measurements require more
+output, while remaining inside the buzzer voltage rating.
+
+The public DULT non-owner service
+`15190001-12F4-C226-88ED-2AC5579F2A85` supports `Sound_Start` and `Sound_Stop`.
+It plays for the recommended 12 seconds, reports command status by indication,
+and emits `Sound_Completed`. This is the cross-platform anti-stalking sound
+path; it is not Apple's owner **Play Sound** protocol. Apple exposes the owner
+accessory protocol only through the MFi Find My program, and Google's certified
+owner ring path additionally requires the Fast Pair account/ring-key protocol.
 
 ## Flash
 

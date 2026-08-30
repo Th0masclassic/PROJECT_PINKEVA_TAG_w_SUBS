@@ -7,7 +7,7 @@ from uuid import UUID
 
 import requests
 
-from .crypto import b64url_encode
+from .crypto import b64url_decode_exact, b64url_encode
 from .findmy import FinderReport
 
 
@@ -23,8 +23,9 @@ class GoogleFindHubBridgeClient:
     """Client for an isolated, approved Google Find Hub report provider.
 
     Google does not publish a general-purpose Find Hub report API. This small
-    contract keeps any future partner integration outside the public API while
-    ensuring the backend never falls back to querying Apple for a Google tag.
+    contract keeps any future partner integration outside the public API. The
+    location service queries this bridge and Apple independently, then chooses
+    the newest valid report across both providers.
     """
 
     def __init__(
@@ -81,6 +82,13 @@ class GoogleFindHubBridgeClient:
             )
 
         request_time = (now or datetime.now(UTC)).astimezone(UTC)
+        self.ensure_registration(
+            device_id=device_id,
+            serial_number=serial_number,
+            identity_key=identity_key,
+            advertisement_key_sha256=advertisement_key_sha256,
+            now=request_time,
+        )
         try:
             response = requests.post(
                 f"{self.base_url}/v1/reports",
@@ -140,15 +148,85 @@ class GoogleFindHubBridgeClient:
         reports.sort(key=lambda report: report.timestamp, reverse=True)
         return reports
 
+    def ensure_registration(
+        self,
+        *,
+        device_id: UUID,
+        serial_number: str,
+        identity_key: bytes,
+        advertisement_key_sha256: bytes,
+        now: datetime | None = None,
+    ) -> str:
+        """Ensure the supplied EIK is registered and its static EID announced.
+
+        Development microcontroller integrations based on GoogleFindMyTools use
+        a static counter-zero EID and must upload future truncated-EID slots
+        periodically. The isolated bridge owns that Google-account operation;
+        this call is deliberately idempotent and never requires another BLE
+        write to the physical tag.
+        """
+
+        if not self.base_url or not self.service_token:
+            raise GoogleFindHubConfigurationError(
+                "Google Find Hub report provider is not configured"
+            )
+        if len(identity_key) != 32 or len(advertisement_key_sha256) != 32:
+            raise GoogleFindHubConfigurationError(
+                "Google Find Hub key material has an invalid size"
+            )
+        request_time = (now or datetime.now(UTC)).astimezone(UTC)
+        try:
+            response = requests.post(
+                f"{self.base_url}/v1/registrations",
+                headers={
+                    "Authorization": f"Bearer {self.service_token}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+                json={
+                    "version": 1,
+                    "device_id": str(device_id),
+                    "serial_number": serial_number,
+                    "identity_key_base64url": b64url_encode(identity_key),
+                    "advertisement_key_sha256_base64url": b64url_encode(
+                        advertisement_key_sha256
+                    ),
+                    "requested_at": request_time.isoformat().replace("+00:00", "Z"),
+                },
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as exc:
+            raise GoogleFindHubRequestError(
+                "Google Find Hub registration provider request failed"
+            ) from exc
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"status"}
+            or payload["status"] not in {"current", "registered", "refreshed"}
+        ):
+            raise GoogleFindHubRequestError(
+                "Google Find Hub registration provider returned an invalid response"
+            )
+        return str(payload["status"])
+
     @staticmethod
     def _parse_report(value: Any) -> FinderReport:
-        if not isinstance(value, dict) or set(value) != {
+        if not isinstance(value, dict) or not set(value) in ({
             "latitude",
             "longitude",
             "confidence",
             "status",
             "timestamp",
-        }:
+        }, {
+            "latitude",
+            "longitude",
+            "confidence",
+            "status",
+            "timestamp",
+            "source_fingerprint_base64url",
+        }):
             raise GoogleFindHubRequestError(
                 "Google Find Hub report provider returned an invalid report"
             )
@@ -179,6 +257,14 @@ class GoogleFindHubBridgeClient:
             if timestamp.tzinfo is None:
                 raise ValueError("timestamp must include a timezone")
             timestamp = timestamp.astimezone(UTC)
+            source_fingerprint_text = value.get(
+                "source_fingerprint_base64url"
+            )
+            source_fingerprint = (
+                None
+                if source_fingerprint_text is None
+                else b64url_decode_exact(source_fingerprint_text, 32)
+            )
         except (TypeError, ValueError, OverflowError) as exc:
             raise GoogleFindHubRequestError(
                 "Google Find Hub report provider returned invalid report values"
@@ -200,4 +286,5 @@ class GoogleFindHubBridgeClient:
             confidence=confidence,
             status=status,
             timestamp=timestamp,
+            source_fingerprint=source_fingerprint,
         )

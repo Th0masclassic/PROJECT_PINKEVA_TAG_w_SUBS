@@ -306,6 +306,9 @@ class Settings:
     findmy_lookback_hours: int = 24
     google_findhub_bridge_url: str = ""
     google_findhub_bridge_token: str = ""
+    location_sync_worker_enabled: bool = True
+    location_sync_interval_seconds: int = 900
+    location_sync_batch_size: int = 8
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
     stripe_price_map: tuple[tuple[str, str, str], ...] = ()
@@ -388,6 +391,12 @@ def get_settings() -> Settings:
             os.getenv("PINQEVA_FINDMY_REQUEST_TIMEOUT_SECONDS", "15")
         )
         findmy_lookback = int(os.getenv("PINQEVA_FINDMY_LOOKBACK_HOURS", "24"))
+        location_sync_interval = int(
+            os.getenv("PINQEVA_LOCATION_SYNC_INTERVAL_SECONDS", "900")
+        )
+        location_sync_batch_size = int(
+            os.getenv("PINQEVA_LOCATION_SYNC_BATCH_SIZE", "8")
+        )
     except ValueError:
         raise ConfigurationError("Find My report timing settings are invalid") from None
     if not 3 <= findmy_timeout <= 60:
@@ -397,6 +406,14 @@ def get_settings() -> Settings:
     if not 1 <= findmy_lookback <= 168:
         raise ConfigurationError(
             "PINQEVA_FINDMY_LOOKBACK_HOURS must be between 1 and 168"
+        )
+    if not 60 <= location_sync_interval <= 86_400:
+        raise ConfigurationError(
+            "PINQEVA_LOCATION_SYNC_INTERVAL_SECONDS must be between 60 and 86400"
+        )
+    if not 1 <= location_sync_batch_size <= 64:
+        raise ConfigurationError(
+            "PINQEVA_LOCATION_SYNC_BATCH_SIZE must be between 1 and 64"
         )
 
     findmy_anisette_provider = parse_findmy_anisette_provider(
@@ -535,6 +552,12 @@ def get_settings() -> Settings:
         findmy_lookback_hours=findmy_lookback,
         google_findhub_bridge_url=google_findhub_bridge_url,
         google_findhub_bridge_token=google_findhub_bridge_token,
+        location_sync_worker_enabled=parse_boolean(
+            "PINQEVA_LOCATION_SYNC_WORKER_ENABLED",
+            os.getenv("PINQEVA_LOCATION_SYNC_WORKER_ENABLED", "true"),
+        ),
+        location_sync_interval_seconds=location_sync_interval,
+        location_sync_batch_size=location_sync_batch_size,
         stripe_secret_key=validate_stripe_secret(
             "STRIPE_SECRET_KEY",
             _required("STRIPE_SECRET_KEY"),

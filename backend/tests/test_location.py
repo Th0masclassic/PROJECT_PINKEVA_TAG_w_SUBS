@@ -28,6 +28,7 @@ from app.crypto import (
     generate_google_finder_key_bundle,
 )
 from app.findmy import FindMyClient, FinderReport
+from app.google_findhub import GoogleFindHubBridgeClient
 from app.location import LocationError, LocationService
 from app.main import app
 from app.models import DeviceLocationHistoryResponse, DeviceLocationReportResponse
@@ -117,9 +118,55 @@ def _settings() -> Settings:
 def _binding_row(
     settings: Settings, *, user_id: UUID, device_id: UUID, session_id: UUID
 ) -> tuple[dict, bytes]:
-    bundle = generate_finder_key_bundle()
-    encrypted = encrypt_private_key(
-        bundle.private_key,
+    apple_bundle = generate_finder_key_bundle()
+    apple_encrypted = encrypt_private_key(
+        apple_bundle.private_key,
+        settings.key_encryption_key,
+        f"pinqeva:v1:{session_id}:{user_id}:{device_id}".encode("ascii"),
+    )
+    google_bundle = generate_google_finder_key_bundle()
+    google_encrypted = encrypt_google_identity_key(
+        google_bundle.identity_key,
+        settings.key_encryption_key,
+        f"pinqeva:google-eik:v1:{session_id}:{user_id}:{device_id}".encode(
+            "ascii"
+        ),
+    )
+    return (
+        {
+            "device_id": device_id,
+            "serial_number": "PKV-AABBCCDDEEFF",
+            "provisioning_session_id": session_id,
+            "session_id": session_id,
+            "finding_network": "apple",
+            "private_key_ciphertext": apple_encrypted.ciphertext,
+            "private_key_nonce": apple_encrypted.nonce,
+            "private_key_envelope_version": apple_encrypted.version,
+            "advertisement_key_sha256": apple_bundle.advertisement_key_sha256,
+            "google_identity_key_ciphertext": google_encrypted.ciphertext,
+            "google_identity_key_nonce": google_encrypted.nonce,
+            "google_identity_key_envelope_version": google_encrypted.version,
+            "google_advertisement_key_sha256": (
+                google_bundle.advertisement_key_sha256
+            ),
+            "subscription_active": True,
+        },
+        apple_bundle.private_key,
+    )
+
+
+def _google_binding_row(
+    settings: Settings, *, user_id: UUID, device_id: UUID, session_id: UUID
+) -> tuple[dict, bytes]:
+    google_bundle = generate_google_finder_key_bundle()
+    google_encrypted = encrypt_google_identity_key(
+        google_bundle.identity_key,
+        settings.key_encryption_key,
+        f"pinqeva:google-eik:v1:{session_id}:{user_id}:{device_id}".encode("ascii"),
+    )
+    apple_bundle = generate_finder_key_bundle()
+    apple_encrypted = encrypt_private_key(
+        apple_bundle.private_key,
         settings.key_encryption_key,
         f"pinqeva:v1:{session_id}:{user_id}:{device_id}".encode("ascii"),
     )
@@ -129,40 +176,20 @@ def _binding_row(
             "serial_number": "PKV-AABBCCDDEEFF",
             "provisioning_session_id": session_id,
             "session_id": session_id,
-            "finding_network": "apple",
-            "private_key_ciphertext": encrypted.ciphertext,
-            "private_key_nonce": encrypted.nonce,
-            "private_key_envelope_version": encrypted.version,
-            "advertisement_key_sha256": bundle.advertisement_key_sha256,
-            "subscription_active": True,
-        },
-        bundle.private_key,
-    )
-
-
-def _google_binding_row(
-    settings: Settings, *, user_id: UUID, device_id: UUID, session_id: UUID
-) -> tuple[dict, bytes]:
-    bundle = generate_google_finder_key_bundle()
-    encrypted = encrypt_google_identity_key(
-        bundle.identity_key,
-        settings.key_encryption_key,
-        f"pinqeva:google-eik:v1:{session_id}:{user_id}:{device_id}".encode("ascii"),
-    )
-    return (
-        {
-            "device_id": device_id,
-            "serial_number": "PKV-AABBCCDDEEFF",
-            "provisioning_session_id": session_id,
-            "session_id": session_id,
             "finding_network": "google",
-            "google_identity_key_ciphertext": encrypted.ciphertext,
-            "google_identity_key_nonce": encrypted.nonce,
-            "google_identity_key_envelope_version": encrypted.version,
-            "google_advertisement_key_sha256": bundle.advertisement_key_sha256,
+            "private_key_ciphertext": apple_encrypted.ciphertext,
+            "private_key_nonce": apple_encrypted.nonce,
+            "private_key_envelope_version": apple_encrypted.version,
+            "advertisement_key_sha256": apple_bundle.advertisement_key_sha256,
+            "google_identity_key_ciphertext": google_encrypted.ciphertext,
+            "google_identity_key_nonce": google_encrypted.nonce,
+            "google_identity_key_envelope_version": google_encrypted.version,
+            "google_advertisement_key_sha256": (
+                google_bundle.advertisement_key_sha256
+            ),
             "subscription_active": True,
         },
-        bundle.identity_key,
+        google_bundle.identity_key,
     )
 
 
@@ -279,6 +306,8 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
 ) -> None:
     settings = replace(
         _settings(),
+        findmy_dsid="",
+        findmy_search_party_token="",
         google_findhub_bridge_url="https://google-bridge.test",
         google_findhub_bridge_token="bridge-secret",
     )
@@ -292,7 +321,10 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
     report_time = datetime.now(UTC).replace(microsecond=0)
 
     def fake_google_post(url: str, **kwargs: object) -> _Response:
-        assert url == "https://google-bridge.test/v1/reports"
+        assert url in {
+            "https://google-bridge.test/v1/registrations",
+            "https://google-bridge.test/v1/reports",
+        }
         headers = kwargs["headers"]
         assert isinstance(headers, dict)
         assert headers["Authorization"] == "Bearer bridge-secret"
@@ -303,6 +335,8 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
         assert request["advertisement_key_sha256_base64url"] == b64url_encode(
             binding["google_advertisement_key_sha256"]
         )
+        if url.endswith("/v1/registrations"):
+            return _Response({"status": "current"})
         return _Response(
             {
                 "reports": [
@@ -321,7 +355,7 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
         raise AssertionError("Google tags must never query Apple's report service")
 
     monkeypatch.setattr("app.google_findhub.requests.post", fake_google_post)
-    monkeypatch.setattr(FindMyClient, "fetch_latest", unexpected_apple_call)
+    monkeypatch.setattr(FindMyClient, "fetch_reports", unexpected_apple_call)
     accepted = {
         "device_id": device_id,
         "serial_number": binding["serial_number"],
@@ -342,10 +376,74 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
 
 
 @pytest.mark.asyncio
+async def test_dual_provider_reports_project_the_newest_ecosystem(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = replace(
+        _settings(),
+        google_findhub_bridge_url="https://google-bridge.test",
+        google_findhub_bridge_token="bridge-secret",
+    )
+    user_id = uuid4()
+    device_id = uuid4()
+    binding, _apple_private_key = _binding_row(
+        settings, user_id=user_id, device_id=device_id, session_id=uuid4()
+    )
+    apple_time = datetime(2026, 8, 29, 12, 0, tzinfo=UTC)
+    google_time = apple_time + timedelta(minutes=3)
+
+    monkeypatch.setattr(
+        FindMyClient,
+        "fetch_reports",
+        lambda *_args, **_kwargs: [
+            FinderReport(38.72, -9.14, 3, 1, apple_time, b"a" * 32)
+        ],
+    )
+    monkeypatch.setattr(
+        GoogleFindHubBridgeClient,
+        "fetch_reports",
+        lambda *_args, **_kwargs: [
+            FinderReport(38.73, -9.13, 4, 1, google_time, b"g" * 32)
+        ],
+    )
+    connection = _Connection(
+        binding_row=binding,
+        accepted_row={
+            "device_id": device_id,
+            "serial_number": binding["serial_number"],
+            "last_latitude": 38.73,
+            "last_longitude": -9.13,
+            "last_location_at": google_time,
+            "last_place": "38.73000, -9.13000",
+        },
+    )
+
+    result = await LocationService(settings).request_report(
+        _Database(connection), user_id=user_id, device_id=device_id
+    )
+
+    inserts = [
+        parameters
+        for query, parameters in connection.executed
+        if "INSERT INTO public.device_location_report" in query
+    ]
+    assert [parameters[2] for parameters in inserts] == ["apple", "google"]
+    projection = next(
+        parameters
+        for query, parameters in connection.executed
+        if query.lstrip().startswith("UPDATE public.device")
+    )
+    assert projection[0:5] == (38.73, -9.13, google_time, "38.73000, -9.13000", "google")
+    assert result.last_location_at == google_time
+
+
+@pytest.mark.asyncio
 async def test_google_tag_fails_closed_when_bridge_is_not_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = _settings()
+    settings = replace(
+        _settings(), findmy_dsid="", findmy_search_party_token=""
+    )
     user_id = uuid4()
     device_id = uuid4()
     binding, _identity_key = _google_binding_row(
@@ -407,7 +505,7 @@ async def test_no_report_returns_existing_coordinates_without_fabricating_values
         "last_location_at": previous_time,
         "last_place": "38.72230, -9.13993",
     }
-    monkeypatch.setattr(FindMyClient, "fetch_latest", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(FindMyClient, "fetch_reports", lambda *_args, **_kwargs: [])
     database = _Database(
         _Connection(binding_row=binding, current_row=current)
     )
@@ -530,6 +628,14 @@ async def test_request_report_history_24h_returns_only_owned_tag_coordinates(
     database = _Database(
         _Connection(
             binding_row=binding,
+            accepted_row={
+                "device_id": device_id,
+                "serial_number": binding["serial_number"],
+                "last_latitude": 38.73,
+                "last_longitude": -9.13,
+                "last_location_at": newer,
+                "last_place": "38.73000, -9.13000",
+            },
             history_rows=[
                 {"latitude": 38.73, "longitude": -9.13, "recorded_at": newer},
                 {"latitude": 38.72, "longitude": -9.14, "recorded_at": older},
@@ -628,6 +734,14 @@ async def test_premium_history_supports_thirty_days_and_persists_reports(
     database = _Database(
         _Connection(
             binding_row=binding,
+            accepted_row={
+                "device_id": device_id,
+                "serial_number": binding["serial_number"],
+                "last_latitude": 38.72,
+                "last_longitude": -9.14,
+                "last_location_at": provider_reported_at,
+                "last_place": "38.72000, -9.14000",
+            },
             history_rows=[
                 {
                     "latitude": 38.72,
@@ -660,6 +774,59 @@ async def test_premium_history_supports_thirty_days_and_persists_reports(
     ]
     assert len(history_reads) == 1
     assert "provisioning_session_id = %s" in history_reads[0][0]
+
+
+@pytest.mark.asyncio
+async def test_unsorted_provider_batch_is_stored_oldest_first_and_projects_newest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    user_id = uuid4()
+    device_id = uuid4()
+    binding, _ = _binding_row(
+        settings, user_id=user_id, device_id=device_id, session_id=uuid4()
+    )
+    older = datetime(2026, 8, 29, 10, 0, tzinfo=UTC)
+    newer = datetime(2026, 8, 29, 11, 0, tzinfo=UTC)
+    monkeypatch.setattr(
+        FindMyClient,
+        "fetch_reports",
+        lambda *_args, **_kwargs: [
+            FinderReport(38.73, -9.13, 4, 1, newer, b"n" * 32),
+            FinderReport(38.72, -9.14, 3, 1, older, b"o" * 32),
+        ],
+    )
+    connection = _Connection(
+        binding_row=binding,
+        accepted_row={
+            "device_id": device_id,
+            "serial_number": binding["serial_number"],
+            "last_latitude": 38.73,
+            "last_longitude": -9.13,
+            "last_location_at": newer,
+            "last_place": "38.73000, -9.13000",
+        },
+    )
+
+    result = await LocationService(settings).request_report(
+        _Database(connection), user_id=user_id, device_id=device_id
+    )
+
+    inserts = [
+        parameters
+        for query, parameters in connection.executed
+        if "INSERT INTO public.device_location_report" in query
+    ]
+    assert [parameters[9] for parameters in inserts] == [older, newer]
+    assert inserts[0][3] == b"o" * 32
+    assert inserts[1][3] == b"n" * 32
+    assert result.last_location_at == newer
+    projection_update = next(
+        parameters
+        for query, parameters in connection.executed
+        if query.lstrip().startswith("UPDATE public.device")
+    )
+    assert projection_update[0:3] == (38.73, -9.13, newer)
 
 
 @pytest.mark.asyncio

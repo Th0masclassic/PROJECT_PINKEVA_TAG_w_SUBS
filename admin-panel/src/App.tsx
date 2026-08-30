@@ -252,19 +252,31 @@ function UsersPanel({ client, config, identity, refresh, setMessage }: PanelProp
 }
 
 function UserDetail({ client, config, data, plans, reload, setMessage }: { client: SupabaseClient; config: Config; data: UserTrackers; plans: Plan[]; reload: () => Promise<void>; setMessage: (value: string) => void }) {
-  const [chosenPlans, setChosenPlans] = useState<Record<string, string>>({});
+  const [chosenPlan, setChosenPlan] = useState(plans[0]?.code || '');
+  const accountSubscription = data.subscription;
+  useEffect(() => {
+    if (!chosenPlan && plans[0]?.code) setChosenPlan(plans[0].code);
+  }, [chosenPlan, plans]);
   const mutate = async (path: string, init: RequestInit, success: string) => {
     try { await adminRequest(client, config.apiUrl, path, init); setMessage(success); await reload(); }
     catch (error) { setMessage(safeAdminMessage(error)); }
   };
-  return <div><div className="detail-heading"><div><h2>{data.user.display_name || 'Unnamed user'}</h2><p>{data.user.email || data.user.id}</p></div><span>{data.trackers.length} trackers</span></div><GoogleUserMap trackers={data.trackers} apiKey={config.googleMapsKey} mapId={config.googleMapId} /><div className="tracker-grid">{data.trackers.map((tracker) => <article className="tracker-card" key={tracker.id}><div className="tracker-head"><div className="tag-icon">⌖</div><div><h3>{tracker.name || 'Pinkeva Tag'}</h3><code>{tracker.serial_number}</code></div></div><dl><div><dt>Status</dt><dd>{tracker.status || '—'}</dd></div><div><dt>Last place</dt><dd>{tracker.last_place || 'No location yet'}</dd></div><div><dt>Firmware</dt><dd>{tracker.firmware_version || '—'}</dd></div><div><dt>Subscription</dt><dd>{tracker.subscription_status ? `${tracker.plan_code} · ${tracker.subscription_status}` : 'None'}</dd></div></dl>{tracker.subscription_id ? <button className="danger" onClick={() => { if (window.confirm('End this tag subscription? Stripe cancellation will be queued when required.')) void mutate(`/v1/admin/subscriptions/${tracker.subscription_id}`, { method: 'DELETE' }, 'Subscription ended.'); }}>End subscription</button> : <div className="inline-form"><select value={chosenPlans[tracker.id] || plans[0]?.code || ''} onChange={(e) => setChosenPlans((current) => ({ ...current, [tracker.id]: e.target.value }))}>{plans.filter((plan) => plan.active).map((plan) => <option key={plan.code} value={plan.code}>{plan.duration_months} months · {(plan.price_cents / 100).toFixed(2)} {plan.currency}</option>)}</select><button className="primary small" onClick={() => void mutate(`/v1/admin/users/${data.user.id}/devices/${tracker.id}/subscriptions`, { method: 'POST', body: JSON.stringify({ plan_code: chosenPlans[tracker.id] || plans[0]?.code }) }, 'Subscription granted.')}>Grant subscription</button></div>}</article>)}</div></div>;
+  return <div>
+    <div className="detail-heading"><div><h2>{data.user.display_name || 'Unnamed user'}</h2><p>{data.user.email || data.user.id}</p></div><span>{data.trackers.length} trackers</span></div>
+    <article className="account-subscription-card">
+      <div><span className="duration">ACCOUNT SUBSCRIPTION</span><h3>{accountSubscription ? `${accountSubscription.plan_code} · ${accountSubscription.status}` : 'No current plan'}</h3><p>{accountSubscription ? `Covers every tracker on this account until ${new Date(accountSubscription.current_period_end).toLocaleDateString()}.` : 'One plan unlocks premium features on every tracker owned by this account.'}</p></div>
+      {accountSubscription ? <button className="danger" onClick={() => { if (window.confirm('End this account subscription? Stripe cancellation will be queued when required.')) void mutate(`/v1/admin/subscriptions/${accountSubscription.id}`, { method: 'DELETE' }, 'Account subscription ended.'); }}>End subscription</button> : <div className="inline-form"><select value={chosenPlan} onChange={(e) => setChosenPlan(e.target.value)}>{plans.filter((plan) => plan.active).map((plan) => <option key={plan.code} value={plan.code}>{plan.duration_months} months · {(plan.price_cents / 100).toFixed(2)} {plan.currency}</option>)}</select><button className="primary small" disabled={!chosenPlan} onClick={() => void mutate(`/v1/admin/users/${data.user.id}/subscriptions`, { method: 'POST', body: JSON.stringify({ plan_code: chosenPlan }) }, 'Account subscription granted.')}>Grant subscription</button></div>}
+    </article>
+    <GoogleUserMap trackers={data.trackers} apiKey={config.googleMapsKey} mapId={config.googleMapId} />
+    <div className="tracker-grid">{data.trackers.map((tracker) => <article className="tracker-card" key={tracker.id}><div className="tracker-head"><div className="tag-icon">⌖</div><div><h3>{tracker.name || 'Pinkeva Tag'}</h3><code>{tracker.serial_number}</code></div></div><dl><div><dt>Status</dt><dd>{tracker.status || '—'}</dd></div><div><dt>Last place</dt><dd>{tracker.last_place || 'No location yet'}</dd></div><div><dt>Firmware</dt><dd>{tracker.firmware_version || '—'}</dd></div></dl></article>)}</div>
+  </div>;
 }
 
 function PlansPanel({ client, config, refresh, setMessage }: PanelProps) {
   const [plans, setPlans] = useState<Plan[]>([]);
   const load = useCallback(() => adminRequest<Plan[]>(client, config.apiUrl, '/v1/admin/plans').then(setPlans).catch((error) => setMessage(safeAdminMessage(error))), [client, config.apiUrl, setMessage]);
   useEffect(() => { void load(); }, [refresh]);
-  return <section><div className="section-intro"><h2>Per-tag subscription prices</h2><p>A price change creates a new immutable Stripe Price for new purchases. Existing subscriptions keep their historical Stripe price.</p></div><div className="plan-grid">{plans.map((plan) => <PlanEditor key={plan.code} plan={plan} client={client} config={config} onDone={load} setMessage={setMessage} />)}</div></section>;
+  return <section><div className="section-intro"><h2>Account subscription prices</h2><p>A price change creates a new immutable Stripe Price for new purchases. Existing subscriptions keep their historical Stripe price.</p></div><div className="plan-grid">{plans.map((plan) => <PlanEditor key={plan.code} plan={plan} client={client} config={config} onDone={load} setMessage={setMessage} />)}</div></section>;
 }
 
 function PlanEditor({ plan, client, config, onDone, setMessage }: { plan: Plan; client: SupabaseClient; config: Config; onDone: () => Promise<void> | void; setMessage: (value: string) => void }) {

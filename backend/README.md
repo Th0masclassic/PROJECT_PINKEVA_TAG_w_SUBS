@@ -1,15 +1,15 @@
 # Pinqeva provisioning backend
 
 This service implements the payment-gated dual-network identity lifecycle and
-signed firmware release portion of protocol v1.7:
+signed firmware release portion of protocol v1.8:
 
 1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
 2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 45 minutes.
 3. The app shows the server-provided plan prices, opens Stripe Checkout, and polls the request status. A signed, idempotent Stripe webhook is the only event that changes the request to `paid`.
 4. Only after payment does `POST /v1/devices/claim` lock the device and either resume the exact allocation or generate Apple P-224 and Google EIK/EID material with the operating-system CSPRNG. Paid requests have a bounded claim deadline.
-5. The app writes the authorization proof before the one-time control key, both public advertising identities, and the write-once network selector. Firmware disconnects invalid clients and times out connections that never authorize.
-6. The app reads both 32-byte fingerprints and the selector. `POST /v1/devices/claim/complete` checks the complete binding plus a user/session/device-bound capability before creating the one active ownership row.
-7. Claim completion returns `status: claimed` and `next_action: ready`. The selected finder identity is sufficient for tracker operation; renewals never install billing state over BLE.
+5. The app writes the authorization proof before the one-time control key, both public advertising identities, and the write-once startup-slot preference. Firmware disconnects invalid clients and times out connections that never authorize.
+6. The app reads both 32-byte fingerprints and the startup preference. `POST /v1/devices/claim/complete` checks the complete binding plus a user/session/device-bound capability before creating the one active ownership row.
+7. Claim completion returns `status: claimed` and `next_action: ready`. Both finder identities are sufficient for tracker operation; renewals never install billing state over BLE.
 8. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
 
 ## Run locally
@@ -126,16 +126,21 @@ POST /v1/devices/{device_id}/location/report
 Authorization: Bearer <Supabase access token>
 ```
 
-The backend verifies active ownership and routes the request using
-`device.finding_network`. Apple-selected tags use the encrypted P-224 scalar and
-Apple report provider. Google-selected tags use the encrypted 32-byte Find Hub
-identity key and a separately deployed provider bridge configured by
+The backend verifies active ownership, decrypts both provider identities, and
+queries every configured report provider concurrently. Apple uses the encrypted
+P-224 scalar. Google uses the encrypted 32-byte Find Hub identity key and a
+separately deployed provider bridge configured by
 `PINQEVA_GOOGLE_FINDHUB_BRIDGE_URL` and
-`PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN`. There is deliberately no Apple fallback
-for a Google tag. Google does not publish a general report API, so that bridge
-must be supplied through an approved production integration; loopback is also
-supported for development testing. In both cases the public API returns only
-the safe coordinate projection and persists newer accepted reports.
+`PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN`. One provider may still succeed when the
+other is unavailable. Reports are provider-tagged, deduplicated, globally sorted
+by provider timestamp plus deterministic tie-breakers, and the newest accepted
+Apple-or-Google observation becomes the safe public projection. Google does not
+publish a general report API, so the bridge remains a development integration
+until an approved production path exists; loopback is supported for testing.
+The executable reference bridge lives in `google-findhub-bridge`. It pins the
+complete GoogleFindMyTools commit, verifies that checkout before importing it,
+and performs an account-wide server-side announcement refresh every three days.
+That refresh is independent of Stripe and never writes new material to a tag.
 
 The server logs `location_report_request_received`,
 `findmy_request_reports_received`, and `location_report_request_completed`
@@ -269,12 +274,12 @@ Content-Type: application/json
 }
 ```
 
-`null` means the corresponding fingerprint or network characteristic is empty.
+`null` means the corresponding fingerprint or startup-preference characteristic is empty.
 The backend allocates both the 28-byte Apple advertisement key and 20-byte
-Google EID once, then binds the selected network. Android selects Google and
-iOS selects Apple. The tag stores both identities but advertises only the one
-selected network. A retry always returns the original allocation; it never
-generates replacement material.
+Google EID once, then records a legacy startup-slot preference. The native app
+uses the same value on Android and iOS, and firmware `0.5.0` advertises both
+identities in alternating slots. A retry always returns the original
+allocation; it never generates replacement material.
 
 After the tag reports `0x04 0x00` and its fingerprint matches, complete the claim:
 
@@ -299,19 +304,24 @@ Retries with the same session return the same ownership result. A deadline never
 
 One device can have only one active owner. Transfer rotates the finder key; the old key is never reassigned to the next account.
 
-Subscriptions are also device-scoped: one account may pay for multiple tags, but each tag can have at most one current/nonterminal subscription. `subscription.user_id` identifies the payer/owner account; it is not an account-wide entitlement. Cancelled and ended records are retained as history.
+Subscriptions are account-scoped: one current/nonterminal row for
+`subscription.user_id` covers every tag that account currently owns. The
+nullable `subscription.device_id` is retained only as historical checkout
+origin data and is never consulted for access. Cancelled and ended records are
+retained as billing history.
 
-1. The current owner connects to the exact tag and reads both fingerprints and the selected network.
+1. The current owner connects to the exact tag and reads both fingerprints and the startup-slot preference.
 2. `POST /v1/devices/{device_id}/release` verifies active ownership and the complete dual-network binding, then returns a nonce plus HMAC reset command.
-3. The tag verifies that HMAC using the control key installed during its original claim, erases both finder identities, network selection, and control key, reports all three public values empty, and clears BLE bonds on disconnect.
-4. `POST /v1/devices/{device_id}/release/complete` atomically ends ownership, revokes the old allocation, clears the device binding, cancels local subscriptions, and creates idempotent payment-provider cancellation outbox rows.
+3. The tag verifies that HMAC using the control key installed during its original claim, erases both finder identities, startup preference, and control key, reports all three public values empty, and clears BLE bonds on disconnect.
+4. `POST /v1/devices/{device_id}/release/complete` atomically ends ownership, revokes the old allocation, and clears the device binding. The account subscription remains active for the owner's other and future tags.
 5. Only then may another authenticated account claim the empty tag, creating entirely new Apple and Google identities plus a tag-control key.
 
 The outbox is not the payment-provider API. A production worker must process it and the signed provider webhook must confirm that external billing stopped.
 
 ## Premium tracker services
 
-Active/trialing per-device subscriptions unlock backend-controlled features;
+One active/trialing account subscription unlocks backend-controlled features
+for every currently owned tag;
 the tag never needs to receive the subscription state:
 
 ```text
@@ -334,8 +344,11 @@ GET        /v1/devices/{device_id}/replacement-eligibility
 GET|POST   /v1/devices/{device_id}/replacement-claims
 ```
 
-Accepted Finder reports are retained for at most 30 days and are bound to the
-active owner and provisioning session. Main-phone observations are retained for
+Accepted Finder reports are provider-tagged, deduplicated, retained for at most
+30 days, and bound to the active owner and provisioning session. A leased
+background collector polls only configured Apple/Google providers while the
+account subscription is active; manual requests use the same idempotent ingest
+path, and the latest provider timestamp wins. Main-phone observations are retained for
 at most 24 hours. A database trigger combines the nearest-in-time phone GPS,
 finder-network location, and an authenticated BLE-nearby observation. A tag may
 remain in any safe zone without an alert; an alert is emitted only when the tag
@@ -397,12 +410,11 @@ existing release-delivery record. The initial move from the old single-app
 partition layout still requires the wired flash bundle described in the ESP32
 README; all subsequent releases can use signed BLE OTA.
 
-## Per-tag Stripe subscriptions
+## Account Stripe subscription
 
-Billing is attached to a physical tag, not to an account-wide entitlement. A
-single account has one Stripe Customer and may own several subscriptions, but
-the database and Checkout reservation table allow only one current
-subscription or payable Checkout flow per tag.
+Billing is attached to the signed-in account. A single account has one Stripe
+Customer and at most one current subscription or payable Checkout flow. That
+subscription covers all tags currently owned by the account.
 
 New-tag setup uses the separate `provisioning_request` gate described above.
 The mobile client never receives a public key, control key, completion token,
@@ -413,12 +425,13 @@ confirmation and existing owners never reconnect merely to renew.
 The authenticated mobile contract is:
 
 ```http
-GET /v1/devices/{device_id}/subscription
-POST /v1/devices/{device_id}/subscription/checkout  {"plan_code":"monthly_basic"}
-POST /v1/devices/{device_id}/subscription/portal  {"action":"update"}
+GET /v1/subscription
+POST /v1/subscription/checkout  {"plan_code":"monthly_basic"}
+POST /v1/subscription/portal  {"action":"update"}
 ```
 
-Every endpoint verifies that the caller is the tag's current owner. The client
+Every endpoint derives the account from the caller's validated access token;
+there is no device identifier in the subscription API. The client
 never sends an amount, Stripe Price ID, customer ID, provider metadata, or
 redirect URL. Plan codes are looked up in the active `public.plan` table and
 resolved through a server-only catalog binding. Initial bindings come from
@@ -433,9 +446,9 @@ interval count; twelve months uses yearly recurrence. Checkout and Customer crea
 idempotency keys. The optional portal action is strictly
 `update` (the default when the body is omitted) or `cancel`; it starts the
 corresponding Stripe `subscription_update` or `subscription_cancel` deep-link
-flow for that exact provider subscription. It never falls back to an
-account-wide portal homepage, so another tag's subscription is not exposed by
-this endpoint. The selected Billing Portal configuration must enable both flows.
+flow for that account's exact provider subscription. It never falls back to an
+unscoped portal homepage. The selected Billing Portal configuration must enable
+both flows.
 
 Configure a Stripe webhook endpoint at:
 

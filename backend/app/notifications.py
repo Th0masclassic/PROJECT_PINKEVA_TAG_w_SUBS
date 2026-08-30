@@ -375,7 +375,7 @@ class NotificationWorker:
                         user_id, device_id, subscription_id, kind,
                         period_end, due_at
                     )
-                    SELECT subscription.user_id, subscription.device_id,
+                    SELECT subscription.user_id, NULL,
                            subscription.id, %s,
                            subscription.current_period_end,
                            {due_expression}
@@ -472,13 +472,12 @@ class NotificationWorker:
                   SELECT 1 FROM public.subscription subscription
                    WHERE subscription.id = %s
                      AND subscription.user_id = %s
-                     AND subscription.device_id = %s
                      AND subscription.status IN ('active', 'trialing')
                      AND subscription.starts_at <= now()
                      AND subscription.current_period_end > now()
                 ) AS active
                 """,
-                (job.subscription_id, job.user_id, job.device_id),
+                (job.subscription_id, job.user_id),
             )
             row = await query.fetchone()
         return bool(row and row["active"])

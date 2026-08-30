@@ -3,10 +3,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
 import {
-  createDeviceCheckout,
-  createDevicePortal,
+  createAccountCheckout,
+  createAccountPortal,
   createProvisioningCheckout,
-  getDeviceSubscription,
+  getAccountSubscription,
   safeBillingErrorCode,
 } from './api';
 import { BILLING_API_CONFIG } from './config';
@@ -17,6 +17,7 @@ import type {
   BillingErrorCode,
   BillingMode,
   BillingPortalAction,
+  AccountSubscription,
   DeviceSubscription,
 } from './types';
 
@@ -35,17 +36,26 @@ type BillingState = {
   openPortal: (deviceId: string, action?: BillingPortalAction) => Promise<BillingActionResult>;
 };
 
-function setMembership(current: ReadonlySet<string>, value: string, present: boolean): Set<string> {
-  const next = new Set(current);
-  if (present) next.add(value);
-  else next.delete(value);
-  return next;
-}
-
 const POST_BILLING_REFRESH_DELAYS_MS = [0, 1_000, 2_500, 5_000] as const;
 
 function waitFor(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function subscriptionsForDevices(
+  subscription: AccountSubscription,
+  deviceIds: readonly string[],
+): Record<string, DeviceSubscription> {
+  return Object.fromEntries(
+    deviceIds.map((deviceId) => [deviceId, { ...subscription, deviceId }]),
+  );
+}
+
+function errorsForDevices(
+  code: BillingErrorCode | undefined,
+  deviceIds: readonly string[],
+): Record<string, BillingErrorCode | undefined> {
+  return Object.fromEntries(deviceIds.map((deviceId) => [deviceId, code]));
 }
 
 export function useTrackerBilling(
@@ -84,43 +94,33 @@ export function useTrackerBilling(
       }
 
       if (mode === 'unavailable' || !BILLING_API_CONFIG || !accessToken) {
-        setSubscriptions((current) => {
-          const next = { ...current };
-          delete next[deviceId];
-          return next;
-        });
-        setErrors((current) => ({
-          ...current,
-          [deviceId]: accessToken ? 'configuration' : 'authentication',
-        }));
+        setSubscriptions({});
+        setErrors(
+          errorsForDevices(
+            accessToken ? 'configuration' : 'authentication',
+            deviceIds,
+          ),
+        );
         return;
       }
 
-      setLoadingIds((current) => setMembership(current, deviceId, true));
+      setLoadingIds(new Set(deviceIds));
       try {
-        const subscription = await getDeviceSubscription(
-          BILLING_API_CONFIG,
-          accessToken,
-          deviceId,
-        );
+        const subscription = await getAccountSubscription(BILLING_API_CONFIG, accessToken);
         if (currentContext.current !== requestContext) return;
-        setSubscriptions((current) => ({ ...current, [deviceId]: subscription }));
-        setErrors((current) => ({ ...current, [deviceId]: undefined }));
+        setSubscriptions(subscriptionsForDevices(subscription, deviceIds));
+        setErrors(errorsForDevices(undefined, deviceIds));
       } catch (error) {
         if (currentContext.current !== requestContext) return;
-        setSubscriptions((current) => {
-          const next = { ...current };
-          delete next[deviceId];
-          return next;
-        });
-        setErrors((current) => ({ ...current, [deviceId]: safeBillingErrorCode(error) }));
+        setSubscriptions({});
+        setErrors(errorsForDevices(safeBillingErrorCode(error), deviceIds));
       } finally {
         if (currentContext.current === requestContext) {
-          setLoadingIds((current) => setMembership(current, deviceId, false));
+          setLoadingIds(new Set());
         }
       }
     },
-    [accessToken, contextIdentity, mode],
+    [accessToken, contextIdentity, deviceIds, mode],
   );
 
   useEffect(() => {
@@ -152,42 +152,32 @@ export function useTrackerBilling(
     setSubscriptions({});
     setErrors({});
     setLoadingIds(new Set(deviceIds));
-    void Promise.all(
-      deviceIds.map(async (deviceId) => {
-        if (!BILLING_API_CONFIG || !accessToken) return;
-        try {
-          const subscription = await getDeviceSubscription(
-            BILLING_API_CONFIG,
-            accessToken,
-            deviceId,
-          );
-          if (
-            generation.current !== currentGeneration ||
-            currentContext.current !== effectContext
-          ) return;
-          setSubscriptions((current) => ({ ...current, [deviceId]: subscription }));
-          setErrors((current) => ({ ...current, [deviceId]: undefined }));
-        } catch (error) {
-          if (
-            generation.current !== currentGeneration ||
-            currentContext.current !== effectContext
-          ) return;
-          setSubscriptions((current) => {
-            const next = { ...current };
-            delete next[deviceId];
-            return next;
-          });
-          setErrors((current) => ({ ...current, [deviceId]: safeBillingErrorCode(error) }));
-        } finally {
-          if (
-            generation.current === currentGeneration &&
-            currentContext.current === effectContext
-          ) {
-            setLoadingIds((current) => setMembership(current, deviceId, false));
-          }
+    void (async () => {
+      if (!BILLING_API_CONFIG || !accessToken) return;
+      try {
+        const subscription = await getAccountSubscription(BILLING_API_CONFIG, accessToken);
+        if (
+          generation.current !== currentGeneration ||
+          currentContext.current !== effectContext
+        ) return;
+        setSubscriptions(subscriptionsForDevices(subscription, deviceIds));
+        setErrors(errorsForDevices(undefined, deviceIds));
+      } catch (error) {
+        if (
+          generation.current !== currentGeneration ||
+          currentContext.current !== effectContext
+        ) return;
+        setSubscriptions({});
+        setErrors(errorsForDevices(safeBillingErrorCode(error), deviceIds));
+      } finally {
+        if (
+          generation.current === currentGeneration &&
+          currentContext.current === effectContext
+        ) {
+          setLoadingIds(new Set());
         }
-      }),
-    );
+      }
+    })();
   }, [accessToken, contextIdentity, deviceIds, mode]);
 
   const refreshAfterBillingReturn = useCallback(
@@ -206,7 +196,8 @@ export function useTrackerBilling(
     if (mode !== 'live') return undefined;
     const listener = AppState.addEventListener('change', (nextState) => {
       if (nextState !== 'active') return;
-      for (const deviceId of deviceIds) void refreshDevice(deviceId);
+      const firstDeviceId = deviceIds[0];
+      if (firstDeviceId) void refreshDevice(firstDeviceId);
     });
     return () => listener.remove();
   }, [deviceIds, mode, refreshDevice]);
@@ -219,12 +210,7 @@ export function useTrackerBilling(
         return { kind: 'error', code: 'configuration' };
       }
       try {
-        const url = await createDeviceCheckout(
-          BILLING_API_CONFIG,
-          accessToken,
-          deviceId,
-          planCode,
-        );
+        const url = await createAccountCheckout(BILLING_API_CONFIG, accessToken, planCode);
         await WebBrowser.openBrowserAsync(url);
         void refreshAfterBillingReturn(deviceId);
         return { kind: 'opened' };
@@ -246,7 +232,7 @@ export function useTrackerBilling(
         return { kind: 'error', code: 'configuration' };
       }
       try {
-        const url = await createDevicePortal(BILLING_API_CONFIG, accessToken, deviceId, action);
+        const url = await createAccountPortal(BILLING_API_CONFIG, accessToken, action);
         await WebBrowser.openBrowserAsync(url);
         void refreshAfterBillingReturn(deviceId);
         return { kind: 'opened' };

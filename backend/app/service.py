@@ -135,6 +135,19 @@ class ProvisioningService:
                 409,
             )
 
+        subscription_query = await connection.execute(
+            """
+            SELECT id, plan_code FROM public.subscription
+             WHERE user_id = %s
+               AND status IN ('active', 'trialing')
+               AND starts_at <= now()
+               AND current_period_end > now()
+             FOR UPDATE
+            """,
+            (user_id,),
+        )
+        account_subscription = await subscription_query.fetchone()
+
         existing_query = await connection.execute(
             """
             SELECT id, device_id, serial_number, status, plan_code,
@@ -156,6 +169,29 @@ class ProvisioningService:
                     "This idempotency key was already used for a different request",
                     409,
                 )
+            if (
+                account_subscription is not None
+                and existing["status"] in {"pending", "creating", "open"}
+            ):
+                activated_query = await connection.execute(
+                    """
+                    UPDATE public.provisioning_request
+                       SET status = 'paid', plan_code = %s,
+                           subscription_id = %s,
+                           claim_deadline = now() + (%s * interval '1 second'),
+                           paid_at = COALESCE(paid_at, now()), updated_at = now()
+                     WHERE id = %s
+                     RETURNING id, device_id, serial_number, status, plan_code,
+                               expires_at, claim_deadline
+                    """,
+                    (
+                        account_subscription["plan_code"],
+                        account_subscription["id"],
+                        self.settings.claim_ttl_seconds,
+                        existing["id"],
+                    ),
+                )
+                existing = await activated_query.fetchone()
             return self._provisioning_request_response(existing)
 
         # Expired unpaid requests no longer hold the one-request-per-device
@@ -193,6 +229,29 @@ class ProvisioningService:
                     "The tag is unavailable",
                     409,
                 )
+            if (
+                account_subscription is not None
+                and active["status"] in {"pending", "creating", "open"}
+            ):
+                activated_query = await connection.execute(
+                    """
+                    UPDATE public.provisioning_request
+                       SET status = 'paid', plan_code = %s,
+                           subscription_id = %s,
+                           claim_deadline = now() + (%s * interval '1 second'),
+                           paid_at = COALESCE(paid_at, now()), updated_at = now()
+                     WHERE id = %s
+                     RETURNING id, user_id, device_id, serial_number, status,
+                               plan_code, expires_at, claim_deadline
+                    """,
+                    (
+                        account_subscription["plan_code"],
+                        account_subscription["id"],
+                        self.settings.claim_ttl_seconds,
+                        active["id"],
+                    ),
+                )
+                active = await activated_query.fetchone()
             # A new app session can resume the same request without creating a
             # second checkout or racing the unique device reservation.
             return self._provisioning_request_response(active)
@@ -204,31 +263,18 @@ class ProvisioningService:
                 409,
             )
 
-        subscription_query = await connection.execute(
-            """
-            SELECT 1 FROM public.subscription
-             WHERE device_id = %s
-               AND status NOT IN ('cancelled', 'ended')
-             FOR UPDATE
-            """,
-            (device["id"],),
-        )
-        if await subscription_query.fetchone() is not None:
-            raise ProvisioningError(
-                "DEVICE_UNAVAILABLE",
-                "The tag already has a billing binding",
-                409,
-            )
-
         try:
             request_query = await connection.execute(
                 """
                 INSERT INTO public.provisioning_request (
                     id, user_id, device_id, serial_number, idempotency_key,
-                    status, expires_at
+                    status, plan_code, subscription_id,
+                    expires_at, claim_deadline
                 ) VALUES (
-                    %s, %s, %s, %s, %s, 'pending',
-                    now() + interval '45 minutes'
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    now() + interval '45 minutes',
+                    CASE WHEN %s::uuid IS NULL THEN NULL
+                         ELSE now() + (%s * interval '1 second') END
                 )
                 RETURNING id, device_id, serial_number, status, plan_code,
                           expires_at, claim_deadline
@@ -239,6 +285,11 @@ class ProvisioningService:
                     device["id"],
                     device["serial_number"],
                     idempotency_key,
+                    "paid" if account_subscription is not None else "pending",
+                    account_subscription["plan_code"] if account_subscription else None,
+                    account_subscription["id"] if account_subscription else None,
+                    account_subscription["id"] if account_subscription else None,
+                    self.settings.claim_ttl_seconds,
                 ),
             )
         except UniqueViolation:
@@ -935,38 +986,10 @@ class ProvisioningService:
             )
 
         released_at = datetime.now(UTC)
-        cancellation_query = await connection.execute(
-            """
-            WITH cancelled AS (
-                UPDATE public.subscription
-                   SET status = 'cancelled',
-                       cancel_at_period_end = false,
-                       current_period_end = LEAST(current_period_end, %s),
-                       ended_reason = 'device_released',
-                       updated_at = %s
-                 WHERE device_id = %s
-                   AND user_id = %s
-                   AND status NOT IN ('cancelled', 'ended')
-                RETURNING id, provider_subscription_id
-            ), queued AS (
-                INSERT INTO public.subscription_cancellation_outbox (
-                    id, subscription_id, device_release_id,
-                    provider_subscription_id, status
-                )
-                SELECT gen_random_uuid(), id, %s, provider_subscription_id, 'pending'
-                  FROM cancelled
-                 WHERE provider_subscription_id IS NOT NULL
-                ON CONFLICT (subscription_id, device_release_id) DO NOTHING
-                RETURNING 1
-            )
-            SELECT (SELECT count(*)::int FROM cancelled) AS cancelled_count,
-                   (SELECT count(*)::int FROM queued) AS queued_count
-            """,
-            (released_at, released_at, device_id, user_id, release["id"]),
-        )
-        cancellation = await cancellation_query.fetchone()
-        cancelled_count = int(cancellation["cancelled_count"])
-        queued_count = int(cancellation["queued_count"])
+        # Billing belongs to the account. Releasing one physical tag revokes
+        # only that tag's ownership and key material.
+        cancelled_count = 0
+        queued_count = 0
 
         await connection.execute(
             """
@@ -1256,12 +1279,23 @@ class ProvisioningService:
             SELECT pr.id, pr.user_id, pr.device_id, pr.serial_number,
                    pr.status, pr.plan_code, pr.claim_deadline,
                    pr.replacement_claim_id,
-                   s.status AS subscription_status,
-                   s.starts_at, s.current_period_end,
+                   account_subscription.status AS subscription_status,
+                   account_subscription.starts_at,
+                   account_subscription.current_period_end,
                    replacement.status AS replacement_claim_status
               FROM public.provisioning_request pr
-              LEFT JOIN public.subscription s
-                ON s.id = pr.subscription_id
+              LEFT JOIN LATERAL (
+                SELECT subscription.status, subscription.starts_at,
+                       subscription.current_period_end
+                  FROM public.subscription subscription
+                 WHERE subscription.user_id = pr.user_id
+                   AND subscription.status IN ('active', 'trialing')
+                   AND subscription.starts_at <= now()
+                   AND subscription.current_period_end > now()
+                 ORDER BY subscription.current_period_end DESC,
+                          subscription.created_at DESC
+                 LIMIT 1
+              ) account_subscription ON true
               LEFT JOIN public.device_replacement_claim replacement
                 ON replacement.id = pr.replacement_claim_id
                AND replacement.user_id = pr.user_id

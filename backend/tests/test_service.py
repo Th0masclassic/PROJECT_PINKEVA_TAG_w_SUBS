@@ -446,7 +446,7 @@ async def test_payment_request_resumes_existing_user_reservation(
         "expires_at": datetime.now(UTC) + timedelta(minutes=10),
         "claim_deadline": None,
     }
-    connection = FakeConnection([device, None, None, existing])
+    connection = FakeConnection([device, None, None, None, existing])
 
     response = await ProvisioningService(settings).start_provisioning_request(
         connection,
@@ -715,7 +715,7 @@ async def test_start_release_returns_challenge_bound_authorization(
 
 
 @pytest.mark.asyncio
-async def test_completed_release_ends_one_owner_and_cancels_subscriptions(
+async def test_completed_release_ends_one_owner_without_cancelling_account_plan(
     settings: Settings,
 ) -> None:
     release_id = uuid.uuid4()
@@ -748,7 +748,6 @@ async def test_completed_release_ends_one_owner_and_cancels_subscriptions(
         [
             release,
             {"user_id": user_id},
-            {"cancelled_count": 2, "queued_count": 1},
             None,
             None,
             None,
@@ -770,8 +769,12 @@ async def test_completed_release_ends_one_owner_and_cancels_subscriptions(
         ),
     )
     assert response.status == "unprovisioned"
-    assert response.cancelled_subscriptions == 2
-    assert response.provider_cancellations_queued == 1
+    assert response.cancelled_subscriptions == 0
+    assert response.provider_cancellations_queued == 0
+    assert not any(
+        "UPDATE public.subscription" in query
+        for query, _ in connection.executions
+    )
     statements = "\n".join(query for query, _ in connection.executions)
     assert "SET ended_at" in statements
     assert "SET status = 'revoked'" in statements

@@ -39,6 +39,8 @@ export type DeviceSubscription = {
   availablePlans: BillingPlan[];
 };
 
+export type AccountSubscription = Omit<DeviceSubscription, 'deviceId'>;
+
 export type BillingErrorCode =
   | 'configuration'
   | 'authentication'

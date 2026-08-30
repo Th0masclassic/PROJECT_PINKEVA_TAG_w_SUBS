@@ -19,9 +19,10 @@ npx supabase db push
 
 Do not use `db reset --linked` and do not add `--include-seed` against a
 production project. `supabase/seed.sql` contains local development plans only.
-The production migrations also enforce per-tag billing: an account may have
-multiple subscriptions for different devices, while a device can have only one
-current/nonterminal subscription. Cancelled and ended rows remain as history.
+The production migrations enforce account billing: one account may have only
+one current/nonterminal subscription, and that period covers every tracker the
+account currently owns. `subscription.device_id` is nullable historical audit
+context only. Cancelled and ended rows remain as history.
 
 After deployment, verify that every public table has RLS enabled, the new user
 trigger exists, and `anon`/`authenticated` have no privileges on:

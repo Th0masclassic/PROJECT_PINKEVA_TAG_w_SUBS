@@ -18,6 +18,7 @@
 #include "esp_timer.h"
 #include "mbedtls/md.h"
 #include "mbedtls/sha256.h"
+#include "buzzer.hpp"
 #include "nvs_driver.hpp"
 #include "ota_update.hpp"
 #include "sdkconfig.h"
@@ -34,6 +35,7 @@ namespace {
 constexpr char LOG_TAG[] = "BLE_DRIVER";
 constexpr uint16_t APP_ID = 0;
 constexpr uint8_t SERVICE_INSTANCE_ID = 0;
+constexpr uint8_t DULT_SERVICE_INSTANCE_ID = 1;
 constexpr uint8_t STATUS_VALUE_SIZE = 2;
 constexpr uint8_t PROTOCOL_VALUE_SIZE = 6;
 constexpr uint8_t KEY_FINGERPRINT_SIZE = 32;
@@ -53,9 +55,25 @@ constexpr uint16_t NON_BONDING_SETUP_CAPABILITY = 0x0020;
 constexpr uint16_t UTC_TIME_SYNC_CAPABILITY = 0x0040;
 constexpr uint16_t FIRMWARE_UPDATE_CAPABILITY = 0x0080;
 constexpr uint16_t DUAL_FINDING_NETWORK_CAPABILITY = 0x0100;
+constexpr uint16_t DULT_SOUND_CAPABILITY = 0x0200;
 constexpr size_t APPLE_FINDER_ADV_DATA_SIZE = 31;
-constexpr size_t GOOGLE_FINDER_ADV_DATA_SIZE = 28;
-constexpr size_t FINDER_ADV_DATA_SIZE = APPLE_FINDER_ADV_DATA_SIZE;
+constexpr size_t GOOGLE_FINDER_ADV_DATA_SIZE = 29;
+constexpr uint64_t FINDER_FRAME_SLOT_MICROSECONDS = 500ULL * 1000ULL;
+constexpr uint32_t DULT_SOUND_DURATION_MILLISECONDS = 12U * 1000U;
+constexpr uint16_t DULT_SOUND_START_OPCODE = 0x0300;
+constexpr uint16_t DULT_SOUND_STOP_OPCODE = 0x0301;
+constexpr uint16_t DULT_COMMAND_RESPONSE_OPCODE = 0x0302;
+constexpr uint16_t DULT_SOUND_COMPLETED_OPCODE = 0x0303;
+constexpr uint16_t DULT_RESPONSE_SUCCESS = 0x0000;
+constexpr uint16_t DULT_RESPONSE_INVALID_STATE = 0x0001;
+constexpr uint16_t DULT_RESPONSE_INVALID_CONFIGURATION = 0x0002;
+constexpr uint16_t DULT_RESPONSE_INVALID_LENGTH = 0x0003;
+constexpr uint16_t DULT_RESPONSE_INVALID_COMMAND = 0xFFFF;
+
+enum class FinderFrame : uint8_t {
+    APPLE,
+    GOOGLE,
+};
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
 // canonical string next to the wire representation so the mobile app,
@@ -140,6 +158,19 @@ constexpr uint8_t FINDING_NETWORK_UUID[ESP_UUID_LEN_128] = {
     0x1A, 0x4B, 0x4D, 0x3E, 0x12, 0xF0, 0xF0, 0xA6,
 };
 
+// Detecting Unwanted Location Trackers (DULT) non-owner service. UUID bytes
+// are stored least-significant first by ESP-IDF.
+constexpr char DULT_SERVICE_UUID_STRING[] =
+    "15190001-12F4-C226-88ED-2AC5579F2A85";
+constexpr uint8_t DULT_SERVICE_UUID[ESP_UUID_LEN_128] = {
+    0x85, 0x2A, 0x9F, 0x57, 0xC5, 0x2A, 0xED, 0x88,
+    0x26, 0xC2, 0xF4, 0x12, 0x01, 0x00, 0x19, 0x15,
+};
+constexpr uint8_t DULT_NON_OWNER_CONTROL_UUID[ESP_UUID_LEN_128] = {
+    0x0E, 0x68, 0x21, 0x74, 0x37, 0x48, 0x61, 0xBF,
+    0x92, 0xFB, 0x68, 0x1D, 0x01, 0x00, 0x0C, 0x8E,
+};
+
 enum AttributeIndex : uint8_t {
     SERVICE,
     PROTOCOL_DECLARATION,
@@ -182,6 +213,14 @@ enum AttributeIndex : uint8_t {
     ATTRIBUTE_COUNT,
 };
 
+enum DultAttributeIndex : uint8_t {
+    DULT_SERVICE,
+    DULT_CONTROL_DECLARATION,
+    DULT_CONTROL_VALUE,
+    DULT_CONTROL_CCC,
+    DULT_ATTRIBUTE_COUNT,
+};
+
 constexpr uint16_t PRIMARY_SERVICE_UUID = ESP_GATT_UUID_PRI_SERVICE;
 constexpr uint16_t CHARACTER_DECLARATION_UUID = ESP_GATT_UUID_CHAR_DECLARE;
 constexpr uint16_t CLIENT_CONFIG_UUID = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
@@ -193,19 +232,24 @@ constexpr uint8_t WRITE_WITHOUT_RESPONSE_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_WRITE_NR;
 constexpr uint8_t READ_NOTIFY_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
+constexpr uint8_t WRITE_INDICATE_PROPERTY =
+    ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_INDICATE;
 
-// Protocol 1.7, firmware 0.4. Capability bit 0x10 requires a backend-issued,
+// Protocol 1.8, firmware 0.5. Capability bit 0x10 requires a backend-issued,
 // nonce-bound authorization proof before any provisioning/reset write. The
 // checked-in development profile also advertises bit 0x20: setup deliberately
 // avoids OS pairing/bonding and therefore must never be shipped as the final
 // production transport until application-layer key confidentiality is added.
 // Bit 0x40 asks an authorized phone to provide Unix UTC on each connection.
 // Bit 0x80 supports signed, rollback-safe BLE OTA through dual app partitions.
-// Bit 0x100 provisions Apple and Google identities together while selecting
-// exactly one finding network for advertising, as required by both networks.
+// Bit 0x100 provisions Apple and Google identities together. The selector is
+// retained as the setup/UI preference; experimental firmware time-slices both
+// finder frames after provisioning.
+// Bit 0x200 exposes the public DULT non-owner sound controls.
 constexpr uint16_t PROTOCOL_CAPABILITIES =
     0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
     FIRMWARE_UPDATE_CAPABILITY | DUAL_FINDING_NETWORK_CAPABILITY |
+    DULT_SOUND_CAPABILITY |
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
     NON_BONDING_SETUP_CAPABILITY;
 #else
@@ -213,9 +257,9 @@ constexpr uint16_t PROTOCOL_CAPABILITIES =
 #endif
 uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
     1,
-    7,
+    8,
     0,
-    4,
+    5,
     static_cast<uint8_t>(PROTOCOL_CAPABILITIES & 0xFFU),
     static_cast<uint8_t>((PROTOCOL_CAPABILITIES >> 8U) & 0xFFU),
 };
@@ -240,7 +284,8 @@ char device_id[DEVICE_ID_LEN] = {};
 // number, provisioning records, and finder identity unchanged.
 constexpr uint8_t SETUP_BLE_IDENTITY_VERSION = 3;
 esp_bd_addr_t setup_ble_address = {};
-esp_bd_addr_t finder_ble_address = {};
+esp_bd_addr_t apple_finder_ble_address = {};
+esp_bd_addr_t google_finder_ble_address = {};
 uint8_t status_value[STATUS_VALUE_SIZE] = {
     static_cast<uint8_t>(ProvisioningState::UNPROVISIONED),
     static_cast<uint8_t>(ProvisioningResult::SUCCESS),
@@ -260,19 +305,24 @@ uint8_t firmware_manifest_attribute[FIRMWARE_MANIFEST_SIZE] = {};
 uint8_t firmware_data_attribute[512] = {};
 uint8_t firmware_control_attribute[1] = {};
 uint8_t firmware_status_attribute[FIRMWARE_STATUS_SIZE] = {};
-uint8_t firmware_version_attribute[3] = {0, 4, 0};
+uint8_t firmware_version_attribute[3] = {0, 5, 0};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
+uint16_t dult_attribute_handles[DULT_ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
 esp_gatt_if_t active_gatts_if = ESP_GATT_IF_NONE;
 uint16_t active_connection_id = 0;
 bool connected = false;
 bool notifications_enabled = false;
+bool dult_indications_enabled = false;
 std::atomic_bool service_started{false};
+bool pinkeva_service_started = false;
+bool dult_service_started = false;
 bool advertising_configuration_failed = false;
 bool connection_authorized = false;
 esp_timer_handle_t authorization_timeout_timer = nullptr;
 esp_timer_handle_t maintenance_window_timer = nullptr;
+esp_timer_handle_t finder_frame_timer = nullptr;
 uint64_t trusted_clock_epoch = 0;
 int64_t trusted_clock_started_microseconds = 0;
 bool trusted_clock_is_set = false;
@@ -281,6 +331,9 @@ bool random_address_change_pending = false;
 bool advertising_active = false;
 bool advertising_refresh_pending = false;
 bool maintenance_window_open = false;
+FinderFrame active_finder_frame = FinderFrame::APPLE;
+bool finder_frames_ready = false;
+uint16_t dult_sound_connection_id = 0;
 
 uint8_t staged_value[MAX_STAGED_VALUE_SIZE] = {};
 bool staged_value_bytes[MAX_STAGED_VALUE_SIZE] = {};
@@ -306,8 +359,10 @@ uint8_t setup_adv_data[3 + 18] = {
     PINKEVA_SERVICE_UUID[15],
 };
 uint8_t setup_scan_response[2 + (DEVICE_ID_LEN - 1)] = {};
-uint8_t finder_adv_data[FINDER_ADV_DATA_SIZE] = {};
-size_t finder_adv_data_length = 0;
+uint8_t apple_finder_adv_data[APPLE_FINDER_ADV_DATA_SIZE] = {};
+uint8_t google_finder_adv_data[GOOGLE_FINDER_ADV_DATA_SIZE] = {};
+uint8_t dult_control_value[6] = {};
+uint8_t dult_ccc_value[2] = {0x00, 0x00};
 
 esp_ble_adv_params_t setup_adv_params = {
     .adv_int_min = 0x00A0,  // 100 ms while actively setting up.
@@ -332,9 +387,14 @@ esp_ble_adv_params_t maintenance_adv_params = {
 };
 
 esp_ble_adv_params_t finder_adv_params = {
-    .adv_int_min = 0x0C80,  // 2 seconds: low duty-cycle Find My broadcast.
-    .adv_int_max = 0x0C80,
-    .adv_type = ADV_TYPE_NONCONN_IND,
+    // One legacy advertising set is time-sliced every 500 ms. A 250 ms
+    // interval targets two events for Apple, then two for Google, per second.
+    .adv_int_min = 0x0190,
+    .adv_int_max = 0x0190,
+    // Connectable finder frames let Apple/Android non-owner detection clients
+    // reach the public DULT sound service. Pinkeva provisioning characteristics
+    // still enforce their independent authorization rules.
+    .adv_type = ADV_TYPE_IND,
     .own_addr_type = BLE_ADDR_TYPE_RANDOM,
     .peer_addr = {0},
     .peer_addr_type = BLE_ADDR_TYPE_PUBLIC,
@@ -667,6 +727,42 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           firmware_version_attribute}},
 };
 
+const esp_gatts_attr_db_t dult_gatt_db[DULT_ATTRIBUTE_COUNT] = {
+    [DULT_SERVICE] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&PRIMARY_SERVICE_UUID)),
+          ESP_GATT_PERM_READ,
+          ESP_UUID_LEN_128,
+          ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(DULT_SERVICE_UUID)}},
+
+    [DULT_CONTROL_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ,
+          sizeof(uint8_t),
+          sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_INDICATE_PROPERTY)}},
+    [DULT_CONTROL_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128,
+          const_cast<uint8_t *>(DULT_NON_OWNER_CONTROL_UUID),
+          ESP_GATT_PERM_WRITE,
+          sizeof(dult_control_value),
+          0,
+          dult_control_value}},
+    [DULT_CONTROL_CCC] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CLIENT_CONFIG_UUID)),
+          ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+          sizeof(dult_ccc_value),
+          sizeof(dult_ccc_value),
+          dult_ccc_value}},
+};
+
 void clear_staged_value() {
     std::memset(staged_value, 0, sizeof(staged_value));
     std::memset(staged_value_bytes, 0, sizeof(staged_value_bytes));
@@ -819,26 +915,26 @@ esp_err_t configure_apple_finder_advertisement(const uint8_t *key,
     // Apple offline-finding manufacturer payload. The public advertisement key
     // is the complete on-device requirement; subscriptions protect cloud
     // services and are intentionally not a radio kill switch.
-    finder_ble_address[0] = static_cast<uint8_t>(key[0] | 0xC0U);
-    std::memcpy(finder_ble_address + 1, key + 1, 5);
+    apple_finder_ble_address[0] = static_cast<uint8_t>(key[0] | 0xC0U);
+    std::memcpy(apple_finder_ble_address + 1, key + 1, 5);
 
-    std::memset(finder_adv_data, 0, sizeof(finder_adv_data));
-    finder_adv_data[0] = 0x1E;  // 30 bytes follow this length byte.
-    finder_adv_data[1] = 0xFF;  // Manufacturer-specific data.
-    finder_adv_data[2] = 0x4C;  // Apple company identifier, little endian.
-    finder_adv_data[3] = 0x00;
-    finder_adv_data[4] = 0x12;  // Offline Finding type.
-    finder_adv_data[5] = 0x19;  // Offline Finding payload length.
-    finder_adv_data[6] = 0x00;  // State.
-    std::memcpy(finder_adv_data + 7, key + 6, 22);
-    finder_adv_data[29] = static_cast<uint8_t>(key[0] >> 6);
-    finder_adv_data[30] = 0x00;  // Hint.
-    finder_adv_data_length = APPLE_FINDER_ADV_DATA_SIZE;
+    std::memset(apple_finder_adv_data, 0, sizeof(apple_finder_adv_data));
+    apple_finder_adv_data[0] = 0x1E;  // 30 bytes follow this length byte.
+    apple_finder_adv_data[1] = 0xFF;  // Manufacturer-specific data.
+    apple_finder_adv_data[2] = 0x4C;  // Apple company identifier, little endian.
+    apple_finder_adv_data[3] = 0x00;
+    apple_finder_adv_data[4] = 0x12;  // Offline Finding type.
+    apple_finder_adv_data[5] = 0x19;  // Offline Finding payload length.
+    apple_finder_adv_data[6] = 0x00;  // State.
+    std::memcpy(apple_finder_adv_data + 7, key + 6, 22);
+    apple_finder_adv_data[29] = static_cast<uint8_t>(key[0] >> 6);
+    apple_finder_adv_data[30] = 0x00;  // Hint.
 
     ESP_LOGI(LOG_TAG,
              "Apple finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
-             finder_ble_address[0], finder_ble_address[1], finder_ble_address[2],
-             finder_ble_address[3], finder_ble_address[4], finder_ble_address[5]);
+             apple_finder_ble_address[0], apple_finder_ble_address[1],
+             apple_finder_ble_address[2], apple_finder_ble_address[3],
+             apple_finder_ble_address[4], apple_finder_ble_address[5]);
     return ESP_OK;
 }
 
@@ -857,26 +953,76 @@ esp_err_t configure_google_finder_advertisement(const uint8_t *eid,
     if (mbedtls_sha256(eid, length, address_digest, 0) != 0) {
         return ESP_FAIL;
     }
-    std::memcpy(finder_ble_address, address_digest, sizeof(finder_ble_address));
-    finder_ble_address[0] = static_cast<uint8_t>(finder_ble_address[0] & 0x3FU);
+    std::memcpy(google_finder_ble_address, address_digest,
+                sizeof(google_finder_ble_address));
+    google_finder_ble_address[0] =
+        static_cast<uint8_t>(google_finder_ble_address[0] & 0x3FU);
     std::memset(address_digest, 0, sizeof(address_digest));
 
-    // Google Find Hub Network legacy service-data frame:
-    // Flags + UUID 0xFEAA + frame type 0x40 + 20-byte ephemeral identifier.
-    std::memset(finder_adv_data, 0, sizeof(finder_adv_data));
+    // Google Find Hub Network legacy service-data frame used by the pinned
+    // GoogleFindMyTools development bridge: flags, UUID 0xFEAA, unwanted-
+    // tracking frame type 0x41, 20-byte EID, and one hashed-flags byte.
+    std::memset(google_finder_adv_data, 0, sizeof(google_finder_adv_data));
     constexpr uint8_t GOOGLE_FRAME_PREFIX[] = {
-        0x02, 0x01, 0x06, 0x18, 0x16, 0xAA, 0xFE, 0x40,
+        0x02, 0x01, 0x06, 0x19, 0x16, 0xAA, 0xFE, 0x41,
     };
-    std::memcpy(finder_adv_data, GOOGLE_FRAME_PREFIX,
+    std::memcpy(google_finder_adv_data, GOOGLE_FRAME_PREFIX,
                 sizeof(GOOGLE_FRAME_PREFIX));
-    std::memcpy(finder_adv_data + sizeof(GOOGLE_FRAME_PREFIX), eid, length);
-    finder_adv_data_length = GOOGLE_FINDER_ADV_DATA_SIZE;
+    std::memcpy(google_finder_adv_data + sizeof(GOOGLE_FRAME_PREFIX), eid,
+                length);
+    google_finder_adv_data[GOOGLE_FINDER_ADV_DATA_SIZE - 1] = 0x00;
 
     ESP_LOGI(LOG_TAG,
              "Google finder BLE identity: %02X:%02X:%02X:%02X:%02X:%02X",
-             finder_ble_address[0], finder_ble_address[1], finder_ble_address[2],
-             finder_ble_address[3], finder_ble_address[4], finder_ble_address[5]);
+             google_finder_ble_address[0], google_finder_ble_address[1],
+             google_finder_ble_address[2], google_finder_ble_address[3],
+             google_finder_ble_address[4], google_finder_ble_address[5]);
     return ESP_OK;
+}
+
+uint8_t *active_finder_address() {
+    return active_finder_frame == FinderFrame::APPLE
+               ? apple_finder_ble_address
+               : google_finder_ble_address;
+}
+
+uint8_t *active_finder_advertisement() {
+    return active_finder_frame == FinderFrame::APPLE
+               ? apple_finder_adv_data
+               : google_finder_adv_data;
+}
+
+size_t active_finder_advertisement_size() {
+    return active_finder_frame == FinderFrame::APPLE
+               ? APPLE_FINDER_ADV_DATA_SIZE
+               : GOOGLE_FINDER_ADV_DATA_SIZE;
+}
+
+const char *active_finder_network_name() {
+    return active_finder_frame == FinderFrame::APPLE ? "Apple" : "Google";
+}
+
+void stop_finder_frame_timer() {
+    if (finder_frame_timer != nullptr) {
+        const esp_err_t error = esp_timer_stop(finder_frame_timer);
+        if (error != ESP_OK && error != ESP_ERR_INVALID_STATE) {
+            ESP_LOGW(LOG_TAG, "Could not stop finder frame timer: %s",
+                     esp_err_to_name(error));
+        }
+    }
+}
+
+void request_advertising_refresh();
+
+void finder_frame_timer_callback(void *) {
+    if (ble_mode != BLEMode::TRACKER || maintenance_window_open || connected ||
+        !finder_frames_ready) {
+        return;
+    }
+    active_finder_frame = active_finder_frame == FinderFrame::APPLE
+                              ? FinderFrame::GOOGLE
+                              : FinderFrame::APPLE;
+    request_advertising_refresh();
 }
 
 void configure_advertising_for_mode() {
@@ -886,12 +1032,14 @@ void configure_advertising_for_mode() {
     const bool maintenance_frame =
         maintenance_window_open && ble_mode != BLEMode::SETUP;
     const bool setup_frame = ble_mode == BLEMode::SETUP || maintenance_frame;
+    stop_finder_frame_timer();
     pending_adv_configuration =
         ADV_CONFIG_FLAG | (setup_frame ? SCAN_RSP_CONFIG_FLAG : 0);
     advertising_configuration_failed = false;
     if (ble_mode == BLEMode::TRACKER && !maintenance_frame) {
         random_address_change_pending = true;
-        esp_err_t address_error = esp_ble_gap_set_rand_addr(finder_ble_address);
+        esp_err_t address_error =
+            esp_ble_gap_set_rand_addr(active_finder_address());
         if (address_error != ESP_OK) {
             random_address_change_pending = false;
             ESP_LOGE(LOG_TAG, "Could not activate finder BLE identity: %s",
@@ -907,10 +1055,12 @@ void configure_advertising_for_mode() {
         }
     }
 
-    uint8_t *advertisement_data = setup_frame ? setup_adv_data : finder_adv_data;
+    uint8_t *advertisement_data =
+        setup_frame ? setup_adv_data : active_finder_advertisement();
     size_t advertisement_data_size =
-        setup_frame ? sizeof(setup_adv_data) : finder_adv_data_length;
-    if (!setup_frame && advertisement_data_size == 0) {
+        setup_frame ? sizeof(setup_adv_data)
+                    : active_finder_advertisement_size();
+    if (!setup_frame && !finder_frames_ready) {
         advertising_configuration_failed = true;
         pending_adv_configuration = 0;
         ESP_LOGE(LOG_TAG, "Finder advertisement was not initialized");
@@ -1021,12 +1171,20 @@ esp_err_t restore_finder_configuration(bool *complete) {
                                 google_result == ESP_OK &&
                                 control_result == ESP_OK &&
                                 network_result == ESP_OK;
+    finder_frames_ready = false;
     if (result == ESP_OK && has_everything) {
-        result = network == FindingNetwork::APPLE
-                     ? configure_apple_finder_advertisement(
-                           apple_key, sizeof(apple_key))
-                     : configure_google_finder_advertisement(
-                           google_key, sizeof(google_key));
+        result = configure_apple_finder_advertisement(
+            apple_key, sizeof(apple_key));
+        if (result == ESP_OK) {
+            result = configure_google_finder_advertisement(
+                google_key, sizeof(google_key));
+        }
+        if (result == ESP_OK) {
+            active_finder_frame = network == FindingNetwork::APPLE
+                                      ? FinderFrame::APPLE
+                                      : FinderFrame::GOOGLE;
+            finder_frames_ready = true;
+        }
     }
 
     std::memset(apple_key, 0, sizeof(apple_key));
@@ -1139,7 +1297,7 @@ esp_gatt_status_t persist_key(const uint8_t *key, size_t length) {
     if (complete) {
         request_advertising_refresh();
         ESP_LOGI(LOG_TAG,
-                 "Both finding identities committed; selected network enabled");
+                 "Both finding identities committed; dual advertising enabled");
     } else {
         ESP_LOGI(LOG_TAG,
                  "Apple advertisement key committed; dual setup is incomplete");
@@ -1193,7 +1351,7 @@ esp_gatt_status_t persist_google_key(const uint8_t *key, size_t length) {
     }
     ESP_LOGI(LOG_TAG,
              "Google advertisement identity committed%s",
-             complete ? "; selected network enabled" : "");
+             complete ? "; dual advertising enabled" : "");
     return ESP_GATT_OK;
 }
 
@@ -1238,9 +1396,9 @@ esp_gatt_status_t persist_finding_network(const uint8_t *value, size_t length) {
     if (complete) {
         request_advertising_refresh();
     }
-    ESP_LOGI(LOG_TAG, "%s finding network selected%s",
+    ESP_LOGI(LOG_TAG, "%s setup preference selected%s",
              network == FindingNetwork::APPLE ? "Apple" : "Google",
-             complete ? " and enabled" : "");
+             complete ? "; both finder frames enabled" : "");
     return ESP_GATT_OK;
 }
 
@@ -1328,8 +1486,10 @@ esp_gatt_status_t authenticated_reset(const uint8_t *command, size_t length) {
                                     sizeof(finding_network_attribute),
                                     finding_network_attribute);
     }
-    std::memset(finder_adv_data, 0, sizeof(finder_adv_data));
-    finder_adv_data_length = 0;
+    stop_finder_frame_timer();
+    std::memset(apple_finder_adv_data, 0, sizeof(apple_finder_adv_data));
+    std::memset(google_finder_adv_data, 0, sizeof(google_finder_adv_data));
+    finder_frames_ready = false;
     ble_mode = BLEMode::SETUP;
     maintenance_window_open = false;
     bond_cleanup_pending = true;
@@ -1409,6 +1569,132 @@ void send_write_response(esp_gatt_if_t gatts_if,
                                     status,
                                     const_cast<esp_gatt_rsp_t *>(response));
     }
+}
+
+void encode_u16_little_endian(uint8_t *destination, uint16_t value) {
+    destination[0] = static_cast<uint8_t>(value & 0xFFU);
+    destination[1] = static_cast<uint8_t>((value >> 8U) & 0xFFU);
+}
+
+esp_err_t send_dult_indication(const uint8_t *value, size_t length) {
+    if (!connected || !dult_indications_enabled ||
+        active_gatts_if == ESP_GATT_IF_NONE ||
+        dult_attribute_handles[DULT_CONTROL_VALUE] == 0 || value == nullptr ||
+        length > sizeof(dult_control_value)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    return esp_ble_gatts_send_indicate(
+        active_gatts_if, active_connection_id,
+        dult_attribute_handles[DULT_CONTROL_VALUE],
+        static_cast<uint16_t>(length), const_cast<uint8_t *>(value), true);
+}
+
+esp_err_t send_dult_command_response(uint16_t command, uint16_t status) {
+    uint8_t response[6] = {};
+    encode_u16_little_endian(response, DULT_COMMAND_RESPONSE_OPCODE);
+    encode_u16_little_endian(response + 2, command);
+    encode_u16_little_endian(response + 4, status);
+    return send_dult_indication(response, sizeof(response));
+}
+
+esp_err_t send_dult_sound_completed() {
+    uint8_t response[2] = {};
+    encode_u16_little_endian(response, DULT_SOUND_COMPLETED_OPCODE);
+    return send_dult_indication(response, sizeof(response));
+}
+
+void dult_sound_completed_callback() {
+    if (!connected || active_connection_id != dult_sound_connection_id) return;
+    const esp_err_t error = send_dult_sound_completed();
+    if (error != ESP_OK) {
+        ESP_LOGW(LOG_TAG, "Could not indicate DULT sound completion: %s",
+                 esp_err_to_name(error));
+    }
+}
+
+void handle_dult_control_write(esp_gatt_if_t gatts_if,
+                               esp_ble_gatts_cb_param_t *param) {
+    if (!dult_indications_enabled) {
+        send_write_response(gatts_if, param, ESP_GATT_CCC_CFG_ERR);
+        return;
+    }
+
+    uint16_t command = 0;
+    uint16_t response_status = DULT_RESPONSE_SUCCESS;
+    if (param->write.len != 2) {
+        response_status = DULT_RESPONSE_INVALID_LENGTH;
+    } else {
+        command = static_cast<uint16_t>(param->write.value[0]) |
+                  static_cast<uint16_t>(param->write.value[1] << 8U);
+        if (ble_mode != BLEMode::TRACKER) {
+            response_status = DULT_RESPONSE_INVALID_COMMAND;
+        } else if (command == DULT_SOUND_START_OPCODE) {
+            if (buzzer_is_active()) {
+                response_status = DULT_RESPONSE_INVALID_STATE;
+            } else {
+                const esp_err_t error = buzzer_start(
+                    DULT_SOUND_DURATION_MILLISECONDS,
+                    &dult_sound_completed_callback);
+                if (error == ESP_OK) {
+                    dult_sound_connection_id = param->write.conn_id;
+                } else {
+                    ESP_LOGE(LOG_TAG, "Could not start DULT sound: %s",
+                             esp_err_to_name(error));
+                    response_status = DULT_RESPONSE_INVALID_CONFIGURATION;
+                }
+            }
+        } else if (command == DULT_SOUND_STOP_OPCODE) {
+            if (!buzzer_is_active() ||
+                dult_sound_connection_id != param->write.conn_id) {
+                response_status = DULT_RESPONSE_INVALID_STATE;
+            } else {
+                const esp_err_t error = buzzer_stop();
+                if (error != ESP_OK) {
+                    ESP_LOGE(LOG_TAG, "Could not stop DULT sound: %s",
+                             esp_err_to_name(error));
+                    response_status = DULT_RESPONSE_INVALID_CONFIGURATION;
+                }
+            }
+        } else {
+            response_status = DULT_RESPONSE_INVALID_COMMAND;
+        }
+    }
+
+    send_write_response(gatts_if, param, ESP_GATT_OK);
+    esp_err_t indication_error = ESP_OK;
+    if (command == DULT_SOUND_STOP_OPCODE &&
+        response_status == DULT_RESPONSE_SUCCESS) {
+        indication_error = send_dult_sound_completed();
+    } else {
+        indication_error = send_dult_command_response(command, response_status);
+    }
+    if (indication_error != ESP_OK) {
+        ESP_LOGW(LOG_TAG, "Could not indicate DULT sound response: %s",
+                 esp_err_to_name(indication_error));
+    }
+}
+
+void handle_dult_ccc_write(esp_gatt_if_t gatts_if,
+                           esp_ble_gatts_cb_param_t *param) {
+    esp_gatt_status_t status = ESP_GATT_OK;
+    if (param->write.len != sizeof(dult_ccc_value)) {
+        status = ESP_GATT_INVALID_ATTR_LEN;
+    } else {
+        const uint16_t value =
+            static_cast<uint16_t>(param->write.value[0]) |
+            static_cast<uint16_t>(param->write.value[1] << 8U);
+        if (value != 0x0000 && value != 0x0002) {
+            status = ESP_GATT_CCC_CFG_ERR;
+        } else {
+            dult_indications_enabled = value == 0x0002;
+            dult_ccc_value[0] = param->write.value[0];
+            dult_ccc_value[1] = param->write.value[1];
+            esp_ble_gatts_set_attr_value(
+                dult_attribute_handles[DULT_CONTROL_CCC],
+                sizeof(dult_ccc_value), dult_ccc_value);
+        }
+    }
+    send_write_response(gatts_if, param, status);
 }
 
 size_t secure_value_length(uint16_t handle) {
@@ -1627,34 +1913,79 @@ void gatts_callback(esp_gatts_cb_event_t event,
             break;
         }
         case ESP_GATTS_CREAT_ATTR_TAB_EVT: {
-            if (param->add_attr_tab.status != ESP_GATT_OK ||
-                param->add_attr_tab.num_handle != ATTRIBUTE_COUNT) {
-                ESP_LOGE(LOG_TAG, "Provisioning GATT table creation failed");
-                break;
-            }
-            std::memcpy(attribute_handles, param->add_attr_tab.handles,
-                        sizeof(attribute_handles));
-            esp_err_t error = esp_ble_gatts_start_service(attribute_handles[SERVICE]);
-            if (error != ESP_OK) {
-                ESP_LOGE(LOG_TAG, "Could not start Pinkeva GATT service %s: %s",
-                         PINKEVA_SERVICE_UUID_STRING, esp_err_to_name(error));
+            if (param->add_attr_tab.svc_inst_id == SERVICE_INSTANCE_ID) {
+                if (param->add_attr_tab.status != ESP_GATT_OK ||
+                    param->add_attr_tab.num_handle != ATTRIBUTE_COUNT) {
+                    ESP_LOGE(LOG_TAG, "Provisioning GATT table creation failed");
+                    break;
+                }
+                std::memcpy(attribute_handles, param->add_attr_tab.handles,
+                            sizeof(attribute_handles));
+                esp_err_t error =
+                    esp_ble_gatts_start_service(attribute_handles[SERVICE]);
+                if (error != ESP_OK) {
+                    ESP_LOGE(LOG_TAG,
+                             "Could not start Pinkeva GATT service %s: %s",
+                             PINKEVA_SERVICE_UUID_STRING, esp_err_to_name(error));
+                    break;
+                }
+                error = esp_ble_gatts_create_attr_tab(
+                    dult_gatt_db, gatts_if, DULT_ATTRIBUTE_COUNT,
+                    DULT_SERVICE_INSTANCE_ID);
+                if (error != ESP_OK) {
+                    ESP_LOGE(LOG_TAG, "Could not create DULT GATT table: %s",
+                             esp_err_to_name(error));
+                }
+            } else if (param->add_attr_tab.svc_inst_id ==
+                       DULT_SERVICE_INSTANCE_ID) {
+                if (param->add_attr_tab.status != ESP_GATT_OK ||
+                    param->add_attr_tab.num_handle != DULT_ATTRIBUTE_COUNT) {
+                    ESP_LOGE(LOG_TAG, "DULT GATT table creation failed");
+                    break;
+                }
+                std::memcpy(dult_attribute_handles,
+                            param->add_attr_tab.handles,
+                            sizeof(dult_attribute_handles));
+                const esp_err_t error = esp_ble_gatts_start_service(
+                    dult_attribute_handles[DULT_SERVICE]);
+                if (error != ESP_OK) {
+                    ESP_LOGE(LOG_TAG, "Could not start DULT GATT service %s: %s",
+                             DULT_SERVICE_UUID_STRING, esp_err_to_name(error));
+                }
+            } else {
+                ESP_LOGE(LOG_TAG, "Unexpected GATT service instance: %u",
+                         param->add_attr_tab.svc_inst_id);
             }
             break;
         }
-        case ESP_GATTS_START_EVT:
+        case ESP_GATTS_START_EVT: {
             if (param->start.status == ESP_GATT_OK) {
-                service_started = true;
-                ESP_LOGI(LOG_TAG, "Pinkeva GATT service ready: %s",
-                         PINKEVA_SERVICE_UUID_STRING);
-                try_start_advertising();
+                if (param->start.service_handle == attribute_handles[SERVICE]) {
+                    pinkeva_service_started = true;
+                    ESP_LOGI(LOG_TAG, "Pinkeva GATT service ready: %s",
+                             PINKEVA_SERVICE_UUID_STRING);
+                } else if (param->start.service_handle ==
+                           dult_attribute_handles[DULT_SERVICE]) {
+                    dult_service_started = true;
+                    ESP_LOGI(LOG_TAG, "DULT sound service ready: %s",
+                             DULT_SERVICE_UUID_STRING);
+                }
+                if (pinkeva_service_started && dult_service_started) {
+                    service_started.store(true, std::memory_order_release);
+                    try_start_advertising();
+                }
             }
             break;
+        }
         case ESP_GATTS_CONNECT_EVT:
             connected = true;
             advertising_active = false;
+            stop_finder_frame_timer();
             active_connection_id = param->connect.conn_id;
             notifications_enabled = false;
+            dult_indications_enabled = false;
             ccc_value[0] = ccc_value[1] = 0;
+            dult_ccc_value[0] = dult_ccc_value[1] = 0;
             clear_staged_value();
             if (begin_connection_authorization() != ESP_OK) {
                 ESP_LOGE(LOG_TAG, "Could not create connection challenge");
@@ -1672,6 +2003,12 @@ void gatts_callback(esp_gatts_cb_event_t event,
         case ESP_GATTS_DISCONNECT_EVT:
             connected = false;
             notifications_enabled = false;
+            dult_indications_enabled = false;
+            if (buzzer_is_active() &&
+                dult_sound_connection_id == param->disconnect.conn_id) {
+                buzzer_stop();
+            }
+            dult_sound_connection_id = 0;
             clear_staged_value();
             if (ota_update_active()) ota_update_abort();
             clear_connection_authorization();
@@ -1748,6 +2085,12 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 }
             } else if (param->write.handle == attribute_handles[STATUS_CCC]) {
                 handle_ccc_write(gatts_if, param);
+            } else if (param->write.handle ==
+                       dult_attribute_handles[DULT_CONTROL_VALUE]) {
+                handle_dult_control_write(gatts_if, param);
+            } else if (param->write.handle ==
+                       dult_attribute_handles[DULT_CONTROL_CCC]) {
+                handle_dult_ccc_write(gatts_if, param);
             } else {
                 send_write_response(gatts_if, param,
                                     ESP_GATT_WRITE_NOT_PERMIT);
@@ -1804,12 +2147,11 @@ void gap_callback(esp_gap_ble_cb_event_t event,
             random_address_change_pending = false;
             const bool finder_identity =
                 ble_mode == BLEMode::TRACKER && !maintenance_window_open;
-            const uint8_t *active_address = finder_identity
-                                                ? finder_ble_address
-                                                : setup_ble_address;
+            const uint8_t *active_address =
+                finder_identity ? active_finder_address() : setup_ble_address;
             ESP_LOGI(LOG_TAG,
                      "%s BLE identity v%u ready: %02X:%02X:%02X:%02X:%02X:%02X",
-                     finder_identity ? "Finder" : "Setup",
+                     finder_identity ? active_finder_network_name() : "Setup",
                      SETUP_BLE_IDENTITY_VERSION,
                      active_address[0], active_address[1], active_address[2],
                      active_address[3], active_address[4], active_address[5]);
@@ -1850,7 +2192,18 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                 const bool finder_frame =
                     ble_mode == BLEMode::TRACKER && !maintenance_window_open;
                 ESP_LOGI(LOG_TAG, "%s advertising active",
-                         finder_frame ? "Finder" : "Maintenance");
+                         finder_frame ? active_finder_network_name()
+                                      : "Maintenance");
+                if (finder_frame && finder_frame_timer != nullptr) {
+                    stop_finder_frame_timer();
+                    const esp_err_t timer_error = esp_timer_start_once(
+                        finder_frame_timer, FINDER_FRAME_SLOT_MICROSECONDS);
+                    if (timer_error != ESP_OK) {
+                        ESP_LOGE(LOG_TAG,
+                                 "Could not schedule finder frame switch: %s",
+                                 esp_err_to_name(timer_error));
+                    }
+                }
             }
             break;
         case ESP_GAP_BLE_ADV_STOP_COMPLETE_EVT:
@@ -1995,6 +2348,18 @@ std::optional<ERROR_TAG> ble_init() {
     if (error != ESP_OK) {
         return ERROR_TAG("Maintenance timer initialization failed", LOG_TAG);
     }
+    const esp_timer_create_args_t finder_frame_timer_arguments = {
+        .callback = &finder_frame_timer_callback,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "finder_frame",
+        .skip_unhandled_events = true,
+    };
+    error = esp_timer_create(&finder_frame_timer_arguments,
+                             &finder_frame_timer);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Finder frame timer initialization failed", LOG_TAG);
+    }
     uint64_t stored_clock_epoch = 0;
     error = load_trusted_clock_epoch(&stored_clock_epoch);
     if (error != ESP_OK) {
@@ -2025,11 +2390,8 @@ std::optional<ERROR_TAG> ble_init() {
         return ERROR_TAG("Finding-network configuration restore failed", LOG_TAG);
     }
     if (finder_configuration_complete) {
-        ESP_LOGI(LOG_TAG, "%s finder advertising restored from NVS",
-                 finding_network_attribute[0] ==
-                         static_cast<uint8_t>(FindingNetwork::APPLE)
-                     ? "Apple"
-                     : "Google");
+        ESP_LOGI(LOG_TAG,
+                 "Apple and Google finder advertising restored from NVS");
     } else {
         ESP_LOGI(LOG_TAG,
                  "Dual finding-network setup incomplete; setup advertising enabled");
@@ -2079,7 +2441,7 @@ std::optional<ERROR_TAG> ble_init() {
             return ERROR_TAG("Setup BLE identity configuration failed", LOG_TAG);
         }
     } else if (ble_mode == BLEMode::TRACKER) {
-        error = esp_ble_gap_set_rand_addr(finder_ble_address);
+        error = esp_ble_gap_set_rand_addr(active_finder_address());
         if (error != ESP_OK) {
             return ERROR_TAG("Finder BLE identity configuration failed", LOG_TAG);
         }

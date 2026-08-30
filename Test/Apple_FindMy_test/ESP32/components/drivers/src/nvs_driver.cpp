@@ -18,7 +18,6 @@ constexpr char GOOGLE_KEY_BLOB[] = "google_eid";
 constexpr char FINDING_NETWORK_KEY[] = "find_net";
 constexpr char CONTROL_KEY_BLOB[] = "control_key";
 constexpr char BOOTSTRAP_KEY_BLOB[] = "boot_key";
-constexpr char LEGACY_ENTITLEMENT_BLOB[] = "entitlement";
 constexpr char TRUSTED_CLOCK_KEY[] = "clock_utc";
 constexpr char FORMAT_KEY[] = "prov_ver";
 constexpr uint8_t FORMAT_VERSION = 1;
@@ -132,26 +131,7 @@ esp_err_t save_blob_once(const char *key, const uint8_t *value, size_t length,
 }  // namespace
 
 esp_err_t nvs_init() {
-    esp_err_t error = nvs_flash_init();
-    if (error != ESP_OK) {
-        return error;
-    }
-
-    // This exact key belonged to the development-only subscription transport.
-    // Removing it once does not touch either finding identity or factory key.
-    nvs_handle_t handle;
-    error = nvs_open(STORAGE_NAMESPACE, NVS_READWRITE, &handle);
-    if (error != ESP_OK) {
-        return error;
-    }
-    error = nvs_erase_key(handle, LEGACY_ENTITLEMENT_BLOB);
-    if (error == ESP_ERR_NVS_NOT_FOUND) {
-        error = ESP_OK;
-    } else if (error == ESP_OK) {
-        error = nvs_commit(handle);
-    }
-    nvs_close(handle);
-    return error;
+    return nvs_flash_init();
 }
 
 bool advertisement_key_is_valid(const uint8_t *key, size_t length) {
@@ -345,7 +325,7 @@ esp_err_t erase_provisioning_data() {
     }
     for (const char *key : {APPLE_KEY_BLOB, GOOGLE_KEY_BLOB,
                             FINDING_NETWORK_KEY, CONTROL_KEY_BLOB,
-                            LEGACY_ENTITLEMENT_BLOB, FORMAT_KEY}) {
+                            FORMAT_KEY}) {
         const esp_err_t erase_result = nvs_erase_key(handle, key);
         if (erase_result != ESP_OK && erase_result != ESP_ERR_NVS_NOT_FOUND) {
             error = erase_result;

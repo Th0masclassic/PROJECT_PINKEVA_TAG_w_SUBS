@@ -4,13 +4,13 @@ import type {
   BillingInterval,
   BillingPlan,
   BillingPortalAction,
-  DeviceSubscription,
+  AccountSubscription,
   SubscriptionStatus,
 } from './types';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const PLAN_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const DEVICE_ID_PATTERN =
+const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function parseBillingDestination(value: unknown, expectedHost: string): string | null {
@@ -136,15 +136,8 @@ function parsePlan(value: unknown): BillingPlan | null {
   };
 }
 
-export function parseDeviceSubscription(
-  value: unknown,
-  expectedDeviceId: string,
-): DeviceSubscription {
+export function parseAccountSubscription(value: unknown): AccountSubscription {
   if (!isRecord(value)) throw new BillingApiError('invalid_response');
-  const deviceId = nullableString(value.device_id, 160);
-  if (!deviceId || deviceId !== expectedDeviceId) {
-    throw new BillingApiError('invalid_response');
-  }
 
   const rawPlans = Array.isArray(value.available_plans) ? value.available_plans : [];
   const availablePlans = rawPlans.map(parsePlan).filter((plan): plan is BillingPlan => Boolean(plan));
@@ -177,7 +170,6 @@ export function parseDeviceSubscription(
   }
 
   return {
-    deviceId,
     status: parseStatus(value.status),
     planCode: nullableString(value.plan_code, 80),
     planName: nullableString(value.plan_name, 120),
@@ -191,11 +183,6 @@ export function parseDeviceSubscription(
     cancelAtPeriodEnd: value.cancel_at_period_end === true,
     availablePlans,
   };
-}
-
-function buildDevicePath(deviceId: string): string {
-  if (!DEVICE_ID_PATTERN.test(deviceId)) throw new BillingApiError('invalid_response');
-  return `/v1/devices/${encodeURIComponent(deviceId)}/subscription`;
 }
 
 async function requestJson(
@@ -236,13 +223,12 @@ async function requestJson(
   }
 }
 
-export async function getDeviceSubscription(
+export async function getAccountSubscription(
   config: BillingApiConfig,
   accessToken: string,
-  deviceId: string,
-): Promise<DeviceSubscription> {
-  const payload = await requestJson(config, accessToken, buildDevicePath(deviceId));
-  return parseDeviceSubscription(payload, deviceId);
+): Promise<AccountSubscription> {
+  const payload = await requestJson(config, accessToken, '/v1/subscription');
+  return parseAccountSubscription(payload);
 }
 
 function parseDestinationResponse(value: unknown, expectedHost: string): string {
@@ -252,17 +238,16 @@ function parseDestinationResponse(value: unknown, expectedHost: string): string 
   return destination;
 }
 
-export async function createDeviceCheckout(
+export async function createAccountCheckout(
   config: BillingApiConfig,
   accessToken: string,
-  deviceId: string,
   planCode: string,
 ): Promise<string> {
   if (!PLAN_CODE_PATTERN.test(planCode)) throw new BillingApiError('invalid_response');
   const payload = await requestJson(
     config,
     accessToken,
-    `${buildDevicePath(deviceId)}/checkout`,
+    '/v1/subscription/checkout',
     { method: 'POST', body: JSON.stringify({ plan_code: planCode }) },
   );
   return parseDestinationResponse(payload, 'checkout.stripe.com');
@@ -274,7 +259,7 @@ export async function createProvisioningCheckout(
   requestId: string,
   planCode: string,
 ): Promise<string> {
-  if (!DEVICE_ID_PATTERN.test(requestId) && !/^[0-9a-f-]{36}$/i.test(requestId)) {
+  if (!UUID_PATTERN.test(requestId)) {
     throw new BillingApiError('invalid_response');
   }
   if (!PLAN_CODE_PATTERN.test(planCode)) throw new BillingApiError('invalid_response');
@@ -287,16 +272,15 @@ export async function createProvisioningCheckout(
   return parseDestinationResponse(payload, 'checkout.stripe.com');
 }
 
-export async function createDevicePortal(
+export async function createAccountPortal(
   config: BillingApiConfig,
   accessToken: string,
-  deviceId: string,
   action: BillingPortalAction = 'update',
 ): Promise<string> {
   const payload = await requestJson(
     config,
     accessToken,
-    `${buildDevicePath(deviceId)}/portal`,
+    '/v1/subscription/portal',
     { method: 'POST', body: JSON.stringify({ action }) },
   );
   return parseDestinationResponse(payload, 'billing.stripe.com');

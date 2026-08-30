@@ -140,10 +140,6 @@ const en = {
   'home.lastSeen': 'Last seen',
   'home.withYou': 'With you',
   'home.twoMinutesAgo': '2 min ago',
-  'home.markLost': 'Mark Lost',
-  'home.markedLost': 'Marked as lost',
-  'home.lostEnabledBody': 'Your tracker is now in lost mode.',
-  'home.lostHelpBody': 'Get help from others if your Pinkeva is missing.',
   'home.locationHistory': 'Location History',
   'home.locationHistoryBody': 'View where your Pinkeva has been seen.',
   'home.locationHistoryNotice': 'Showing 24 hours of static location history',
@@ -306,8 +302,6 @@ const en = {
 
   'info.staticDemo': 'Static demo data',
 
-  'notice.lostDisabled': 'Lost mode disabled',
-  'notice.markedLost': 'Tracker marked as lost',
 
   'time.justNow': 'Just now',
   'time.minutesAgo': '{{count}} min ago',
@@ -426,10 +420,6 @@ const pt = {
   'home.lastSeen': 'Visto pela última vez',
   'home.withYou': 'Consigo',
   'home.twoMinutesAgo': 'Há 2 min',
-  'home.markLost': 'Marcar como perdido',
-  'home.markedLost': 'Marcado como perdido',
-  'home.lostEnabledBody': 'O seu localizador está agora no modo perdido.',
-  'home.lostHelpBody': 'Obtenha ajuda de outras pessoas se a Pinkeva desaparecer.',
   'home.locationHistory': 'Histórico de localização',
   'home.locationHistoryBody': 'Veja onde a sua Pinkeva foi detetada.',
   'home.locationHistoryNotice': 'A mostrar 24 horas de histórico de localização estático',
@@ -592,8 +582,6 @@ const pt = {
 
   'info.staticDemo': 'Dados de demonstração estáticos',
 
-  'notice.lostDisabled': 'Modo perdido desativado',
-  'notice.markedLost': 'Localizador marcado como perdido',
 
   'time.justNow': 'Agora mesmo',
   'time.minutesAgo': 'Há {{count}} min',
@@ -708,10 +696,6 @@ const es = {
   'home.lastSeen': 'Visto por última vez',
   'home.withYou': 'Contigo',
   'home.twoMinutesAgo': 'Hace 2 min',
-  'home.markLost': 'Marcar como perdido',
-  'home.markedLost': 'Marcado como perdido',
-  'home.lostEnabledBody': 'Tu localizador está ahora en modo perdido.',
-  'home.lostHelpBody': 'Obtén ayuda si no encuentras tu Pinkeva.',
   'home.locationHistory': 'Historial de ubicaciones',
   'home.locationHistoryBody': 'Consulta dónde se ha detectado tu Pinkeva.',
   'home.locationHistoryNotice': 'Mostrando 24 horas de historial de ubicación estático',
@@ -874,8 +858,6 @@ const es = {
 
   'info.staticDemo': 'Datos de demostración estáticos',
 
-  'notice.lostDisabled': 'Modo perdido desactivado',
-  'notice.markedLost': 'Localizador marcado como perdido',
 
   'time.justNow': 'Ahora mismo',
   'time.minutesAgo': 'Hace {{count}} min',
@@ -990,10 +972,6 @@ const it = {
   'home.lastSeen': 'Ultimo rilevamento',
   'home.withYou': 'Con te',
   'home.twoMinutesAgo': '2 min fa',
-  'home.markLost': 'Segna come smarrito',
-  'home.markedLost': 'Segnato come smarrito',
-  'home.lostEnabledBody': 'Il localizzatore è ora in modalità smarrito.',
-  'home.lostHelpBody': 'Ricevi aiuto se il tuo Pinkeva è scomparso.',
   'home.locationHistory': 'Cronologia posizioni',
   'home.locationHistoryBody': 'Vedi dove è stato rilevato il tuo Pinkeva.',
   'home.locationHistoryNotice': 'Visualizzazione di 24 ore di cronologia statica',
@@ -1156,8 +1134,6 @@ const it = {
 
   'info.staticDemo': 'Dati demo statici',
 
-  'notice.lostDisabled': 'Modalità smarrito disattivata',
-  'notice.markedLost': 'Localizzatore segnato come smarrito',
 
   'time.justNow': 'Adesso',
   'time.minutesAgo': '{{count}} min fa',
@@ -1272,10 +1248,6 @@ const zh = {
   'home.lastSeen': '最后发现',
   'home.withYou': '在您身边',
   'home.twoMinutesAgo': '2 分钟前',
-  'home.markLost': '标记为丢失',
-  'home.markedLost': '已标记为丢失',
-  'home.lostEnabledBody': '您的追踪器现已进入丢失模式。',
-  'home.lostHelpBody': 'Pinkeva 丢失时可借助他人寻找。',
   'home.locationHistory': '位置历史',
   'home.locationHistoryBody': '查看 Pinkeva 曾出现的位置。',
   'home.locationHistoryNotice': '正在显示 24 小时静态位置历史',
@@ -1438,8 +1410,6 @@ const zh = {
 
   'info.staticDemo': '静态演示数据',
 
-  'notice.lostDisabled': '丢失模式已关闭',
-  'notice.markedLost': '追踪器已标记为丢失',
 
   'time.justNow': '刚刚',
   'time.minutesAgo': '{{count}} 分钟前',
@@ -1554,10 +1524,6 @@ const de = {
   'home.lastSeen': 'Zuletzt gesehen',
   'home.withYou': 'Bei dir',
   'home.twoMinutesAgo': 'Vor 2 Min.',
-  'home.markLost': 'Als verloren markieren',
-  'home.markedLost': 'Als verloren markiert',
-  'home.lostEnabledBody': 'Dein Tracker ist jetzt im Verloren-Modus.',
-  'home.lostHelpBody': 'Erhalte Hilfe, falls dein Pinkeva fehlt.',
   'home.locationHistory': 'Standortverlauf',
   'home.locationHistoryBody': 'Sieh, wo dein Pinkeva erkannt wurde.',
   'home.locationHistoryNotice': '24 Stunden statischer Standortverlauf werden angezeigt',
@@ -1720,8 +1686,6 @@ const de = {
 
   'info.staticDemo': 'Statische Demodaten',
 
-  'notice.lostDisabled': 'Verloren-Modus deaktiviert',
-  'notice.markedLost': 'Tracker als verloren markiert',
 
   'time.justNow': 'Gerade eben',
   'time.minutesAgo': 'Vor {{count}} Min.',
@@ -1836,10 +1800,6 @@ const fr = {
   'home.lastSeen': 'Vu pour la dernière fois',
   'home.withYou': 'Avec vous',
   'home.twoMinutesAgo': 'Il y a 2 min',
-  'home.markLost': 'Marquer comme perdu',
-  'home.markedLost': 'Marqué comme perdu',
-  'home.lostEnabledBody': 'Votre traceur est maintenant en mode perdu.',
-  'home.lostHelpBody': 'Demandez de l’aide si votre Pinkeva a disparu.',
   'home.locationHistory': 'Historique de localisation',
   'home.locationHistoryBody': 'Voyez où votre Pinkeva a été détecté.',
   'home.locationHistoryNotice': 'Affichage de 24 heures d’historique statique',
@@ -2002,8 +1962,6 @@ const fr = {
 
   'info.staticDemo': 'Données de démonstration statiques',
 
-  'notice.lostDisabled': 'Mode perdu désactivé',
-  'notice.markedLost': 'Traceur marqué comme perdu',
 
   'time.justNow': 'À l’instant',
   'time.minutesAgo': 'Il y a {{count}} min',
