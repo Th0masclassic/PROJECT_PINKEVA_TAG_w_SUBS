@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated, AsyncIterator
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 
 from .admin import AdminError, AdminService, router as admin_router
 from .anisette_provider import NativeAnisetteError, NativeAnisetteService
@@ -69,6 +72,18 @@ from .service import ProvisioningError, ProvisioningService
 
 
 logger = logging.getLogger("pinqeva.api")
+
+
+def _resolve_storefront_directory() -> Path | None:
+    configured = os.getenv("PINQEVA_STOREFRONT_DIR")
+    directory = (
+        Path(configured).expanduser()
+        if configured
+        else Path(__file__).resolve().parent.parent / "storefront"
+    )
+    if (directory / "index.html").is_file() and (directory / "assets").is_dir():
+        return directory
+    return None
 
 
 def _selector_loop_factory(*, use_subprocess: bool = False) -> Callable[[], asyncio.AbstractEventLoop]:
@@ -1051,3 +1066,24 @@ async def complete_device_release(
             device_id=device_id,
             request=request,
         )
+
+
+_storefront_directory = _resolve_storefront_directory()
+if _storefront_directory is not None:
+    _storefront_index = _storefront_directory / "index.html"
+
+    @app.get("/", include_in_schema=False, response_class=FileResponse)
+    @app.get("/index.html", include_in_schema=False, response_class=FileResponse)
+    async def storefront_index() -> FileResponse:
+        return FileResponse(
+            _storefront_index,
+            media_type="text/html",
+            headers={"Cache-Control": "no-cache"},
+        )
+
+    app.mount(
+        "/assets",
+        StaticFiles(directory=_storefront_directory / "assets"),
+        name="storefront-assets",
+    )
+    logger.info("storefront_enabled directory=%s", _storefront_directory)

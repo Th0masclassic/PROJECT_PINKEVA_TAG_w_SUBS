@@ -55,6 +55,12 @@ volume. `http` mode is still supported for a separately managed HTTPS service or
 a loopback sidecar. In both modes the same backend Apple-login code consumes the
 HTTP header contract; only ownership of the Anisette process changes.
 
+The repository-root `Dockerfile` is the production web image. It builds the
+static storefront from `website/`, serves it at `/`, and retains every API route
+on the same FastAPI origin. The root `compose.yaml` binds the service only to
+`127.0.0.1:8080`, loads the ignored `backend/.env`, and mounts `./state` at the
+durable runtime path expected by Anisette and Apple authentication.
+
 On the configured development Mac, `./run_local_secure.sh` loads application
 settings from the ignored `backend/.env`, keeps the hosted database password in
 macOS Keychain, and starts the same server against Supabase cloud. It is a

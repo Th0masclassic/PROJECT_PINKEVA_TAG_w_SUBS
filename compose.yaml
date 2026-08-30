@@ -1,0 +1,15 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: pinqeva-api:main
+    container_name: pinqeva-api
+    init: true
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./state:/var/lib/pinqeva

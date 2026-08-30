@@ -20,5 +20,10 @@ Build a production bundle with:
 npm run build
 ```
 
+The repository-root `Dockerfile` builds this production bundle and embeds it
+in the API image. In that deployment, `/` and `/index.html` serve the
+storefront, `/assets/*` serves its static files, and existing API routes remain
+available on the same origin.
+
 The product and app imagery is copied from the approved assets in
 `mobile-app/assets/pinkeva` and `Images/MOCKUP_MOBILE_IMAGES`.
