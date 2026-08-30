@@ -156,7 +156,7 @@ ALTER TABLE public.user_notification
   );
 
 -- Shared helper used by backend queries and database-side safety evaluation.
-CREATE OR REPLACE FUNCTION public.pinkeva_active_subscription_id(
+CREATE OR REPLACE FUNCTION public.pinqeva_active_subscription_id(
   target_user_id UUID
 )
 RETURNS UUID AS $$
@@ -172,7 +172,7 @@ RETURNS UUID AS $$
 $$ LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = public, pg_catalog;
 
-REVOKE EXECUTE ON FUNCTION public.pinkeva_active_subscription_id(UUID)
+REVOKE EXECUTE ON FUNCTION public.pinqeva_active_subscription_id(UUID)
   FROM PUBLIC, anon, authenticated;
 
 -- Keep the mature phone-aware alert algorithm intact while replacing its old
@@ -184,7 +184,7 @@ DO $migration$
 DECLARE
   function_definition TEXT;
   old_pattern TEXT := E'SELECT subscription[.]id[[:space:]]+INTO[[:space:]]+active_subscription_id[[:space:]]+FROM[[:space:]]+public[.]subscription[[:space:]]+subscription[[:space:]]+WHERE[[:space:]]+subscription[.]user_id[[:space:]]*=[[:space:]]*target_user_id[[:space:]]+AND[[:space:]]+subscription[.]device_id[[:space:]]*=[[:space:]]*target_device_id[[:space:]]+AND[[:space:]]+subscription[.]status[[:space:]]+IN[[:space:]]*[(][[:space:]]*(''active''[[:space:]]*,[[:space:]]*''trialing'')[[:space:]]*[)][[:space:]]+AND[[:space:]]+subscription[.]starts_at[[:space:]]*<=[[:space:]]*now[(][)][[:space:]]+AND[[:space:]]+subscription[.]current_period_end[[:space:]]*>[[:space:]]*now[(][)][[:space:]]+ORDER[[:space:]]+BY[[:space:]]+subscription[.]current_period_end[[:space:]]+DESC[[:space:]]*,[[:space:]]*subscription[.]created_at[[:space:]]+DESC[[:space:]]+LIMIT[[:space:]]+1[[:space:]]*;';
-  new_fragment TEXT := E'  SELECT public.pinkeva_active_subscription_id(target_user_id)\n    INTO active_subscription_id;';
+  new_fragment TEXT := E'  SELECT public.pinqeva_active_subscription_id(target_user_id)\n    INTO active_subscription_id;';
 BEGIN
   SELECT pg_get_functiondef(
            'public.evaluate_tracker_safety(uuid,uuid,text)'::regprocedure
@@ -212,5 +212,5 @@ COMMENT ON INDEX public.subscription_one_current_per_account IS
   'Allows account billing history while preventing two current subscriptions for one account.';
 COMMENT ON TABLE public.billing_checkout_session IS
   'Backend-only account subscription Checkout reservations; device_id is nullable legacy audit context.';
-COMMENT ON FUNCTION public.pinkeva_active_subscription_id(UUID) IS
+COMMENT ON FUNCTION public.pinqeva_active_subscription_id(UUID) IS
   'Returns the one active/trialing account subscription whose paid period currently covers premium services.';
