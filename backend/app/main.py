@@ -17,12 +17,13 @@ from fastapi.staticfiles import StaticFiles
 
 from .admin import AdminError, AdminService, router as admin_router
 from .anisette_provider import NativeAnisetteError, NativeAnisetteService
-from .apple_auth import AppleAuthManager, AppleAuthenticationError
+from .apple_auth import AppleAuthManager
 from .auth import AccountAccessError, AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
 from .database import Database
 from .firmware import FirmwareError, FirmwareService
+from .findmy_runtime import create_auth_manager
 from .location import LocationError, LocationService
 from .location_worker import LocationSyncWorker
 from .notifications import (
@@ -239,6 +240,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     notification_task: asyncio.Task[None] | None = None
     premium_retention_task: asyncio.Task[None] | None = None
     location_sync_task: asyncio.Task[None] | None = None
+    findmy_auth: AppleAuthManager | None = None
+    authentication_task: asyncio.Task[None] | None = None
     try:
         if settings.findmy_anisette_provider == "native":
             native_anisette = NativeAnisetteService(
@@ -255,29 +258,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
                 raise RuntimeError("Native Anisette startup failed") from None
 
-        findmy_auth: AppleAuthManager | None = None
-        if settings.findmy_apple_id or settings.findmy_auth_file:
-            findmy_auth = AppleAuthManager(
-                apple_id=settings.findmy_apple_id,
-                apple_password=settings.findmy_apple_password,
-                second_factor=settings.findmy_second_factor,
-                anisette_url=settings.findmy_anisette_url,
-                timeout_seconds=settings.findmy_request_timeout_seconds,
-                auth_file=settings.findmy_auth_file,
-                login_on_startup=settings.findmy_login_on_startup,
+        findmy_auth = create_auth_manager(settings)
+        if findmy_auth is not None:
+            authentication_task = asyncio.create_task(
+                findmy_auth.run(background_stop), name="apple-authentication-worker",
             )
-        if findmy_auth is not None and findmy_auth.should_login_on_startup:
-            logger.info("findmy_authentication_starting")
-            try:
-                await asyncio.to_thread(findmy_auth.initialize)
-                logger.info("findmy_authenticated")
-            except AppleAuthenticationError as exc:
-                logger.error(
-                    "findmy_authentication_failed error_type=%s error=%s",
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise RuntimeError("Find My authentication failed") from None
 
         database = Database(settings)
         await database.open()
@@ -334,6 +319,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
     finally:
         background_stop.set()
+        if findmy_auth is not None:
+            findmy_auth.stop_event.set()
+        if authentication_task is not None:
+            await authentication_task
         if notification_task is not None:
             await notification_task
         if location_sync_task is not None:

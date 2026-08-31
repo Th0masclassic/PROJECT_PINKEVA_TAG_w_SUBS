@@ -5,7 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PINQEVA_FINDMY_ANISETTE_PROVIDER=native \
     PINQEVA_FINDMY_ANISETTE_STATE_PATH=/var/lib/pinqeva/anisette-state.bin \
-    PINQEVA_FINDMY_ANISETTE_URL=http://127.0.0.1:6970
+    PINQEVA_FINDMY_ANISETTE_URL=http://127.0.0.1:6970 \
+    PINQEVA_FINDMY_STATE_PATH=/var/lib/pinqeva/apple-auth-state.json
 
 WORKDIR /srv/pinqeva
 

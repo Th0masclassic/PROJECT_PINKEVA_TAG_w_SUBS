@@ -14,6 +14,37 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from app.findmy import FindMyClient
 
 
+def test_v2_fetch_uses_current_envelope_and_decrypts_matching_reports(monkeypatch):
+    private = ec.generate_private_key(ec.SECP224R1()).private_numbers().private_value.to_bytes(28, "big")
+    report_hash = hashlib.sha256(b"test-key-v2").digest()
+    identifier = base64.b64encode(report_hash).decode()
+    now = datetime(2026, 8, 31, 12, 0, tzinfo=UTC)
+    payload = _encoded_report(private, int(now.timestamp()) - 978_307_200)
+    monkeypatch.setattr("app.findmy.requests.get", lambda *a, **kw: _Response({"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"}))
+
+    def post(url, **kwargs):
+        assert url == "https://gateway.icloud.com/findmyservice/v2/fetch"
+        assert kwargs["allow_redirects"] is False
+        body = kwargs["json"]
+        assert body["clientContext"]["policy"] == "foregroundClient"
+        search = body["fetch"][0]
+        assert search["primaryIds"] == [identifier]
+        assert search["secondaryIds"] == []
+        assert search["startDate"] == search["startDateSecondary"] == int((now - timedelta(hours=24)).timestamp() * 1000)
+        return _Response({"acsnLocations": {"statusCode": "200", "locationPayload": [
+            {"id": identifier, "locationInfo": [payload, payload]},
+            {"id": base64.b64encode(b"x" * 32).decode(), "locationInfo": [payload]},
+        ]}})
+
+    monkeypatch.setattr("app.findmy.requests.post", post)
+    reports = FindMyClient(dsid="test", search_party_token="test-token").fetch_reports(
+        advertisement_key_sha256=report_hash, private_key=private, now=now,
+    )
+    assert len(reports) == 1
+    assert reports[0].latitude == pytest.approx(3.87223)
+    assert reports[0].timestamp == now
+
+
 class _Response:
     def __init__(self, payload: object):
         self.payload = payload
@@ -82,6 +113,7 @@ def test_fetch_latest_uses_hash_and_decrypts_the_report(monkeypatch: pytest.Monk
     monkeypatch.setattr("app.findmy.requests.post", fake_post)
 
     report = FindMyClient(
+        report_api="legacy",
         dsid="123",
         search_party_token="search-token",
         anisette_url="http://anisette.test",
@@ -144,7 +176,7 @@ def test_fetch_reports_returns_deduplicated_24h_history_newest_first(
     )
 
     assert (
-        FindMyClient(dsid="123", search_party_token="search-token").fetch_latest(
+        FindMyClient(dsid="123", search_party_token="search-token", report_api="legacy").fetch_latest(
             advertisement_key_sha256=advertisement_hash,
             private_key=private,
             now=datetime.now(UTC),
@@ -173,6 +205,7 @@ def test_fetch_reports_returns_deduplicated_24h_history_newest_first(
 
     monkeypatch.setattr("app.findmy.requests.post", fake_post)
     reports = FindMyClient(
+        report_api="legacy",
         dsid="123", search_party_token="search-token"
     ).fetch_reports(
         advertisement_key_sha256=advertisement_hash,

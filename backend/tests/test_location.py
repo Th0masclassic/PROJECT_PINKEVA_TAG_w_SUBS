@@ -234,19 +234,19 @@ def _install_apple_response(
         return _Response({"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"})
 
     def fake_post(url: str, **kwargs: object) -> _Response:
-        assert url == "https://gateway.icloud.com/acsnservice/fetch"
+        assert url == "https://gateway.icloud.com/findmyservice/v2/fetch"
         assert kwargs["auth"] == ("123", "search-token")
         request = kwargs["json"]
         assert isinstance(request, dict)
-        assert request["search"][0]["ids"] == [identifier]
+        assert request["fetch"][0]["primaryIds"] == [identifier]
         return _Response(
             {
-                "results": [
+                "acsnLocations": {"statusCode": "200", "locationPayload": [
                     {
                         "id": identifier,
-                        "payload": _encoded_report(private_key, apple_timestamp),
+                        "locationInfo": [_encoded_report(private_key, apple_timestamp)],
                     }
-                ]
+                ]}
             }
         )
 

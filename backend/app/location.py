@@ -87,6 +87,7 @@ class LocationService:
             anisette_url=self.settings.findmy_anisette_url,
             timeout_seconds=self.settings.findmy_request_timeout_seconds,
             lookback_hours=self.settings.findmy_lookback_hours,
+            report_api=self.settings.findmy_report_api,
         )
 
     def _google_client(self) -> GoogleFindHubBridgeClient:

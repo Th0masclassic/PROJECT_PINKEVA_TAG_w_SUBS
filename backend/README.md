@@ -67,7 +67,8 @@ python -m app.server
 
 Embedded `native` mode remains available on Windows when no external executable
 is used. Configure a durable absolute state path; the first start downloads
-Apple's Android Apple Music package, provisions one virtual device, and saves it:
+Apple's Android Apple Music package on the first header request, provisions one
+virtual device, and saves it. Provisioning runs outside API startup:
 
 ```powershell
 cd C:\Users\tomas\Documents\PINKEVA\backend
@@ -215,23 +216,35 @@ provider has no usable report; the latter returns the last stored coordinates, o
 coordinates if the tag has never reported. A caller that does not actively own
 the UUID receives a safe 404 response and no coordinates.
 
-At startup, configure `PINQEVA_FINDMY_APPLE_ID` and either provide
-`PINQEVA_FINDMY_APPLE_PASSWORD` through the secret manager or leave it blank
-for a hidden terminal prompt. The backend performs the Apple GSA/SRP login,
-prompts for the configured SMS or trusted-device 2FA code, and keeps the
-resulting `dsid` and `searchPartyToken` only in memory. If the report endpoint
-returns an authentication failure, the backend performs one fresh login and
-retries that report request. A future automated SMS provider can replace the
-2FA code callback without changing the location API.
+Configure `PINQEVA_FINDMY_APPLE_ID` and an Apple password (prefer a mounted
+`PINQEVA_FINDMY_APPLE_PASSWORD_FILE`) for automatic re-login. The API never
+prompts on stdin. A background worker obtains sessions, uses bounded exponential
+backoff after transient errors, and persists tokens/client IDs encrypted at
+`PINQEVA_FINDMY_STATE_PATH`. The encryption key is derived from the existing
+finder-key root; do not regenerate that root during an Apple repair.
 
-`PINQEVA_FINDMY_AUTH_FILE` remains a fallback for a previously obtained
-`{"dsid":"...","searchPartyToken":"..."}` session when Apple ID login is
-not enabled. Direct `PINQEVA_FINDMY_DSID` and
-`PINQEVA_FINDMY_SEARCH_PARTY_TOKEN` values are also supported for controlled
-non-interactive testing, but they cannot be refreshed automatically. Set
+Apple HTTP 401/403 invalidates the cached session durably and schedules recovery.
+Concurrent requests fail quickly while recovery runs; they do not wait for an
+SMS. A session is only marked verified after a valid Apple report response.
+HTTP 429/5xx, transport failures and malformed responses do not trigger password
+login loops. The default report protocol is `v2`; `PINQEVA_FINDMY_REPORT_API=legacy`
+selects the previous endpoint explicitly.
+
+For unattended 2FA, `PINQEVA_FINDMY_2FA_PROVIDER=twilio` polls Apple's own inbound
+SMS on an already enrolled trusted number. It checks recipient, sender, freshness
+and replay before submitting a code. Without a receiver, the worker stops when
+2FA is required; use `python -m app.findmy_admin login --interactive --force` in
+an interactive container terminal. No public login/OTP endpoint is exposed.
+See [Linux/Ubuntu setup, Twilio enrollment and recovery](../docs/apple-auth-linux.md).
+
+`PINQEVA_FINDMY_AUTH_FILE` imports a previously obtained
+`{"dsid":"...","searchPartyToken":"..."}` session, without rewriting that file.
+Direct `PINQEVA_FINDMY_DSID` and `PINQEVA_FINDMY_SEARCH_PARTY_TOKEN` are also
+supported for migration/testing. Neither source supplies the credentials needed
+to obtain a new token; keep Apple ID/password configured for recovery. Set
 `PINQEVA_FINDMY_ANISETTE_PROVIDER=native` with a durable
-`PINQEVA_FINDMY_ANISETTE_STATE_PATH` to provision an embedded provider before
-Apple login begins. Set the provider to `http` to use a separately managed
+`PINQEVA_FINDMY_ANISETTE_STATE_PATH` to run an embedded provider, which reloads the
+same persisted identity after transient errors. Set the provider to `http` to use a separately managed
 service at `PINQEVA_FINDMY_ANISETTE_URL` (default
 `http://127.0.0.1:6969`). If no Find My credentials are configured, the API
 still starts and location requests fail safely without fabricated coordinates.

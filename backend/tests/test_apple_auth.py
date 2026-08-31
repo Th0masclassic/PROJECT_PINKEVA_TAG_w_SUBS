@@ -13,9 +13,12 @@ from cryptography.hazmat.primitives.serialization import Encoding
 from app.apple_auth import (
     APPLE_GSA_CA_BUNDLE,
     AppleAuthManager,
+    AppleAuthenticationError,
     AppleSession,
     _complete_two_factor,
     _gsa_request,
+    _gsa_authenticate,
+    _anisette_headers,
 )
 from app.findmy import FindMyClient
 
@@ -49,6 +52,86 @@ def test_bundled_apple_root_ca_matches_apples_published_certificate() -> None:
     )
 
 
+def test_native_anisette_identity_is_preserved_with_fresh_server_time(monkeypatch):
+    values = {
+        "X-Apple-I-MD": "otp",
+        "X-Apple-I-MD-M": "machine",
+        "X-Apple-I-MD-LU": "native-user",
+        "X-Mme-Device-Id": "native-device",
+        "X-Apple-I-Client-Time": "stale-provider-time",
+        "Authorization": "must-not-be-forwarded",
+    }
+    monkeypatch.setattr(
+        "app.apple_auth.requests.get", lambda *a, **kw: _Response(values)
+    )
+    headers = _anisette_headers(
+        "http://127.0.0.1:6970",
+        timeout_seconds=5,
+        client_id=uuid.uuid4(),
+        device_id=uuid.uuid4(),
+    )
+    assert headers["X-Apple-I-MD-LU"] == "native-user"
+    assert headers["X-Mme-Device-Id"] == "native-device"
+    assert headers["X-Apple-I-Client-Time"] != "stale-provider-time"
+    assert "Authorization" not in headers
+
+
+def test_repeated_gsa_two_factor_challenges_are_bounded(monkeypatch):
+    class User:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start_authentication(self):
+            return "test", b"a"
+
+        def process_challenge(self, *args):
+            return b"proof"
+
+        def verify_session(self, *args):
+            pass
+
+        def authenticated(self):
+            return True
+
+    challenge = {
+        "Status": {"ec": 0},
+        "sp": "s2k",
+        "s": b"salt",
+        "i": 1,
+        "B": b"b",
+        "c": "challenge",
+    }
+    completed = {
+        "Status": {"ec": 0, "au": "secondaryAuth"},
+        "M2": b"m2",
+        "spd": b"encrypted",
+    }
+    responses = iter([challenge, completed, challenge, completed])
+    rounds = []
+    monkeypatch.setattr("app.apple_auth.srp.User", User)
+    monkeypatch.setattr("app.apple_auth._gsa_request", lambda *a, **kw: next(responses))
+    monkeypatch.setattr(
+        "app.apple_auth._decrypt_session_data",
+        lambda *a: b'<plist version="1.0"><dict></dict></plist>',
+    )
+    monkeypatch.setattr(
+        "app.apple_auth._complete_two_factor", lambda *a, **kw: rounds.append(1)
+    )
+    with pytest.raises(AppleAuthenticationError) as error:
+        _gsa_authenticate(
+            "test@example.invalid",
+            "test-password",
+            second_factor="sms",
+            anisette_url="http://127.0.0.1:6970",
+            timeout_seconds=5,
+            client_id=uuid.uuid4(),
+            device_id=uuid.uuid4(),
+            two_factor_code_provider=lambda prompt: "123456",
+        )
+    assert error.value.code == "two_factor_repeated"
+    assert rounds == [1]
+
+
 def test_gsa_request_uses_anisette_and_the_bundled_apple_ca(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -60,9 +143,7 @@ def test_gsa_request_uses_anisette_and_the_bundled_apple_ca(
 
     def fake_post(_url: str, **kwargs: object) -> _Response:
         calls.append(kwargs)
-        return _Response(
-            content=plistlib.dumps({"Response": {"Status": {"ec": 0}}})
-        )
+        return _Response(content=plistlib.dumps({"Response": {"Status": {"ec": 0}}}))
 
     monkeypatch.setattr("app.apple_auth.requests.post", fake_post)
 
@@ -102,6 +183,7 @@ def test_auth_manager_logs_in_once_and_refreshes_only_after_expiry(
     first = manager.initialize()
     assert first == AppleSession(dsid="old-dsid", search_party_token="old-token")
     assert manager.session() == first
+    manager.mark_verified(first)
 
     refreshed = manager.refresh_if_expired(first)
     assert refreshed == AppleSession(dsid="new-dsid", search_party_token="new-token")
@@ -132,12 +214,21 @@ def test_report_fetch_reauthenticates_once_after_token_expiry(
     new = AppleSession(dsid="new-dsid", search_party_token="new-token")
 
     class Manager:
+        client_id = uuid.uuid4()
+        device_id = uuid.uuid4()
+
         def session(self) -> AppleSession:
             return old
 
-        def refresh_if_expired(self, expired: AppleSession) -> AppleSession:
+        def refresh_if_expired(
+            self, expired: AppleSession, *, status_code: int
+        ) -> AppleSession:
             assert expired == old
+            assert status_code == 401
             return new
+
+        def mark_verified(self, session: AppleSession) -> None:
+            assert session == new
 
     monkeypatch.setattr(
         "app.findmy.requests.get",
@@ -154,6 +245,7 @@ def test_report_fetch_reauthenticates_once_after_token_expiry(
 
     monkeypatch.setattr("app.findmy.requests.post", fake_post)
     client = FindMyClient(
+        report_api="legacy",
         auth_manager=Manager(),
         anisette_url="http://anisette.test",
     )
