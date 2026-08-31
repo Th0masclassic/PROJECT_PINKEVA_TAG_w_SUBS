@@ -12,6 +12,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useBillingCopy } from '../billing/copy';
+import { useAccountBillingCopy } from '../billing/accountCopy';
 import { billingIntervalLabel, formatBillingMoney } from '../billing/format';
 import { OutlineButton, PrimaryButton } from '../components';
 import { useI18n, type TranslationKey } from '../i18n';
@@ -130,6 +131,7 @@ export function TagSetupModal({
 }) {
   const { language, t } = useI18n();
   const billingCopy = useBillingCopy();
+  const accountBillingCopy = useAccountBillingCopy();
   const visible = state.phase !== 'idle';
   const scanning = state.phase === 'starting' || state.phase === 'scanning';
   const progressing = progressSteps.some((step) => step.phase === state.phase);
@@ -210,11 +212,11 @@ export function TagSetupModal({
                 <View style={[styles.heroIcon, styles.paymentIcon]}>
                   <Ionicons name="card-outline" size={38} color="#FFFFFF" />
                 </View>
-                <Text style={styles.title}>{billingCopy.plans}</Text>
+                <Text style={styles.title}>{accountBillingCopy.plans}</Text>
                 <Text style={styles.body}>
                   {state.phase === 'waiting_payment'
                     ? billingCopy.loading
-                    : billingCopy.choosePlan}
+                    : accountBillingCopy.choosePlan}
                 </Text>
                 {paymentRequest ? (
                   <Text style={styles.requestId}>

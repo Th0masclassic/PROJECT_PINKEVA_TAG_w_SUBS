@@ -5,6 +5,8 @@ export type GeographicCoordinate = {
   longitude: number;
 };
 
+const EARTH_RADIUS_METERS = 6_371_000;
+
 function isLocatedTracker(
   tracker: Tracker,
 ): tracker is Tracker & GeographicCoordinate {
@@ -35,6 +37,24 @@ function angularDistance(
       halfLongitude *
       halfLongitude
   );
+}
+
+/**
+ * Returns the great-circle distance between two geographic coordinates.
+ *
+ * The location reported by a tracker is a last-known point, so callers can
+ * decide how to handle a stale or missing point separately from this pure
+ * calculation.
+ */
+export function distanceInMeters(
+  origin: GeographicCoordinate,
+  destination: GeographicCoordinate,
+): number {
+  // Floating point rounding can produce a value just outside [0, 1] for very
+  // small or antipodal distances. Clamp before asin so valid coordinates
+  // always produce a finite result.
+  const haversine = Math.min(1, Math.max(0, angularDistance(origin, destination)));
+  return 2 * EARTH_RADIUS_METERS * Math.asin(Math.sqrt(haversine));
 }
 
 export function selectClosestLocatedTracker(

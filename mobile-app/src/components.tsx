@@ -119,13 +119,26 @@ export function PrimaryButton({
   );
 }
 
-export function OutlineButton({ label, onPress, icon, testID, style }: ButtonProps) {
+export function OutlineButton({
+  label,
+  onPress,
+  icon,
+  testID,
+  disabled,
+  style,
+}: ButtonProps) {
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={label}
+      disabled={disabled}
       onPress={onPress}
-      style={({ pressed }) => [styles.outlineButton, style, pressed && styles.pressed]}
+      style={({ pressed }) => [
+        styles.outlineButton,
+        style,
+        disabled && styles.buttonDisabled,
+        pressed && !disabled && styles.pressed,
+      ]}
       testID={testID}
     >
       {icon ? <Ionicons name={icon} color={colors.blue} size={21} /> : null}

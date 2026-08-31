@@ -2,6 +2,9 @@ import type { TagRadio } from './radio.types';
 import { TagRadioError } from './radio.types';
 
 class UnsupportedTagRadio implements TagRadio {
+  async releaseTracker(): Promise<never> {
+    throw new TagRadioError('BLUETOOTH_UNSUPPORTED');
+  }
   async connectRing(): Promise<never> {
     throw new TagRadioError('BLUETOOTH_UNSUPPORTED');
   }

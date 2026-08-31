@@ -71,12 +71,12 @@ export function resolveBillingMode(
   return 'unavailable';
 }
 
-export function isCurrentSubscription(subscription: DeviceSubscription): boolean {
+export function isCurrentSubscription(subscription: AccountSubscription): boolean {
   return !['none', 'canceled', 'ended', 'incomplete_expired', 'unknown'].includes(
     subscription.status,
   );
 }
 
-export function canStartCheckout(subscription: DeviceSubscription): boolean {
+export function canStartCheckout(subscription: AccountSubscription): boolean {
   return !isCurrentSubscription(subscription);
 }

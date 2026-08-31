@@ -340,7 +340,7 @@ function FirmwareContent() {
           <Bullet>Verified, signed firmware packages before installation.</Bullet>
           <Bullet>Owner-authorized 10-second Play sound with immediate Pause and no repeat queue.</Bullet>
           <Bullet>Rollback-aware update flow so a tag does not accept an incomplete update.</Bullet>
-          <Bullet>One selected Apple or Google finder advertisement, restored after reboot.</Bullet>
+          <Bullet>Both backend-issued Apple and Google finder identities, advertised on the firmware’s alternating schedule and restored after reboot.</Bullet>
           <Bullet>Cloud + account access without a manual tracker subscription sync.</Bullet>
           <Bullet>Clearer maintenance and recovery checks during sensitive tag operations.</Bullet>
         </Surface>

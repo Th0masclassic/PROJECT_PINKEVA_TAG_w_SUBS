@@ -8,7 +8,6 @@ import type { AuthFeedback, AuthMode, EmailAuthInput } from './src/auth/types';
 import { getUserDisplayName } from './src/auth/userNames';
 import { canUseDemoPreview } from './src/auth/demoPreview';
 import { useTrackerBilling } from './src/billing/useTrackerBilling';
-import { isCurrentSubscription } from './src/billing/types';
 import { BottomNav, Brand, Toast } from './src/components';
 import { I18nProvider, LANGUAGE_NATIVE_NAMES, useI18n } from './src/i18n';
 import {
@@ -67,6 +66,7 @@ import { PROVISIONING_API_CONFIG, type DeviceClaim } from './src/provisioning/ap
 import { TagSetupModal } from './src/provisioning/TagSetupModal';
 import { useTagSetup } from './src/provisioning/useTagSetup';
 import { useFirmwareUpdate } from './src/provisioning/useFirmwareUpdate';
+import { useTrackerRelease } from './src/provisioning/useTrackerRelease';
 import { tagSetupErrorTranslationKey } from './src/provisioning/setup';
 import { usePremiumTrackers } from './src/premium/usePremiumTrackers';
 
@@ -174,6 +174,10 @@ function AppContent() {
       await trackerCatalog.refresh();
     },
   });
+  const trackerRelease = useTrackerRelease({
+    getAccessToken: auth.getAccessToken,
+    apiConfig: PROVISIONING_API_CONFIG,
+  });
 
   useEffect(() => {
     let active = true;
@@ -264,7 +268,6 @@ function AppContent() {
 
   const managedDeviceIds = selectBillingDeviceIds(trackers, demoPreviewActive && __DEV__);
   const billing = useTrackerBilling(
-    managedDeviceIds,
     auth.session?.access_token ?? null,
     demoPreviewActive && __DEV__,
   );
@@ -276,16 +279,6 @@ function AppContent() {
     deviceIds: managedDeviceIds,
     demoPreviewEnabled: demoPreviewActive && __DEV__,
   });
-  // `main` still exposes billing only through device-scoped routes. This keeps
-  // that legacy transport out of tracker UI until an account billing endpoint
-  // can replace it without changing the new Cloud + tab design.
-  const legacyBillingDeviceId =
-    managedDeviceIds.find((deviceId) => {
-      const subscription = billing.subscriptions[deviceId];
-      return subscription ? isCurrentSubscription(subscription) : false;
-    })
-    ?? managedDeviceIds.find((deviceId) => Boolean(billing.subscriptions[deviceId]))
-    ?? managedDeviceIds[0];
   const displayTrackers = useMemo(
     () => trackers.map((tracker) =>
       premium.features[tracker.id]?.subscriptionActive
@@ -301,11 +294,11 @@ function AppContent() {
   const openSubscriptionFromNotification = useCallback(
     (deviceId: string) => {
       void notificationInbox.refresh();
-      void billing.refreshDevice(deviceId);
+      void billing.refresh();
       setActiveTab('subscriptions');
       setRoute({ name: 'main' });
     },
-    [billing.refreshDevice, notificationInbox.refresh],
+    [billing.refresh, notificationInbox.refresh],
   );
   const openTrackerFromNotification = useCallback(
     (deviceId: string) => {
@@ -558,14 +551,14 @@ function AppContent() {
     tagSetup.open();
   };
 
-  const confirmRemove = () => {
-    if (!removeTrackerId) return;
-    const removed = displayTrackers.find((tracker) => tracker.id === removeTrackerId);
-    const nextTrackers = removeTracker(trackers, removeTrackerId);
+  const finishTrackerRemoval = (trackerId: string) => {
+    const removed = displayTrackers.find((tracker) => tracker.id === trackerId);
+    const nextTrackers = removeTracker(trackers, trackerId);
     const nextPreferences = reconcileTrackerPreferences(nextTrackers, trackerPreferences);
     setTrackers(nextTrackers);
     setTrackerPreferences(nextPreferences);
     setRemoveTrackerId(null);
+    trackerRelease.reset();
     setActiveTab('trackers');
     setRoute({ name: 'main' });
     showNotice(t('tracker.removedNotice', { name: removed?.name ?? t('common.tracker') }));
@@ -576,6 +569,20 @@ function AppContent() {
       const fallback = nextTrackers.find((tracker) => tracker.id === nextPreferences.mainTrackerId);
       if (fallback) showNotice(t('trackers.mainAutoNotice', { name: fallback.name }));
     }
+  };
+
+  const confirmRemove = async () => {
+    if (!removeTrackerId) return;
+    const removed = displayTrackers.find((tracker) => tracker.id === removeTrackerId);
+    if (!removed) return;
+    if (removed.source !== 'hosted') {
+      finishTrackerRemoval(removed.id);
+      return;
+    }
+    const released = await trackerRelease.start(removed);
+    if (!released) return;
+    finishTrackerRemoval(removed.id);
+    await trackerCatalog.refresh();
   };
 
   const presentAuthFeedback = useCallback(
@@ -792,36 +799,22 @@ function AppContent() {
     }
 
     if (activeTab === 'subscriptions') {
-      const accountSubscription = legacyBillingDeviceId
-        ? billing.subscriptions[legacyBillingDeviceId]
-        : undefined;
       return (
         <SubscriptionsScreen
-          subscription={accountSubscription}
-          loading={Boolean(
-            legacyBillingDeviceId && billing.loadingIds.has(legacyBillingDeviceId)
-          )}
-          error={legacyBillingDeviceId ? billing.errors[legacyBillingDeviceId] : undefined}
+          subscription={billing.subscription}
+          loading={billing.loading}
+          error={billing.error}
           mode={billing.mode}
           purchasesEnabled={billing.purchasesEnabled}
-          checkoutAvailable={Boolean(legacyBillingDeviceId)}
+          checkoutAvailable={billing.mode !== 'unavailable'}
           onRetry={async () => {
-            if (!legacyBillingDeviceId) return;
             await Promise.all([
-              billing.refreshDevice(legacyBillingDeviceId),
-              premium.refreshDevice(legacyBillingDeviceId),
+              billing.refresh(),
+              ...managedDeviceIds.map((deviceId) => premium.refreshDevice(deviceId)),
             ]);
           }}
-          onCheckout={(planCode) =>
-            legacyBillingDeviceId
-              ? billing.startCheckout(legacyBillingDeviceId, planCode)
-              : Promise.resolve({ kind: 'error', code: 'not_found' })
-          }
-          onPortal={(action) =>
-            legacyBillingDeviceId
-              ? billing.openPortal(legacyBillingDeviceId, action)
-              : Promise.resolve({ kind: 'error', code: 'not_found' })
-          }
+          onCheckout={billing.startCheckout}
+          onPortal={billing.openPortal}
           onNotice={showNotice}
         />
       );
@@ -1021,8 +1014,14 @@ function AppContent() {
       <ConfirmRemoveModal
         visible={removeTrackerId !== null}
         trackerName={displayTrackers.find((tracker) => tracker.id === removeTrackerId)?.name ?? t('common.tracker')}
-        onCancel={() => setRemoveTrackerId(null)}
-        onConfirm={confirmRemove}
+        secureRelease={displayTrackers.find((tracker) => tracker.id === removeTrackerId)?.source === 'hosted'}
+        phase={trackerRelease.phase}
+        error={trackerRelease.error}
+        onCancel={() => {
+          void trackerRelease.cancel();
+          setRemoveTrackerId(null);
+        }}
+        onConfirm={() => void confirmRemove()}
       />
       {notice ? <Toast message={notice} /> : null}
     </View>
