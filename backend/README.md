@@ -1,7 +1,7 @@
 # Pinqeva provisioning backend
 
 This service implements the payment-gated dual-network identity lifecycle and
-signed firmware release portion of protocol v1.8:
+signed firmware release portion of protocol v1.9:
 
 1. The authenticated app connects to a selected tag and reads its serial, empty-key fingerprint, and fresh 32-byte challenge. The serial must already be registered in `public.device` with a matching `public.device_bootstrap_credential`; development firmware bypasses the tag-side HMAC check, but it does not create or bypass the backend device record.
 2. `POST /v1/provisioning/requests` verifies the encrypted per-device factory credential and creates a database-only request. It returns no key material and expires after 45 minutes.
@@ -11,6 +11,37 @@ signed firmware release portion of protocol v1.8:
 6. The app reads both 32-byte fingerprints and the startup preference. `POST /v1/devices/claim/complete` checks the complete binding plus a user/session/device-bound capability before creating the one active ownership row.
 7. Claim completion returns `status: claimed` and `next_action: ready`. Both finder identities are sufficient for tracker operation; renewals never install billing state over BLE.
 8. Release is also two-phase and requires a fresh connection proof before the authenticated reset command.
+
+## Owner ring authorization
+
+`POST /v1/devices/{device_id}/ring/authorize` requires the owner's normal Supabase
+Bearer token. The phone first connects over BLE and reads the tracker's serial
+and fresh 32-byte tag challenge, then sends:
+
+```json
+{
+  "serial_number": "PKV-AABBCCDDEEFF",
+  "tag_challenge_base64url": "<canonical unpadded Base64url of the 32-byte challenge>"
+}
+```
+
+The response contains only `device_id`, `serial_number`, and
+`ring_authorization_proof_base64url`. The phone relays this proof to the ring
+authorization characteristic before sending Play or Pause. The backend verifies
+active ownership, the claimed device state, the currently bound claimed setup
+session, and matching user/device/serial identities. Ringing has no subscription
+gate and this endpoint makes no database writes.
+
+The proof is `HMAC-SHA256(control_key, "pinqeva:ring-auth:v1" || NUL || serial_ascii ||
+challenge_32)`, where `NUL` denotes one zero byte.
+The backend derives the existing per-allocation control key from the claim-token
+root and the setup session/user/device/Apple-key digest; the endpoint never
+returns that key. Firmware must accept the proof only for its current fresh
+connection challenge and clear ring authorization on disconnect. Bootstrap and
+reset proofs cannot authorize this distinct command domain. The development
+bootstrap bypass does **not** bypass owner-ring authentication and no factory
+bootstrap credential is needed after the control key has been provisioned.
+Responses use `Cache-Control: private, no-store`.
 
 ## Run locally
 
@@ -283,7 +314,7 @@ Content-Type: application/json
 `null` means the corresponding fingerprint or startup-preference characteristic is empty.
 The backend allocates both the 28-byte Apple advertisement key and 20-byte
 Google EID once, then records a legacy startup-slot preference. The native app
-uses the same value on Android and iOS, and firmware `0.5.0` advertises both
+uses the same value on Android and iOS, and firmware `0.6.0` advertises both
 identities in alternating slots. A retry always returns the original
 allocation; it never generates replacement material.
 

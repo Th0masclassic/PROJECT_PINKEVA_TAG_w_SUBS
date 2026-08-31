@@ -9,6 +9,7 @@ import type { PinqevaProvisioningClient } from './api';
 import { normalizeAdvertisedSerial } from './protocol';
 import { TagProvisioner, type ProvisioningProgress } from './provisionTag';
 import { TagFirmwareUpdater, type FirmwareUpdateProgress } from './firmwareUpdate';
+import { TagRinger, type RingConnectionInput } from './ring';
 import type { DiscoveredTag, StopTagScan, TagRadio } from './radio.types';
 import { TagRadioError } from './radio.types';
 
@@ -127,6 +128,14 @@ class NativeTagRadio implements TagRadio {
     this.destroyed = true;
     await this.stopScan();
     await this.manager.destroy().catch(() => undefined);
+  }
+
+  async connectRing(backend: PinqevaProvisioningClient, input: RingConnectionInput) {
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    await requestAndroidPermissions();
+    await this.waitUntilReady();
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    return new TagRinger(this.manager, backend).connectNearby(input);
   }
 
   private async stopScan(): Promise<void> {

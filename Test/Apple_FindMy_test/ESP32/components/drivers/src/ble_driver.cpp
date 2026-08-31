@@ -17,6 +17,7 @@
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "mbedtls/md.h"
+#include "mbedtls/platform_util.h"
 #include "mbedtls/sha256.h"
 #include "buzzer.hpp"
 #include "nvs_driver.hpp"
@@ -56,9 +57,19 @@ constexpr uint16_t UTC_TIME_SYNC_CAPABILITY = 0x0040;
 constexpr uint16_t FIRMWARE_UPDATE_CAPABILITY = 0x0080;
 constexpr uint16_t DUAL_FINDING_NETWORK_CAPABILITY = 0x0100;
 constexpr uint16_t DULT_SOUND_CAPABILITY = 0x0200;
+constexpr uint16_t OWNER_RING_CAPABILITY = 0x0400;
 constexpr size_t APPLE_FINDER_ADV_DATA_SIZE = 31;
 constexpr size_t GOOGLE_FINDER_ADV_DATA_SIZE = 29;
-constexpr uint64_t FINDER_FRAME_SLOT_MICROSECONDS = 500ULL * 1000ULL;
+constexpr uint64_t FINDER_FRAME_SLOT_MICROSECONDS =
+    static_cast<uint64_t>(CONFIG_PINQEVA_FINDER_SLOT_MS) * 1000ULL;
+constexpr uint64_t CONNECTION_IDLE_TIMEOUT_MICROSECONDS = 60ULL * 1000ULL * 1000ULL;
+constexpr uint32_t OWNER_RING_DURATION_MILLISECONDS = 10U * 1000U;
+constexpr uint8_t RING_PLAY = 0x01;
+constexpr uint8_t RING_PAUSE = 0x00;
+static_assert(CONFIG_PINQEVA_FINDER_SLOT_MS >= 2 * CONFIG_PINQEVA_FINDER_INTERVAL_MS,
+              "Each finder slot must allow at least two advertising intervals");
+static_assert(CONFIG_PINQEVA_FINDER_INTERVAL_MS % 5 == 0,
+              "Finder interval must be a multiple of 5 ms");
 constexpr uint32_t DULT_SOUND_DURATION_MILLISECONDS = 12U * 1000U;
 constexpr uint16_t DULT_SOUND_START_OPCODE = 0x0300;
 constexpr uint16_t DULT_SOUND_STOP_OPCODE = 0x0301;
@@ -74,6 +85,8 @@ enum class FinderFrame : uint8_t {
     APPLE,
     GOOGLE,
 };
+
+enum class SoundSource : uint8_t { NONE = 0, OWNER = 1, DULT = 2 };
 
 // ESP-IDF stores 128-bit UUIDs least-significant byte first. Keep the
 // canonical string next to the wire representation so the mobile app,
@@ -157,6 +170,18 @@ constexpr uint8_t FINDING_NETWORK_UUID[ESP_UUID_LEN_128] = {
     0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
     0x1A, 0x4B, 0x4D, 0x3E, 0x12, 0xF0, 0xF0, 0xA6,
 };
+constexpr uint8_t RING_AUTHORIZATION_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x13, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t RING_CONTROL_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x14, 0xF0, 0xF0, 0xA6,
+};
+constexpr uint8_t RING_STATUS_UUID[ESP_UUID_LEN_128] = {
+    0x01, 0x0A, 0x8F, 0x4C, 0xD2, 0x72, 0x2E, 0x9C,
+    0x1A, 0x4B, 0x4D, 0x3E, 0x15, 0xF0, 0xF0, 0xA6,
+};
 
 // Detecting Unwanted Location Trackers (DULT) non-owner service. UUID bytes
 // are stored least-significant first by ESP-IDF.
@@ -210,6 +235,13 @@ enum AttributeIndex : uint8_t {
     FIRMWARE_STATUS_VALUE,
     FIRMWARE_VERSION_DECLARATION,
     FIRMWARE_VERSION_VALUE,
+    RING_AUTHORIZATION_DECLARATION,
+    RING_AUTHORIZATION_VALUE,
+    RING_CONTROL_DECLARATION,
+    RING_CONTROL_VALUE,
+    RING_STATUS_DECLARATION,
+    RING_STATUS_VALUE,
+    RING_STATUS_CCC,
     ATTRIBUTE_COUNT,
 };
 
@@ -235,7 +267,7 @@ constexpr uint8_t READ_NOTIFY_PROPERTY =
 constexpr uint8_t WRITE_INDICATE_PROPERTY =
     ESP_GATT_CHAR_PROP_BIT_WRITE | ESP_GATT_CHAR_PROP_BIT_INDICATE;
 
-// Protocol 1.8, firmware 0.5. Capability bit 0x10 requires a backend-issued,
+// Protocol 1.9, firmware 0.6. Capability bit 0x10 requires a backend-issued,
 // nonce-bound authorization proof before any provisioning/reset write. The
 // checked-in development profile also advertises bit 0x20: setup deliberately
 // avoids OS pairing/bonding and therefore must never be shipped as the final
@@ -246,10 +278,12 @@ constexpr uint8_t WRITE_INDICATE_PROPERTY =
 // retained as the setup/UI preference; experimental firmware time-slices both
 // finder frames after provisioning.
 // Bit 0x200 exposes the public DULT non-owner sound controls.
+// Bit 0x400 adds owner ring control. Its control-key HMAC is NEVER bypassed,
+// including on the development profile. It grants sound control only.
 constexpr uint16_t PROTOCOL_CAPABILITIES =
     0x000F | TAG_AUTHORIZATION_CAPABILITY | UTC_TIME_SYNC_CAPABILITY |
     FIRMWARE_UPDATE_CAPABILITY | DUAL_FINDING_NETWORK_CAPABILITY |
-    DULT_SOUND_CAPABILITY |
+    DULT_SOUND_CAPABILITY | OWNER_RING_CAPABILITY |
 #if CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
     NON_BONDING_SETUP_CAPABILITY;
 #else
@@ -257,9 +291,9 @@ constexpr uint16_t PROTOCOL_CAPABILITIES =
 #endif
 uint8_t protocol_value[PROTOCOL_VALUE_SIZE] = {
     1,
-    8,
+    9,
     0,
-    5,
+    6,
     static_cast<uint8_t>(PROTOCOL_CAPABILITIES & 0xFFU),
     static_cast<uint8_t>((PROTOCOL_CAPABILITIES >> 8U) & 0xFFU),
 };
@@ -305,35 +339,50 @@ uint8_t firmware_manifest_attribute[FIRMWARE_MANIFEST_SIZE] = {};
 uint8_t firmware_data_attribute[512] = {};
 uint8_t firmware_control_attribute[1] = {};
 uint8_t firmware_status_attribute[FIRMWARE_STATUS_SIZE] = {};
-uint8_t firmware_version_attribute[3] = {0, 5, 0};
+uint8_t firmware_version_attribute[3] = {0, 6, 0};
+uint8_t ring_authorization_attribute[TAG_AUTHORIZATION_PROOF_SIZE] = {};
+uint8_t ring_control_attribute[1] = {};
+uint8_t ring_status_attribute[2] = {};
+uint8_t ring_ccc_value[2] = {};
 uint16_t attribute_handles[ATTRIBUTE_COUNT] = {};
 uint16_t dult_attribute_handles[DULT_ATTRIBUTE_COUNT] = {};
 
 BLEMode ble_mode = BLEMode::SETUP;
-esp_gatt_if_t active_gatts_if = ESP_GATT_IF_NONE;
-uint16_t active_connection_id = 0;
-bool connected = false;
+std::atomic<esp_gatt_if_t> active_gatts_if{ESP_GATT_IF_NONE};
+std::atomic<uint16_t> active_connection_id{0};
+std::atomic_bool connected{false};
 bool notifications_enabled = false;
-bool dult_indications_enabled = false;
+std::atomic_bool dult_indications_enabled{false};
+std::atomic_bool ring_notifications_enabled{false};
+std::atomic_bool ring_authorized{false};
+std::atomic<int64_t> ring_authorization_deadline{0};
+std::atomic<int64_t> connection_idle_deadline{0};
+std::atomic<SoundSource> sound_source{SoundSource::NONE};
+std::atomic<uint32_t> connection_generation{0};
+std::atomic<uint32_t> dult_sound_generation{0};
 std::atomic_bool service_started{false};
 bool pinkeva_service_started = false;
 bool dult_service_started = false;
 bool advertising_configuration_failed = false;
-bool connection_authorized = false;
+std::atomic_bool connection_authorized{false};
 esp_timer_handle_t authorization_timeout_timer = nullptr;
+esp_timer_handle_t connection_idle_timer = nullptr;
 esp_timer_handle_t maintenance_window_timer = nullptr;
 esp_timer_handle_t finder_frame_timer = nullptr;
 uint64_t trusted_clock_epoch = 0;
 int64_t trusted_clock_started_microseconds = 0;
 bool trusted_clock_is_set = false;
 uint8_t pending_adv_configuration = 0;
+bool scan_response_configured = false;
+bool scan_response_uses_setup = false;
+bool pending_scan_response_uses_setup = false;
 bool random_address_change_pending = false;
 bool advertising_active = false;
 bool advertising_refresh_pending = false;
 bool maintenance_window_open = false;
 FinderFrame active_finder_frame = FinderFrame::APPLE;
 bool finder_frames_ready = false;
-uint16_t dult_sound_connection_id = 0;
+std::atomic<uint16_t> dult_sound_connection_id{0};
 
 uint8_t staged_value[MAX_STAGED_VALUE_SIZE] = {};
 bool staged_value_bytes[MAX_STAGED_VALUE_SIZE] = {};
@@ -359,6 +408,17 @@ uint8_t setup_adv_data[3 + 18] = {
     PINKEVA_SERVICE_UUID[15],
 };
 uint8_t setup_scan_response[2 + (DEVICE_ID_LEN - 1)] = {};
+// Finder payloads already fill the advertisement. A service-only scan response
+// lets the owner app discover/connect without broadcasting a stable serial.
+uint8_t tracker_scan_response[18] = {
+    0x11, ESP_BLE_AD_TYPE_128SRV_CMPL,
+    PINKEVA_SERVICE_UUID[0], PINKEVA_SERVICE_UUID[1], PINKEVA_SERVICE_UUID[2],
+    PINKEVA_SERVICE_UUID[3], PINKEVA_SERVICE_UUID[4], PINKEVA_SERVICE_UUID[5],
+    PINKEVA_SERVICE_UUID[6], PINKEVA_SERVICE_UUID[7], PINKEVA_SERVICE_UUID[8],
+    PINKEVA_SERVICE_UUID[9], PINKEVA_SERVICE_UUID[10], PINKEVA_SERVICE_UUID[11],
+    PINKEVA_SERVICE_UUID[12], PINKEVA_SERVICE_UUID[13], PINKEVA_SERVICE_UUID[14],
+    PINKEVA_SERVICE_UUID[15],
+};
 uint8_t apple_finder_adv_data[APPLE_FINDER_ADV_DATA_SIZE] = {};
 uint8_t google_finder_adv_data[GOOGLE_FINDER_ADV_DATA_SIZE] = {};
 uint8_t dult_control_value[6] = {};
@@ -387,10 +447,10 @@ esp_ble_adv_params_t maintenance_adv_params = {
 };
 
 esp_ble_adv_params_t finder_adv_params = {
-    // One legacy advertising set is time-sliced every 500 ms. A 250 ms
-    // interval targets two events for Apple, then two for Google, per second.
-    .adv_int_min = 0x0190,
-    .adv_int_max = 0x0190,
+    // BLE units are 0.625 ms. Defaults preserve the existing finder cadence;
+    // a slower, explicit build profile can trade discovery latency for power.
+    .adv_int_min = CONFIG_PINQEVA_FINDER_INTERVAL_MS * 8 / 5,
+    .adv_int_max = CONFIG_PINQEVA_FINDER_INTERVAL_MS * 8 / 5,
     // Connectable finder frames let Apple/Android non-owner detection clients
     // reach the public DULT sound service. Pinkeva provisioning characteristics
     // still enforce their independent authorization rules.
@@ -550,8 +610,8 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
     [TAG_CHALLENGE_VALUE] =
         {{ESP_GATT_AUTO_RSP},
          {ESP_UUID_LEN_128,
-          const_cast<uint8_t *>(TAG_CHALLENGE_UUID),
-          SETUP_READ_PERMISSION,
+           const_cast<uint8_t *>(TAG_CHALLENGE_UUID),
+           ESP_GATT_PERM_READ,
           sizeof(tag_challenge_attribute),
           sizeof(tag_challenge_attribute),
           tag_challenge_attribute}},
@@ -724,7 +784,47 @@ const esp_gatts_attr_db_t provisioning_gatt_db[ATTRIBUTE_COUNT] = {
           ESP_GATT_PERM_READ,
           sizeof(firmware_version_attribute),
           sizeof(firmware_version_attribute),
-          firmware_version_attribute}},
+           firmware_version_attribute}},
+
+    [RING_AUTHORIZATION_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ, sizeof(uint8_t), sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [RING_AUTHORIZATION_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128, const_cast<uint8_t *>(RING_AUTHORIZATION_UUID),
+          ESP_GATT_PERM_WRITE, sizeof(ring_authorization_attribute), 0,
+          ring_authorization_attribute}},
+    [RING_CONTROL_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ, sizeof(uint8_t), sizeof(uint8_t),
+          const_cast<uint8_t *>(&WRITE_PROPERTY)}},
+    [RING_CONTROL_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128, const_cast<uint8_t *>(RING_CONTROL_UUID),
+          ESP_GATT_PERM_WRITE, sizeof(ring_control_attribute), 0,
+          ring_control_attribute}},
+    [RING_STATUS_DECLARATION] =
+        {{ESP_GATT_AUTO_RSP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CHARACTER_DECLARATION_UUID)),
+          ESP_GATT_PERM_READ, sizeof(uint8_t), sizeof(uint8_t),
+          const_cast<uint8_t *>(&READ_NOTIFY_PROPERTY)}},
+    [RING_STATUS_VALUE] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_128, const_cast<uint8_t *>(RING_STATUS_UUID),
+          ESP_GATT_PERM_READ, sizeof(ring_status_attribute),
+          sizeof(ring_status_attribute), ring_status_attribute}},
+    [RING_STATUS_CCC] =
+        {{ESP_GATT_RSP_BY_APP},
+         {ESP_UUID_LEN_16,
+          reinterpret_cast<uint8_t *>(const_cast<uint16_t *>(&CLIENT_CONFIG_UUID)),
+          ESP_GATT_PERM_READ | ESP_GATT_PERM_WRITE,
+          sizeof(ring_ccc_value), sizeof(ring_ccc_value), ring_ccc_value}},
 };
 
 const esp_gatts_attr_db_t dult_gatt_db[DULT_ATTRIBUTE_COUNT] = {
@@ -782,22 +882,46 @@ void stop_authorization_timeout() {
 void clear_connection_authorization() {
     stop_authorization_timeout();
     connection_authorized = false;
+    ring_authorized = false;
+    ring_authorization_deadline = 0;
     std::memset(tag_challenge_attribute, 0, sizeof(tag_challenge_attribute));
     std::memset(tag_authorization_proof_attribute, 0,
                 sizeof(tag_authorization_proof_attribute));
 }
 
 void authorization_timeout_callback(void *) {
-    if (connected && !connection_authorized &&
+    if (connected && !connection_authorized && !ring_authorized &&
+        esp_timer_get_time() >= ring_authorization_deadline &&
         active_gatts_if != ESP_GATT_IF_NONE) {
         ESP_LOGW(LOG_TAG, "Closing connection without app authorization");
         esp_ble_gatts_close(active_gatts_if, active_connection_id);
     }
 }
 
+void connection_idle_timeout_callback(void *) {
+    if (connected && esp_timer_get_time() >= connection_idle_deadline &&
+        active_gatts_if != ESP_GATT_IF_NONE) {
+        ESP_LOGI(LOG_TAG, "Closing idle BLE link; resuming finder advertising");
+        esp_ble_gatts_close(active_gatts_if, active_connection_id);
+    }
+}
+
+void refresh_connection_idle_timeout() {
+    if (connection_idle_timer != nullptr && connected) {
+        connection_idle_deadline = esp_timer_get_time() + CONNECTION_IDLE_TIMEOUT_MICROSECONDS;
+        esp_timer_stop(connection_idle_timer);
+        const esp_err_t error = esp_timer_start_once(
+            connection_idle_timer, CONNECTION_IDLE_TIMEOUT_MICROSECONDS);
+        if (error != ESP_OK) {
+            ESP_LOGW(LOG_TAG, "Could not arm BLE idle timeout: %s", esp_err_to_name(error));
+        }
+    }
+}
+
 esp_err_t begin_connection_authorization() {
     clear_connection_authorization();
     esp_fill_random(tag_challenge_attribute, sizeof(tag_challenge_attribute));
+    ring_authorization_deadline = esp_timer_get_time() + AUTHORIZATION_TIMEOUT_MICROSECONDS;
     esp_err_t error = esp_ble_gatts_set_attr_value(
         attribute_handles[TAG_CHALLENGE_VALUE],
         sizeof(tag_challenge_attribute), tag_challenge_attribute);
@@ -1033,8 +1157,10 @@ void configure_advertising_for_mode() {
         maintenance_window_open && ble_mode != BLEMode::SETUP;
     const bool setup_frame = ble_mode == BLEMode::SETUP || maintenance_frame;
     stop_finder_frame_timer();
-    pending_adv_configuration =
-        ADV_CONFIG_FLAG | (setup_frame ? SCAN_RSP_CONFIG_FLAG : 0);
+    const bool update_scan_response = !scan_response_configured ||
+                                      scan_response_uses_setup != setup_frame;
+    pending_adv_configuration = ADV_CONFIG_FLAG |
+        (update_scan_response ? SCAN_RSP_CONFIG_FLAG : 0);
     advertising_configuration_failed = false;
     if (ble_mode == BLEMode::TRACKER && !maintenance_frame) {
         random_address_change_pending = true;
@@ -1074,10 +1200,16 @@ void configure_advertising_for_mode() {
         ESP_LOGE(LOG_TAG, "Could not configure BLE advertisement: %s",
                  esp_err_to_name(error));
     }
-    if (setup_frame) {
+    // Apple/Google swaps use the same service-only response; do not re-send
+    // identical HCI data every slot. Change it only on setup/maintenance entry
+    // or exit, so a tracker never inherits the setup response's stable serial.
+    if (update_scan_response) {
+        pending_scan_response_uses_setup = setup_frame;
         error = esp_ble_gap_config_scan_rsp_data_raw(
-            setup_scan_response, sizeof(setup_scan_response));
+            setup_frame ? setup_scan_response : tracker_scan_response,
+            setup_frame ? sizeof(setup_scan_response) : sizeof(tracker_scan_response));
         if (error != ESP_OK) {
+            scan_response_configured = false;
             advertising_configuration_failed = true;
             pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
             ESP_LOGE(LOG_TAG, "Could not configure Pinkeva scan response: %s",
@@ -1559,6 +1691,97 @@ esp_gatt_status_t authorize_connection(const uint8_t *proof, size_t length) {
 #endif
 }
 
+esp_gatt_status_t authorize_ring_connection(const uint8_t *proof, size_t length) {
+    if (proof == nullptr || length != TAG_AUTHORIZATION_PROOF_SIZE) {
+        return ESP_GATT_INVALID_ATTR_LEN;
+    }
+    if (!connected || ble_mode != BLEMode::TRACKER ||
+        esp_timer_get_time() >= ring_authorization_deadline) {
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+
+    // Unlike bootstrap setup, owner sound authorization has NO development
+    // bypass. The backend reconstructs this already-provisioned control key
+    // only after checking the current owner and allocation, and never returns
+    // the reusable key to the phone. A proof cannot authorize reset or OTA.
+    uint8_t control_key[TAG_CONTROL_KEY_SIZE] = {};
+    if (load_tag_control_key(control_key, sizeof(control_key)) != ESP_OK) {
+        mbedtls_platform_zeroize(control_key, sizeof(control_key));
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+    constexpr char DOMAIN[] = "pinqeva:ring-auth:v1";
+    uint8_t message[sizeof(DOMAIN) + DEVICE_ID_LEN - 1 + TAG_CHALLENGE_SIZE] = {};
+    std::memcpy(message, DOMAIN, sizeof(DOMAIN));  // includes the NUL separator
+    std::memcpy(message + sizeof(DOMAIN), device_id, DEVICE_ID_LEN - 1);
+    std::memcpy(message + sizeof(DOMAIN) + DEVICE_ID_LEN - 1,
+                tag_challenge_attribute, TAG_CHALLENGE_SIZE);
+    uint8_t expected[TAG_AUTHORIZATION_PROOF_SIZE] = {};
+    const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
+    const int result = sha256 == nullptr ? -1 : mbedtls_md_hmac(
+        sha256, control_key, sizeof(control_key), message, sizeof(message), expected);
+    uint8_t difference = static_cast<uint8_t>(result != 0);
+    for (size_t index = 0; index < sizeof(expected); ++index) {
+        difference |= expected[index] ^ proof[index];
+    }
+    mbedtls_platform_zeroize(control_key, sizeof(control_key));
+    mbedtls_platform_zeroize(message, sizeof(message));
+    mbedtls_platform_zeroize(expected, sizeof(expected));
+    if (difference != 0) return ESP_GATT_INSUF_AUTHORIZATION;
+    ring_authorized = true;
+    stop_authorization_timeout();
+    return ESP_GATT_OK;
+}
+
+void read_ring_status(uint8_t value[2]) {
+    const bool active = buzzer_is_active();
+    value[0] = active ? 1 : 0;
+    value[1] = active ? static_cast<uint8_t>(sound_source.load()) : 0;
+}
+
+void notify_ring_status() {
+    if (!connected || !ring_notifications_enabled ||
+        active_gatts_if == ESP_GATT_IF_NONE) return;
+    uint8_t value[2] = {};
+    read_ring_status(value);
+    esp_ble_gatts_send_indicate(active_gatts_if, active_connection_id,
+        attribute_handles[RING_STATUS_VALUE], sizeof(value), value, false);
+}
+
+void owner_ring_completed_callback() {
+    // A queued completion must never report an old tone as the new tone's end.
+    if (!buzzer_is_active()) notify_ring_status();
+}
+
+esp_err_t send_dult_sound_completed();
+
+esp_gatt_status_t process_ring_control(const uint8_t *value, size_t length) {
+    if (value == nullptr || length != 1) return ESP_GATT_INVALID_ATTR_LEN;
+    if (!ring_authorized || ble_mode != BLEMode::TRACKER) {
+        return ESP_GATT_INSUF_AUTHORIZATION;
+    }
+    if (value[0] == RING_PLAY) {
+        // Success acknowledges an intentionally ignored duplicate. It never
+        // queues a second sound, resets the timer, or changes the sound source.
+        if (buzzer_is_active()) return ESP_GATT_OK;
+        if (ota_update_active()) return ESP_GATT_WRITE_NOT_PERMIT;
+        const esp_err_t error = buzzer_start(
+            OWNER_RING_DURATION_MILLISECONDS, &owner_ring_completed_callback);
+        if (error != ESP_OK) return ESP_GATT_ERROR;
+        sound_source = SoundSource::OWNER;
+    } else if (value[0] == RING_PAUSE) {
+        const bool was_dult = sound_source == SoundSource::DULT &&
+            dult_sound_generation == connection_generation &&
+            dult_sound_connection_id == active_connection_id;
+        const esp_err_t error = buzzer_stop();
+        if (error != ESP_OK && error != ESP_ERR_INVALID_STATE) return ESP_GATT_ERROR;
+        if (was_dult && error == ESP_OK) send_dult_sound_completed();
+    } else {
+        return ESP_GATT_ILLEGAL_PARAMETER;
+    }
+    notify_ring_status();
+    return ESP_GATT_OK;
+}
+
 void send_write_response(esp_gatt_if_t gatts_if,
                          esp_ble_gatts_cb_param_t *param,
                          esp_gatt_status_t status,
@@ -1604,7 +1827,11 @@ esp_err_t send_dult_sound_completed() {
 }
 
 void dult_sound_completed_callback() {
-    if (!connected || active_connection_id != dult_sound_connection_id) return;
+    if (buzzer_is_active()) return;
+    notify_ring_status();
+    if (!connected || sound_source != SoundSource::DULT ||
+        active_connection_id != dult_sound_connection_id ||
+        connection_generation != dult_sound_generation) return;
     const esp_err_t error = send_dult_sound_completed();
     if (error != ESP_OK) {
         ESP_LOGW(LOG_TAG, "Could not indicate DULT sound completion: %s",
@@ -1636,7 +1863,10 @@ void handle_dult_control_write(esp_gatt_if_t gatts_if,
                     DULT_SOUND_DURATION_MILLISECONDS,
                     &dult_sound_completed_callback);
                 if (error == ESP_OK) {
+                    sound_source = SoundSource::DULT;
                     dult_sound_connection_id = param->write.conn_id;
+                    dult_sound_generation = connection_generation.load();
+                    notify_ring_status();
                 } else {
                     ESP_LOGE(LOG_TAG, "Could not start DULT sound: %s",
                              esp_err_to_name(error));
@@ -1645,6 +1875,7 @@ void handle_dult_control_write(esp_gatt_if_t gatts_if,
             }
         } else if (command == DULT_SOUND_STOP_OPCODE) {
             if (!buzzer_is_active() ||
+                sound_source != SoundSource::DULT ||
                 dult_sound_connection_id != param->write.conn_id) {
                 response_status = DULT_RESPONSE_INVALID_STATE;
             } else {
@@ -1653,6 +1884,8 @@ void handle_dult_control_write(esp_gatt_if_t gatts_if,
                     ESP_LOGE(LOG_TAG, "Could not stop DULT sound: %s",
                              esp_err_to_name(error));
                     response_status = DULT_RESPONSE_INVALID_CONFIGURATION;
+                } else {
+                    notify_ring_status();
                 }
             }
         } else {
@@ -1698,6 +1931,10 @@ void handle_dult_ccc_write(esp_gatt_if_t gatts_if,
 }
 
 size_t secure_value_length(uint16_t handle) {
+    if (handle == attribute_handles[RING_AUTHORIZATION_VALUE]) {
+        return TAG_AUTHORIZATION_PROOF_SIZE;
+    }
+    if (handle == attribute_handles[RING_CONTROL_VALUE]) return 1;
     if (handle == attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
         return TAG_AUTHORIZATION_PROOF_SIZE;
     }
@@ -1729,6 +1966,12 @@ size_t secure_value_length(uint16_t handle) {
 }
 
 bool secure_write_allowed_in_mode(uint16_t handle) {
+    if (handle == attribute_handles[RING_AUTHORIZATION_VALUE]) {
+        return ble_mode == BLEMode::TRACKER;
+    }
+    if (handle == attribute_handles[RING_CONTROL_VALUE]) {
+        return ring_authorized && ble_mode == BLEMode::TRACKER;
+    }
     if (handle == attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
         return true;
     }
@@ -1756,8 +1999,14 @@ bool secure_write_allowed_in_mode(uint16_t handle) {
 }
 
 esp_gatt_status_t process_secure_write(uint16_t handle,
-                                       const uint8_t *value,
-                                       size_t length) {
+                                        const uint8_t *value,
+                                        size_t length) {
+    if (handle == attribute_handles[RING_AUTHORIZATION_VALUE]) {
+        return authorize_ring_connection(value, length);
+    }
+    if (handle == attribute_handles[RING_CONTROL_VALUE]) {
+        return process_ring_control(value, length);
+    }
     if (handle == attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
         return authorize_connection(value, length);
     }
@@ -1766,6 +2015,9 @@ esp_gatt_status_t process_secure_write(uint16_t handle,
                       ProvisioningResult::UNAUTHORIZED);
         return ESP_GATT_INSUF_AUTHORIZATION;
     }
+    if ((handle == attribute_handles[FIRMWARE_MANIFEST_VALUE] ||
+         handle == attribute_handles[FIRMWARE_CONTROL_VALUE]) &&
+        !secure_write_allowed_in_mode(handle)) return ESP_GATT_WRITE_NOT_PERMIT;
     if (handle == attribute_handles[ADVERTISEMENT_KEY_VALUE]) {
         return persist_key(value, length);
     }
@@ -1805,8 +2057,10 @@ esp_gatt_status_t process_firmware_data_write(const uint8_t *value,
 }
 
 void handle_prepared_secure_write(esp_gatt_if_t gatts_if,
-                                  esp_ble_gatts_cb_param_t *param) {
+                                   esp_ble_gatts_cb_param_t *param) {
     const auto &write = param->write;
+    const bool ring_write = write.handle == attribute_handles[RING_AUTHORIZATION_VALUE] ||
+                            write.handle == attribute_handles[RING_CONTROL_VALUE];
     size_t expected_length = secure_value_length(write.handle);
     esp_gatt_status_t status = ESP_GATT_OK;
     if (expected_length == 0) {
@@ -1815,18 +2069,18 @@ void handle_prepared_secure_write(esp_gatt_if_t gatts_if,
         if (!connection_authorized &&
             write.handle != attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE]) {
             status = ESP_GATT_INSUF_AUTHORIZATION;
-            update_status(ProvisioningState::ERROR,
-                          ProvisioningResult::UNAUTHORIZED);
+            if (!ring_write) update_status(ProvisioningState::ERROR,
+                                          ProvisioningResult::UNAUTHORIZED);
         } else {
             status = ESP_GATT_WRITE_NOT_PERMIT;
-            update_status(ProvisioningState::ERROR,
-                          ProvisioningResult::ALREADY_PROVISIONED);
+            if (!ring_write) update_status(ProvisioningState::ERROR,
+                                          ProvisioningResult::ALREADY_PROVISIONED);
         }
     } else if (write.offset > expected_length ||
                write.len > expected_length - write.offset) {
         status = ESP_GATT_INVALID_ATTR_LEN;
-        update_status(ProvisioningState::ERROR,
-                      ProvisioningResult::INVALID_LENGTH);
+        if (!ring_write) update_status(ProvisioningState::ERROR,
+                                      ProvisioningResult::INVALID_LENGTH);
     } else if (staged_write_active &&
                (staged_connection_id != write.conn_id ||
                 staged_attribute_handle != write.handle)) {
@@ -1844,8 +2098,8 @@ void handle_prepared_secure_write(esp_gatt_if_t gatts_if,
             staged_connection_id = write.conn_id;
             staged_attribute_handle = write.handle;
             staged_expected_length = expected_length;
-            update_status(ProvisioningState::RECEIVING,
-                          ProvisioningResult::SUCCESS);
+            if (!ring_write) update_status(ProvisioningState::RECEIVING,
+                                          ProvisioningResult::SUCCESS);
         }
         std::memcpy(staged_value + write.offset, write.value, write.len);
         std::fill(staged_value_bytes + write.offset,
@@ -1883,6 +2137,21 @@ void handle_ccc_write(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
         update_status(static_cast<ProvisioningState>(status_value[0]),
                       static_cast<ProvisioningResult>(status_value[1]));
     }
+}
+
+void handle_ring_ccc_write(esp_gatt_if_t gatts_if, esp_ble_gatts_cb_param_t *param) {
+    esp_gatt_status_t status = ESP_GATT_OK;
+    if (param->write.offset != 0) {
+        status = ESP_GATT_INVALID_OFFSET;
+    } else if (param->write.len != sizeof(ring_ccc_value)) {
+        status = ESP_GATT_INVALID_ATTR_LEN;
+    } else if (param->write.value[1] != 0 || param->write.value[0] > 1) {
+        status = ESP_GATT_CCC_CFG_ERR;
+    } else {
+        ring_notifications_enabled = param->write.value[0] == 1;
+        std::memcpy(ring_ccc_value, param->write.value, sizeof(ring_ccc_value));
+    }
+    send_write_response(gatts_if, param, status);
 }
 
 void gatts_callback(esp_gatts_cb_event_t event,
@@ -1977,38 +2246,68 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             break;
         }
-        case ESP_GATTS_CONNECT_EVT:
-            connected = true;
+        case ESP_GATTS_CONNECT_EVT: {
+            // A stopped esp_timer may already have dispatched its callback.
+            // Keep the new link unpublished until its identity and deadlines
+            // replace every value belonging to the previous connection.
+            connected = false;
+            ++connection_generation;
             advertising_active = false;
             stop_finder_frame_timer();
             active_connection_id = param->connect.conn_id;
             notifications_enabled = false;
             dult_indications_enabled = false;
+            ring_notifications_enabled = false;
             ccc_value[0] = ccc_value[1] = 0;
             dult_ccc_value[0] = dult_ccc_value[1] = 0;
+            ring_ccc_value[0] = ring_ccc_value[1] = 0;
             clear_staged_value();
             if (begin_connection_authorization() != ESP_OK) {
                 ESP_LOGE(LOG_TAG, "Could not create connection challenge");
                 esp_ble_gatts_close(gatts_if, param->connect.conn_id);
                 break;
             }
+            connection_idle_deadline =
+                esp_timer_get_time() + CONNECTION_IDLE_TIMEOUT_MICROSECONDS;
+            connected = true;
+            refresh_connection_idle_timeout();
+            // The central may decline these preferences. Slave latency skips
+            // empty connection events while queued Play/Pause still responds
+            // at a short connection interval; it does not delay OTA payloads.
+            esp_ble_conn_update_params_t connection_parameters = {};
+            std::memcpy(connection_parameters.bda, param->connect.remote_bda,
+                        sizeof(esp_bd_addr_t));
+            connection_parameters.min_int = 24;  // 30 ms (1.25 ms units)
+            connection_parameters.max_int = 40;  // 50 ms
+            connection_parameters.latency = 4;
+            connection_parameters.timeout = 400; // 4 s (10 ms units)
+            esp_ble_gap_update_conn_params(&connection_parameters);
 #if !CONFIG_PINQEVA_DEV_BYPASS_BOOTSTRAP
             // Production keeps link encryption while intentionally omitting
             // the bond bit. The explicitly insecure development bypass must
             // not start OS pairing here.
-            esp_ble_set_encryption(param->connect.remote_bda,
-                                   ESP_BLE_SEC_ENCRYPT_NO_MITM);
+            // Finder connections can be owner-ring or public DULT clients.
+            // Neither should be forced to pair simply for connecting.
+            if (ble_mode == BLEMode::SETUP || maintenance_window_open) {
+                esp_ble_set_encryption(param->connect.remote_bda,
+                                       ESP_BLE_SEC_ENCRYPT_NO_MITM);
+            }
 #endif
             break;
+        }
         case ESP_GATTS_DISCONNECT_EVT:
             connected = false;
             notifications_enabled = false;
             dult_indications_enabled = false;
+            ring_notifications_enabled = false;
+            if (connection_idle_timer != nullptr) esp_timer_stop(connection_idle_timer);
             if (buzzer_is_active() &&
+                sound_source == SoundSource::DULT &&
                 dult_sound_connection_id == param->disconnect.conn_id) {
                 buzzer_stop();
             }
             dult_sound_connection_id = 0;
+            dult_sound_generation = 0;
             clear_staged_value();
             if (ota_update_active()) ota_update_abort();
             clear_connection_authorization();
@@ -2027,9 +2326,28 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             break;
         case ESP_GATTS_READ_EVT: {
+            refresh_connection_idle_timeout();
             esp_gatt_status_t read_status = ESP_GATT_READ_NOT_PERMIT;
             esp_gatt_rsp_t response = {};
-            if (param->read.handle == attribute_handles[FIRMWARE_STATUS_VALUE] &&
+            if (param->read.handle == attribute_handles[RING_STATUS_VALUE] ||
+                param->read.handle == attribute_handles[RING_STATUS_CCC]) {
+                uint8_t value[2] = {};
+                if (param->read.handle == attribute_handles[RING_STATUS_VALUE]) {
+                    read_ring_status(value);
+                } else {
+                    std::memcpy(value, ring_ccc_value, sizeof(value));
+                }
+                if (param->read.offset > sizeof(value)) {
+                    read_status = ESP_GATT_INVALID_OFFSET;
+                } else {
+                    response.attr_value.handle = param->read.handle;
+                    response.attr_value.offset = param->read.offset;
+                    response.attr_value.len = sizeof(value) - param->read.offset;
+                    std::memcpy(response.attr_value.value, value + param->read.offset,
+                                response.attr_value.len);
+                    read_status = ESP_GATT_OK;
+                }
+            } else if (param->read.handle == attribute_handles[FIRMWARE_STATUS_VALUE] &&
                 connection_authorized) {
                 uint8_t firmware_status[FIRMWARE_STATUS_SIZE] = {};
                 ota_update_status(firmware_status);
@@ -2066,11 +2384,13 @@ void gatts_callback(esp_gatts_cb_event_t event,
             break;
         }
         case ESP_GATTS_WRITE_EVT:
+            refresh_connection_idle_timeout();
             if (param->write.is_prep) {
                 handle_prepared_secure_write(gatts_if, param);
             } else if (secure_value_length(param->write.handle) != 0) {
-                esp_gatt_status_t result = process_secure_write(
-                    param->write.handle, param->write.value, param->write.len);
+                esp_gatt_status_t result = param->write.offset == 0
+                    ? process_secure_write(param->write.handle, param->write.value, param->write.len)
+                    : ESP_GATT_INVALID_OFFSET;
                 send_write_response(gatts_if, param, result);
                 if (result == ESP_GATT_INSUF_AUTHORIZATION) {
                     esp_ble_gatts_close(gatts_if, param->write.conn_id);
@@ -2085,6 +2405,8 @@ void gatts_callback(esp_gatts_cb_event_t event,
                 }
             } else if (param->write.handle == attribute_handles[STATUS_CCC]) {
                 handle_ccc_write(gatts_if, param);
+            } else if (param->write.handle == attribute_handles[RING_STATUS_CCC]) {
+                handle_ring_ccc_write(gatts_if, param);
             } else if (param->write.handle ==
                        dult_attribute_handles[DULT_CONTROL_VALUE]) {
                 handle_dult_control_write(gatts_if, param);
@@ -2097,10 +2419,12 @@ void gatts_callback(esp_gatts_cb_event_t event,
             }
             break;
         case ESP_GATTS_EXEC_WRITE_EVT: {
+            refresh_connection_idle_timeout();
             esp_gatt_status_t result = ESP_GATT_OK;
             bool was_authorization_write =
                 staged_attribute_handle ==
-                attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE];
+                attribute_handles[TAG_AUTHORIZATION_PROOF_VALUE] ||
+                staged_attribute_handle == attribute_handles[RING_AUTHORIZATION_VALUE];
             if (param->exec_write.exec_write_flag == ESP_GATT_PREP_WRITE_EXEC) {
                 bool complete = staged_write_active &&
                                 staged_value_length == staged_expected_length &&
@@ -2149,7 +2473,7 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                 ble_mode == BLEMode::TRACKER && !maintenance_window_open;
             const uint8_t *active_address =
                 finder_identity ? active_finder_address() : setup_ble_address;
-            ESP_LOGI(LOG_TAG,
+            ESP_LOGD(LOG_TAG,
                      "%s BLE identity v%u ready: %02X:%02X:%02X:%02X:%02X:%02X",
                      finder_identity ? active_finder_network_name() : "Setup",
                      SETUP_BLE_IDENTITY_VERSION,
@@ -2175,9 +2499,13 @@ void gap_callback(esp_gap_ble_cb_event_t event,
             break;
         case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
             if (param->scan_rsp_data_raw_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+                scan_response_configured = false;
                 advertising_configuration_failed = true;
                 ESP_LOGE(LOG_TAG, "Pinkeva scan response rejected: %d",
                          param->scan_rsp_data_raw_cmpl.status);
+            } else {
+                scan_response_configured = true;
+                scan_response_uses_setup = pending_scan_response_uses_setup;
             }
             pending_adv_configuration &= ~SCAN_RSP_CONFIG_FLAG;
             try_start_advertising();
@@ -2191,7 +2519,7 @@ void gap_callback(esp_gap_ble_cb_event_t event,
                 advertising_active = true;
                 const bool finder_frame =
                     ble_mode == BLEMode::TRACKER && !maintenance_window_open;
-                ESP_LOGI(LOG_TAG, "%s advertising active",
+                ESP_LOGD(LOG_TAG, "%s advertising active",
                          finder_frame ? active_finder_network_name()
                                       : "Maintenance");
                 if (finder_frame && finder_frame_timer != nullptr) {
@@ -2335,6 +2663,17 @@ std::optional<ERROR_TAG> ble_init() {
                              &authorization_timeout_timer);
     if (error != ESP_OK) {
         return ERROR_TAG("Authorization timer initialization failed", LOG_TAG);
+    }
+    const esp_timer_create_args_t idle_timer_arguments = {
+        .callback = &connection_idle_timeout_callback,
+        .arg = nullptr,
+        .dispatch_method = ESP_TIMER_TASK,
+        .name = "ble_idle",
+        .skip_unhandled_events = false,
+    };
+    error = esp_timer_create(&idle_timer_arguments, &connection_idle_timer);
+    if (error != ESP_OK) {
+        return ERROR_TAG("Connection idle timer initialization failed", LOG_TAG);
     }
     const esp_timer_create_args_t maintenance_timer_arguments = {
         .callback = &maintenance_window_timeout_callback,

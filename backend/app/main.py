@@ -54,6 +54,8 @@ from .models import (
     DeviceReleaseResponse,
     DeviceReleaseStart,
     DeviceReleaseStartResponse,
+    DeviceRingAuthorizationRequest,
+    DeviceRingAuthorizationResponse,
     DeviceLocationHistoryResponse,
     DeviceLocationReportResponse,
     BillingUrlResponse,
@@ -125,6 +127,8 @@ SAFE_PROVISIONING_MESSAGES = {
     "RECOVERY_REQUIRED": "This tag needs support before setup can continue.",
     "SUBSCRIPTION_REQUIRED": "An active subscription is required before setup can continue.",
     "FINDING_NETWORK_MISMATCH": "The tag is configured for a different finding network.",
+    "OWNED_DEVICE_NOT_FOUND": "This tracker is unavailable.",
+    "TAG_KEY_MISMATCH": "The connected tag does not match this tracker.",
 }
 
 SAFE_BILLING_MESSAGES = {
@@ -387,6 +391,13 @@ async def request_context(request: Request, call_next):
         )
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
+    if request.url.path.startswith("/v1/devices/") and request.url.path.endswith(
+        "/ring/authorize"
+    ):
+        # Includes validation/authentication failures: challenge proofs must
+        # never be cached by the phone or intermediary proxies.
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
     if is_admin_request:
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
@@ -811,6 +822,24 @@ async def subscription_portal(
         user_id=principal.user_id,
         action=request.action if request else "update",
     )
+
+
+@app.post(
+    "/v1/devices/{device_id}/ring/authorize",
+    response_model=DeviceRingAuthorizationResponse,
+)
+async def authorize_device_ring(
+    device_id: UUID,
+    request: DeviceRingAuthorizationRequest,
+    principal: AuthenticatedPrincipal,
+) -> DeviceRingAuthorizationResponse:
+    async with app.state.database.transaction() as connection:
+        return await app.state.service.authorize_ring(
+            connection,
+            user_id=principal.user_id,
+            device_id=device_id,
+            request=request,
+        )
 
 
 @app.get(

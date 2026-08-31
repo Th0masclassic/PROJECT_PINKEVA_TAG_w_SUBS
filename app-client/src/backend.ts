@@ -44,6 +44,12 @@ export type DeviceRelease = {
   next_action: "ready_for_new_owner";
 };
 
+export type RingAuthorization = {
+  device_id: string;
+  serial_number: string;
+  ring_authorization_proof_base64url: string;
+};
+
 type ErrorEnvelope = {
   error?: { code?: string; request_id?: string };
 };
@@ -152,6 +158,36 @@ export class PinqevaBackendClient {
     private readonly baseUrl: string,
     private readonly accessToken: () => Promise<string>,
   ) {}
+
+  async authorizeRing(input: {
+    deviceId: string;
+    serialNumber: string;
+    tagChallengeBase64url: string;
+  }): Promise<RingAuthorization> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20_000);
+    try {
+      return await this.request(
+        `/v1/devices/${encodeURIComponent(input.deviceId)}/ring/authorize`,
+        {
+          method: "POST",
+          signal: controller.signal,
+          body: JSON.stringify({
+            serial_number: input.serialNumber,
+            tag_challenge_base64url: input.tagChallengeBase64url,
+          }),
+        },
+        (value): value is RingAuthorization =>
+          isJsonObject(value) && typeof value.device_id === "string" &&
+          typeof value.serial_number === "string" &&
+          typeof value.ring_authorization_proof_base64url === "string" &&
+          /^[A-Za-z0-9_-]{43}$/.test(value.ring_authorization_proof_base64url),
+      );
+    } catch (error) {
+      if (controller.signal.aborted) throw new PinqevaApiError("REQUEST_TIMEOUT", 0);
+      throw error;
+    } finally { clearTimeout(timeout); }
+  }
 
   async startDeviceClaim(input: {
     provisioningRequestId: string;

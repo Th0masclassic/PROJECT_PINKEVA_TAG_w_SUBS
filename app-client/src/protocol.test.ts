@@ -6,7 +6,9 @@ import {
   decodeDeviceIdentifier,
   decodeTagKeyFingerprint,
   encodeBase64Url,
+  normalizeAdvertisedSerial,
   parseProtocolInformation,
+  parseRingStatus,
   provisioningStatusIsReady,
   toBleBase64,
 } from "./protocol.js";
@@ -48,5 +50,25 @@ describe("provisioning protocol", () => {
     expect(() => provisioningStatusIsReady(Uint8Array.of(0x7f, 0x03))).toThrow(
       /result 0x03/,
     );
+  });
+
+  it("parses only consistent ring states and canonical tracker serials", () => {
+    expect(parseRingStatus(Uint8Array.of(1, 1))).toEqual({
+      playing: true,
+      source: "owner",
+    });
+    expect(parseRingStatus(Uint8Array.of(1, 2))).toEqual({
+      playing: true,
+      source: "dult",
+    });
+    expect(parseRingStatus(Uint8Array.of(0, 0))).toEqual({
+      playing: false,
+      source: "none",
+    });
+    expect(() => parseRingStatus(Uint8Array.of(0, 1))).toThrow(/ring status/i);
+    expect(normalizeAdvertisedSerial(" pkv-aabbccddeeff ")).toBe(
+      "PKV-AABBCCDDEEFF",
+    );
+    expect(normalizeAdvertisedSerial("PKV-not-a-tag")).toBeNull();
   });
 });

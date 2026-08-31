@@ -28,6 +28,12 @@ export type DeviceClaim = {
   finding_network: 'apple' | 'google';
 };
 
+export type RingAuthorization = {
+  device_id: string;
+  serial_number: string;
+  ring_authorization_proof_base64url: string;
+};
+
 export type FirmwareAvailability = {
   device_id: string;
   current_version: string | null;
@@ -311,6 +317,28 @@ export class PinqevaProvisioningClient {
   ) {
     this.config = config;
     this.accessToken = accessToken;
+  }
+
+  authorizeRing(input: {
+    deviceId: string;
+    serialNumber: string;
+    tagChallengeBase64url: string;
+  }): Promise<RingAuthorization> {
+    return this.request(
+      `/v1/devices/${encodeURIComponent(input.deviceId)}/ring/authorize`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          serial_number: input.serialNumber,
+          tag_challenge_base64url: input.tagChallengeBase64url,
+        }),
+      },
+      (value): value is RingAuthorization =>
+        isRecord(value) && typeof value.device_id === 'string' &&
+        typeof value.serial_number === 'string' &&
+        typeof value.ring_authorization_proof_base64url === 'string' &&
+        /^[A-Za-z0-9_-]{43}$/.test(value.ring_authorization_proof_base64url),
+    );
   }
 
   startDeviceClaim(input: {

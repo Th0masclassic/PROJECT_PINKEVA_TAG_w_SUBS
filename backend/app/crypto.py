@@ -105,7 +105,7 @@ def tag_control_key(
     device_id: bytes,
     advertisement_key_sha256: bytes,
 ) -> bytes:
-    """Derive the per-allocation secret used only for authenticated tag reset."""
+    """Derive the per-allocation secret for domain-separated tag controls."""
 
     if len(key) != 32:
         raise ValueError("The claim-token key must be exactly 32 bytes")
@@ -157,6 +157,27 @@ def tag_authorization_proof(
     return hmac.new(
         bootstrap_key,
         b"pinqeva:bootstrap-auth:v1\x00" + serial + challenge,
+        hashlib.sha256,
+    ).digest()
+
+
+def tag_ring_authorization_proof(
+    control_key: bytes, serial_number: str, challenge: bytes
+) -> bytes:
+    """Authorize owner ringing for one tracker-generated connection challenge.
+
+    The existing per-allocation control key never leaves the backend in this
+    flow. The domain is distinct from bootstrap authorization and factory reset.
+    """
+
+    if len(control_key) != 32 or len(challenge) != 32:
+        raise ValueError("Control key and tag challenge must be exactly 32 bytes")
+    serial = serial_number.encode("ascii")
+    if len(serial) != 16:
+        raise ValueError("Serial number must contain exactly 16 ASCII bytes")
+    return hmac.new(
+        control_key,
+        b"pinqeva:ring-auth:v1\x00" + serial + challenge,
         hashlib.sha256,
     ).digest()
 

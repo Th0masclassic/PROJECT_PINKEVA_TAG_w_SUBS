@@ -161,6 +161,39 @@ describe("backend error handling", () => {
     });
   });
 
+  it("authorizes ring through the owner endpoint with only the fresh challenge", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        device_id: "device-id",
+        serial_number: "PKV-AABBCCDDEEFF",
+        ring_authorization_proof_base64url: "A".repeat(43),
+      }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new PinqevaBackendClient(
+      "https://api.pinqeva.example/",
+      async () => "fresh-access-token",
+    );
+
+    await expect(client.authorizeRing({
+      deviceId: "device-id",
+      serialNumber: "PKV-AABBCCDDEEFF",
+      tagChallengeBase64url: "challenge-value",
+    })).resolves.toMatchObject({ device_id: "device-id" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [URL, RequestInit];
+    expect(String(url)).toBe("https://api.pinqeva.example/v1/devices/device-id/ring/authorize");
+    expect(init.headers).toMatchObject({ Authorization: "Bearer fresh-access-token" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      serial_number: "PKV-AABBCCDDEEFF",
+      tag_challenge_base64url: "challenge-value",
+    });
+  });
+
   it.each([
     {
       name: "access token failure",

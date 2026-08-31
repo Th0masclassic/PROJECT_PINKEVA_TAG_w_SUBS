@@ -27,6 +27,7 @@ from .crypto import (
     tag_authorization_proof,
     tag_control_key,
     tag_reset_command,
+    tag_ring_authorization_proof,
 )
 from .models import (
     DeviceClaimComplete,
@@ -39,6 +40,8 @@ from .models import (
     DeviceReleaseResponse,
     DeviceReleaseStart,
     DeviceReleaseStartResponse,
+    DeviceRingAuthorizationRequest,
+    DeviceRingAuthorizationResponse,
 )
 
 
@@ -56,6 +59,79 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class ProvisioningService:
     settings: Settings
+
+    async def authorize_ring(
+        self,
+        connection: AsyncConnection,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        request: DeviceRingAuthorizationRequest,
+    ) -> DeviceRingAuthorizationResponse:
+        """Issue a challenge-bound owner proof without changing tracker state."""
+
+        device_query = await connection.execute(
+            """
+            SELECT d.id AS device_id, d.serial_number, d.status AS device_status,
+                   d.provisioning_session_id, o.user_id AS owner_user_id,
+                   ps.id AS session_id, ps.user_id AS session_user_id,
+                   ps.device_id AS session_device_id,
+                   ps.serial_number AS session_serial_number,
+                   ps.status AS session_status, ps.advertisement_key_sha256
+              FROM public.device d
+              JOIN public.ownership o
+                ON o.device_id = d.id AND o.ended_at IS NULL
+              LEFT JOIN public.provisioning_session ps
+                ON ps.id = d.provisioning_session_id
+             WHERE d.id = %s AND o.user_id = %s
+            """,
+            (device_id, user_id),
+        )
+        device = await device_query.fetchone()
+        # Do not disclose whether a different account owns this UUID.
+        if device is None or device["owner_user_id"] != user_id:
+            raise ProvisioningError(
+                "OWNED_DEVICE_NOT_FOUND", "The owned device was not found", 404
+            )
+        if request.serial_number != device["serial_number"]:
+            raise ProvisioningError(
+                "TAG_KEY_MISMATCH", "The connected tag does not match the owned device", 409
+            )
+        if (
+            device["device_id"] != device_id
+            or device["device_status"] != "claimed"
+            or device["provisioning_session_id"] is None
+            or device["session_id"] != device["provisioning_session_id"]
+            or device["session_user_id"] != user_id
+            or device["session_device_id"] != device_id
+            or device["session_serial_number"] != device["serial_number"]
+            or device["session_status"] != "claimed"
+            or device["advertisement_key_sha256"] is None
+            or len(device["advertisement_key_sha256"]) != 32
+        ):
+            raise ProvisioningError(
+                "RECOVERY_REQUIRED", "The ownership and key allocation are inconsistent", 409
+            )
+
+        # This must never use the development bootstrap bypass: even test
+        # firmware has a real control key after a successful claim. Billing and
+        # factory bootstrap credentials are unrelated to an owner's local ring.
+        control_key = self._tag_control_key(
+            session_id=device["session_id"],
+            user_id=user_id,
+            device_id=device_id,
+            advertisement_key_sha256=bytes(device["advertisement_key_sha256"]),
+        )
+        proof = tag_ring_authorization_proof(
+            control_key,
+            device["serial_number"],
+            b64url_decode_exact(request.tag_challenge_base64url, 32),
+        )
+        return DeviceRingAuthorizationResponse(
+            device_id=device_id,
+            serial_number=device["serial_number"],
+            ring_authorization_proof_base64url=b64url_encode(proof),
+        )
 
     def _associated_data(self, session_id: UUID, user_id: UUID, device_id: UUID) -> bytes:
         return f"pinqeva:v1:{session_id}:{user_id}:{device_id}".encode("ascii")

@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_pm.h"
+#include "esp_sleep.h"
 #include "ble_driver.hpp"
 #include "buzzer.hpp"
 #include "sdkconfig.h"
@@ -33,6 +34,9 @@ bool maintenance_button_pressed()
 
 void IRAM_ATTR maintenance_button_isr(void *)
 {
+    // A level wake source stays asserted during the hold. Mask its interrupt
+    // until the task observes release instead of flooding the CPU with ISRs.
+    gpio_intr_disable(static_cast<gpio_num_t>(CONFIG_PINQEVA_MAINTENANCE_BUTTON_GPIO));
     BaseType_t higher_priority_task_woken = pdFALSE;
     vTaskNotifyGiveFromISR(
         maintenance_button_task_handle, &higher_priority_task_woken);
@@ -49,7 +53,10 @@ void task_maintenance_button(void *)
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         vTaskDelay(pdMS_TO_TICKS(30));
-        if (!maintenance_button_pressed()) continue;
+        if (!maintenance_button_pressed()) {
+            gpio_intr_enable(static_cast<gpio_num_t>(CONFIG_PINQEVA_MAINTENANCE_BUTTON_GPIO));
+            continue;
+        }
 
         const TickType_t pressed_at = xTaskGetTickCount();
         bool opened = false;
@@ -66,6 +73,7 @@ void task_maintenance_button(void *)
             }
             vTaskDelay(SAMPLE_INTERVAL);
         }
+        gpio_intr_enable(static_cast<gpio_num_t>(CONFIG_PINQEVA_MAINTENANCE_BUTTON_GPIO));
     }
 }
 
@@ -79,22 +87,39 @@ esp_err_t init_maintenance_button()
 #if CONFIG_PINQEVA_MAINTENANCE_BUTTON_ACTIVE_LOW
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .intr_type = GPIO_INTR_LOW_LEVEL,
 #else
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
-        .intr_type = GPIO_INTR_POSEDGE,
+        .intr_type = GPIO_INTR_HIGH_LEVEL,
 #endif
     };
     esp_err_t error = gpio_config(&configuration);
     if (error != ESP_OK) return error;
+#if CONFIG_PM_ENABLE && CONFIG_FREERTOS_USE_TICKLESS_IDLE
+    // Edge interrupts alone cannot wake a sleeping CPU. Keep a level wakeup
+    // armed for the physical button; it stops asserting once released.
+    error = gpio_wakeup_enable(button_gpio,
+#if CONFIG_PINQEVA_MAINTENANCE_BUTTON_ACTIVE_LOW
+                               GPIO_INTR_LOW_LEVEL);
+#else
+                               GPIO_INTR_HIGH_LEVEL);
+#endif
+    if (error != ESP_OK) return error;
+    error = esp_sleep_enable_gpio_wakeup();
+    if (error != ESP_OK) return error;
+#endif
     if (xTaskCreate(task_maintenance_button, "maintenance_button", 2048,
                     nullptr, 4, &maintenance_button_task_handle) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     error = gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     if (error != ESP_OK && error != ESP_ERR_INVALID_STATE) return error;
-    return gpio_isr_handler_add(button_gpio, maintenance_button_isr, nullptr);
+    error = gpio_isr_handler_add(button_gpio, maintenance_button_isr, nullptr);
+    if (error == ESP_OK && maintenance_button_pressed()) {
+        xTaskNotifyGive(maintenance_button_task_handle);
+    }
+    return error;
 }
 
 
@@ -173,12 +198,18 @@ extern "C" void app_main(void)
     const esp_pm_config_t power_configuration = {
         .max_freq_mhz = CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
         .min_freq_mhz = 40,
+#if CONFIG_FREERTOS_USE_TICKLESS_IDLE
         .light_sleep_enable = true,
+#else
+        .light_sleep_enable = false,
+#endif
     };
     ESP_ERROR_CHECK(esp_pm_configure(&power_configuration));
 #endif
     ESP_ERROR_CHECK(init_led());
     ESP_ERROR_CHECK(buzzer_init());
     ESP_ERROR_CHECK(init_maintenance_button());
-    xTaskCreate(task_ble_init, "ble_init_task", 2048 * 4, NULL, 5, NULL);
+    if (xTaskCreate(task_ble_init, "ble_init_task", 2048 * 4, NULL, 5, NULL) != pdPASS) {
+        ESP_ERROR_CHECK(ESP_ERR_NO_MEM);
+    }
 }

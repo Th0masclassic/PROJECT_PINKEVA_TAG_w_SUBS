@@ -641,15 +641,15 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Device identifier derived from the factory MAC address.
 - Setup, key-based tracker, and bounded physical maintenance modes for the provisioning slice.
 - Connectable advertisement containing the provisioning service UUID, with the `PKV-` name in scan response data.
-- Protocol-v1.8 GATT service with per-connection challenge/proof, explicit no-bond development capability, dual-network identity characteristics, write-once startup preference, authenticated UTC synchronization, signed OTA, public DULT sound commands, and prepared writes.
+- Protocol-v1.9 GATT service with per-connection challenge/proof, explicit no-bond development capability, dual-network identity characteristics, write-once startup preference, authenticated UTC synchronization, signed OTA, owner-authorized Play/Pause, public DULT sound commands, and prepared writes.
 - Validated factory-bootstrap plus one-time NVS identity/control persistence, complete read-back checks, authenticated owner-data erasure that preserves the bootstrap key, and BLE-bond cleanup after reset disconnect.
 - React Native claim/release services that verify both fingerprints and the selector, avoid replacement, install partial retries safely, and confirm complete reset before backend release.
 - Experimental 500 ms Apple/Google time-sliced advertising, restored after reboot and independent of subscription changes. The old entitlement transport is removed.
-- CPT-9019A-SMT-TR LEDC driver and the public DULT non-owner sound start/stop/complete subset.
+- CPT-9019A-SMT-TR LEDC driver with a non-extending 10-second owner ring, Pause, and the public DULT non-owner sound start/stop/complete subset.
 - Cloud-side account premium feature access, 30-day owner/session-bound provider history, safe-zone/separation/movement alerts, vehicle protection, recovery shares/reports, and privacy deletion.
 - Authenticated API that issues nonce-bound proofs, generates Apple P-224 and Google EIK/EID material once, encrypts private identities, binds allocations atomically, queries both configured report providers, deterministically projects the newest report, completes one ownership, and performs two-phase release.
 - Supabase migrations for backend-only bootstrap credentials, encrypted key custody, permanent allocation markers, one active owner, release audit, subscription cancellation, and provider outbox delivery.
-- Protocol-v1.8/firmware-v0.5.0 classic ESP32 build verified with ESP-IDF 5.4.4.
+- Protocol-v1.9/firmware-v0.6.0 classic ESP32 normal and low-radio verification builds verified with ESP-IDF 5.4.4.
 - Experimental key generation and report-retrieval scripts.
 - Supabase tables for profiles, devices, ownership, plans, subscriptions, invoices, and payment events.
 - Initial Row Level Security for profiles, ownership, and devices.
@@ -659,7 +659,7 @@ All application traffic uses HTTPS and schema-validated JSON. Ownership is check
 - Physical-presence gating, MITM-resistant BLE association, and tag-signed provisioning receipts beyond the implemented backend-authentication proof.
 - Product mobile UI around the checked-in provisioning service.
 - Production KMS/HSM private-key wrapping and a horizontally scalable report-worker deployment.
-- Customer-facing UI for the newly implemented safe-zone, recovery-report, trusted-sharing, and vehicle-protection APIs.
+- Customer-facing UI for the implemented recovery-report, trusted-sharing, companion-phone, alert-profile, replacement, and vehicle-protection APIs. Safe-zone CRUD is available, but still uses manual coordinates rather than a map picker.
 - Production scheduling, batching, backoff, and capacity validation for the implemented durable dual-provider polling worker.
 - Physical key-based advertising integration testing and production-grade payment/provider operations.
 - Administrative roles, policies, audit events, and operator UI.

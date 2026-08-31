@@ -330,14 +330,15 @@ function FirmwareContent() {
       <Surface style={styles.releaseHero}>
         <View>
           <Text style={styles.releaseEyebrow}>CURRENT STABLE RELEASE</Text>
-          <Text style={styles.releaseVersion}>Pinkeva Tag 0.4.0</Text>
-          <Text style={styles.releaseBody}>Dual Apple/Google identity provisioning with cloud-only subscription access.</Text>
+          <Text style={styles.releaseVersion}>Pinkeva Tag 0.6.0</Text>
+          <Text style={styles.releaseBody}>Authenticated nearby Play/Pause sound, safer buzzer timing, and lower-power firmware controls.</Text>
         </View>
         <View style={styles.releaseIcon}><Ionicons name="shield-checkmark" size={32} color="#FFFFFF" /></View>
       </Surface>
       <Section title="What this release brings">
         <Surface style={styles.card}>
           <Bullet>Verified, signed firmware packages before installation.</Bullet>
+          <Bullet>Owner-authorized 10-second Play sound with immediate Pause and no repeat queue.</Bullet>
           <Bullet>Rollback-aware update flow so a tag does not accept an incomplete update.</Bullet>
           <Bullet>One selected Apple or Google finder advertisement, restored after reboot.</Bullet>
           <Bullet>Cloud + account access without a manual tracker subscription sync.</Bullet>

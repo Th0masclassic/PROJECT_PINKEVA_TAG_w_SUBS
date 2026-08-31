@@ -15,6 +15,9 @@ app-client/node_modules/
 # ESP-IDF per-target generated output
 Test/Apple_FindMy_test/ESP32/build-c3/
 Test/Apple_FindMy_test/ESP32/sdkconfig.c3
+Test/Apple_FindMy_test/ESP32/build-ring*/
+Test/Apple_FindMy_test/ESP32/sdkconfig.ring*
+Test/Apple_FindMy_test/ESP32/tests/build/
 
 # Credential/key experiments must never be newly committed
 **/auth.json

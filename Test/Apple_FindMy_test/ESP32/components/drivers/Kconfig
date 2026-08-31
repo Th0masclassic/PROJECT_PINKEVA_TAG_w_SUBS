@@ -59,4 +59,22 @@ config PINQEVA_BUZZER_FREQUENCY_HZ
         CPT-9019A-SMT-TR rated frequency. Keep this at 4000 Hz unless acoustic
         measurements on the assembled enclosure justify another value.
 
+config PINQEVA_FINDER_INTERVAL_MS
+    int "Finder advertising interval (milliseconds)"
+    range 100 2000
+    default 250
+    help
+        Larger intervals reduce radio work but increase discovery latency.
+        The default preserves the current experimental Apple/Google cadence.
+        Choose a multiple of 5 ms (BLE intervals use 0.625 ms units).
+
+config PINQEVA_FINDER_SLOT_MS
+    int "Per-network advertising slot (milliseconds)"
+    range 200 10000
+    default 500
+    help
+        Time before switching Apple/Google identity on the single advertising
+        set. Must be at least twice PINQEVA_FINDER_INTERVAL_MS. Larger slots
+        reduce host/controller reconfiguration but delay the other network.
+
 endmenu

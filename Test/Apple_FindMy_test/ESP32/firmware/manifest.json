@@ -1,11 +1,11 @@
 {
   "target": "esp32",
   "idf_version": "5.4.4",
-  "firmware_version": "0.5.0",
-  "protocol_version": "1.8",
+  "firmware_version": "0.6.0",
+  "protocol_version": "1.9",
   "profile": "development-no-bootstrap-no-bond",
   "requires_factory_bootstrap": false,
-  "warning": "Development image only. It experimentally time-slices Apple and Google frames even though Google's certified switchable-protocol guidance permits only one network at a time. Google uses a static counter-zero EID pending certified rotating-EID hardware. Apple owner Play Sound still requires the non-public MFi protocol. This build bypasses factory bootstrap authentication and OS pairing/bonding, so key confidentiality is not production-grade.",
+  "warning": "Development image only. It experimentally time-slices Apple and Google frames even though Google's certified switchable-protocol guidance permits only one network at a time. Google uses a static counter-zero EID pending certified rotating-EID hardware. Pinqeva owner ring is a custom authenticated service, not Apple's non-public MFi Play Sound protocol. This build bypasses factory bootstrap authentication and OS pairing/bonding, so provisioning-key confidentiality is not production-grade.",
   "finding_networks": ["apple", "google"],
   "active_network_policy": "dual-time-slice-preference-first",
   "setup_ble_identity_version": 3,
@@ -20,6 +20,10 @@
     "part": "CPT-9019A-SMT-TR",
     "gpio": 25,
     "frequency_hz": 4000,
+    "owner_duration_seconds": 10,
+    "owner_authorization": "hmac-sha256-challenge-v1",
+    "repeat_play_policy": "ignore-without-extending",
+    "pause_supported": true,
     "dult_duration_seconds": 12,
     "dult_service_uuid": "15190001-12F4-C226-88ED-2AC5579F2A85"
   },
@@ -33,12 +37,12 @@
   "application": {
     "file": "Pinkeva-ESP32.bin",
     "offset": "0x20000",
-    "sha256": "1a0e0af876c66c5adfa9d2fa217c144a80b197faf00bec3f3d7a89a0c34f00dc"
+    "sha256": "ff996fe525648ace69bd3f6e7509654b9a941cc2b52674824992115d5f881c78"
   },
   "bootloader": {
     "file": "bootloader-esp32.bin",
     "offset": "0x1000",
-    "sha256": "636860f67f1b765f513f53146c57076ccd851b00ab5e854af26d5b20c23c154f"
+    "sha256": "0dd303110f50fdcf0e6a76763a1b159ffff40f4edb2e7f7b59a8e2d842a7d35c"
   },
   "partition_table": {
     "file": "partition-table.bin",

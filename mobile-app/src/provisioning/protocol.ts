@@ -18,6 +18,9 @@ export const FIRMWARE_STATUS_UUID = 'a6f0f00f-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FIRMWARE_VERSION_UUID = 'a6f0f010-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const GOOGLE_KEY_FINGERPRINT_UUID = 'a6f0f011-3e4d-4b1a-9c2e-72d24c8f0a01';
 export const FINDING_NETWORK_UUID = 'a6f0f012-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const RING_AUTHORIZATION_UUID = 'a6f0f013-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const RING_CONTROL_UUID = 'a6f0f014-3e4d-4b1a-9c2e-72d24c8f0a01';
+export const RING_STATUS_UUID = 'a6f0f015-3e4d-4b1a-9c2e-72d24c8f0a01';
 
 export const ADVERTISEMENT_KEY_LENGTH = 28;
 export const KEY_FINGERPRINT_LENGTH = 32;
@@ -36,9 +39,28 @@ export const NON_BONDING_SETUP_CAPABILITY = 0x0020;
 export const UTC_TIME_SYNC_CAPABILITY = 0x0040;
 export const FIRMWARE_UPDATE_CAPABILITY = 0x0080;
 export const DUAL_FINDING_NETWORK_CAPABILITY = 0x0100;
+export const OWNER_RING_CAPABILITY = 0x0400;
+export const RING_AUTHORIZATION_PROOF_LENGTH = 32;
+export const RING_PLAY = 0x01;
+export const RING_PAUSE = 0x00;
 export const READY_SUCCESS = Uint8Array.of(0x04, 0x00);
 export const PINKEVA_SERIAL_PATTERN = /^PKV-[0-9A-F]{12}$/;
 export type FindingNetwork = 'apple' | 'google';
+
+export type RingStatus = {
+  playing: boolean;
+  source: 'none' | 'owner' | 'dult';
+};
+
+export function parseRingStatus(value: Uint8Array): RingStatus {
+  if (
+    value.length !== 2 || value[0] > 1 || value[1] > 2 ||
+    (value[0] === 0 && value[1] !== 0) || (value[0] === 1 && value[1] === 0)
+  ) {
+    throw new ProvisioningClientError('INVALID_RING_STATUS', 'Unexpected ring status');
+  }
+  return { playing: value[0] === 1, source: value[1] === 1 ? 'owner' : value[1] === 2 ? 'dult' : 'none' };
+}
 
 export type ProtocolInformation = {
   protocolMajor: number;

@@ -14,6 +14,7 @@ idf_component_register(
 	mbedtls
 	log
         esp_timer
+        esp_pm
         app_update
         esp_app_format
         driver

@@ -28,6 +28,10 @@ import { colors, radii, shadow } from '../theme';
 import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import { useProtectionCopy } from '../premium/copy';
 import { useTrackerCloudCopy } from '../trackers/copy';
+import { useAuth } from '../auth/AuthProvider';
+import { PROVISIONING_API_CONFIG } from '../provisioning/api';
+import { useTrackerRing } from '../provisioning/useTrackerRing';
+import { useRingCopy } from '../provisioning/ringCopy';
 
 const iconChoices: { kind: TrackerKind; labelKey: 'tracker.iconCard' | 'tracker.iconKeys' | 'tracker.iconBag' | 'tracker.iconCar' }[] = [
   { kind: 'card', labelKey: 'tracker.iconCard' },
@@ -66,6 +70,14 @@ export function TrackerDetailScreen({
   const cloudCopy = useCloudPlusCopy();
   const protectionCopy = useProtectionCopy();
   const trackerCloudCopy = useTrackerCloudCopy();
+  const auth = useAuth();
+  const ring = useTrackerRing({
+    tracker, ownerId: auth.session ? auth.user?.id ?? null : null,
+    getAccessToken: auth.getAccessToken, apiConfig: PROVISIONING_API_CONFIG,
+  });
+  const ringCopy = useRingCopy();
+  const ringBusy = ring.phase !== 'idle' && ring.phase !== 'error';
+  const ringPlaying = ring.phase === 'playing' || ring.phase === 'pausing';
   const [renameVisible, setRenameVisible] = useState(false);
   const [iconVisible, setIconVisible] = useState(false);
   const [draftName, setDraftName] = useState(tracker.name);
@@ -111,6 +123,28 @@ export function TrackerDetailScreen({
               <Text style={styles.cloudPillText}>{cloudCopy.name}</Text>
             </View>
           ) : null}
+        </Surface>
+
+        <Surface style={styles.ringCard}>
+          <PrimaryButton
+            label={ringPlaying ? ringCopy.playing : ringBusy ? ringCopy.connecting : ringCopy.play}
+            icon="volume-high-outline"
+            onPress={() => void ring.play()}
+            disabled={!ring.available || ringBusy}
+            testID="tracker-play-sound"
+          />
+          {ringBusy ? (
+            <PrimaryButton
+              label={ringPlaying ? ringCopy.pause : ringCopy.cancel}
+              icon={ringPlaying ? 'pause-outline' : 'close-outline'}
+              onPress={() => void ring.pause()}
+              disabled={ring.phase === 'pausing'}
+              testID="tracker-pause-sound"
+            />
+          ) : null}
+          <Text accessibilityLiveRegion="polite" style={styles.ringHint}>
+            {!ring.available ? ringCopy.preview : ring.error ? ringCopy.errors[ring.error] : ringCopy.description}
+          </Text>
         </Surface>
 
         <Text style={styles.sectionLabel}>{t('tracker.settings')}</Text>
@@ -293,6 +327,8 @@ export function TrackerDetailScreen({
 }
 
 const styles = StyleSheet.create({
+  ringCard: { marginTop: 16, padding: 16, gap: 10 },
+  ringHint: { color: colors.mutedDark, fontSize: 13, lineHeight: 19, textAlign: 'center' },
   content: { paddingHorizontal: 20, paddingBottom: 30 },
   productCard: { minHeight: 350, padding: 24, alignItems: 'center', justifyContent: 'center' },
   productArtwork: { width: '100%', maxWidth: 410, height: 245 },

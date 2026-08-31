@@ -1,0 +1,5 @@
+# Optional experimental profile: fewer radio events and frame switches.
+# Append after sdkconfig.defaults for a NEW build/config. Measure discovery and
+# current on the real PCB before shipping. Does not assume a 32 kHz crystal.
+CONFIG_PINQEVA_FINDER_INTERVAL_MS=1000
+CONFIG_PINQEVA_FINDER_SLOT_MS=2500

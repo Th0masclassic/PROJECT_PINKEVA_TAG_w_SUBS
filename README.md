@@ -158,7 +158,7 @@ NVS/bootstrap key:
 
 Replace the port with the connected board's serial interface. This wired bundle
 installs the bootloader, dual-slot partition table, initial OTA metadata, and
-firmware `0.4.0`; it is required once for boards on the old single-app layout.
+firmware `0.6.0`; it is required once for boards on the old single-app layout.
 Later releases can be installed from the mobile firmware screen. Firmware
 behavior must still be validated on real hardware; a successful build and the
 UUID in the image are not a substitute for testing the exact board.
