@@ -408,27 +408,45 @@ class LocationService:
             if len(apple_secret) != 28 or len(apple_hash) != 32:
                 raise ValueError("invalid Apple finder key material")
 
-            google_encrypted = EncryptedSecret(
-                version=int(row["google_identity_key_envelope_version"]),
-                nonce=bytes(row["google_identity_key_nonce"]),
-                ciphertext=bytes(row["google_identity_key_ciphertext"]),
+            # Google material was added after the original Apple-only
+            # allocations were provisioned. A legacy Apple allocation is valid
+            # without it, so only require the Google bundle when any of its
+            # fields are present (or when Google is the selected network).
+            google_fields = (
+                row["google_identity_key_envelope_version"],
+                row["google_identity_key_nonce"],
+                row["google_identity_key_ciphertext"],
+                row["google_advertisement_key_sha256"],
             )
-            google_secret = decrypt_google_identity_key(
-                google_encrypted,
-                self.settings.key_encryption_key,
-                (
-                    f"pinqeva:google-eik:v1:{row['session_id']}:"
-                    f"{user_id}:{device_id}"
-                ).encode("ascii"),
-            )
-            google_hash = bytes(row["google_advertisement_key_sha256"])
-            if len(google_hash) != 32 or not hmac.compare_digest(
-                hashlib.sha256(
-                    derive_google_advertisement_key(google_secret)
-                ).digest(),
-                google_hash,
-            ):
-                raise ValueError("Google identity does not match tag fingerprint")
+            if all(value is None for value in google_fields):
+                if str(row["finding_network"]) == "google":
+                    raise ValueError("Google finder key material is missing")
+                google_hash: bytes | None = None
+                google_secret: bytes | None = None
+            else:
+                if any(value is None for value in google_fields):
+                    raise ValueError("incomplete Google finder key material")
+                google_encrypted = EncryptedSecret(
+                    version=int(row["google_identity_key_envelope_version"]),
+                    nonce=bytes(row["google_identity_key_nonce"]),
+                    ciphertext=bytes(row["google_identity_key_ciphertext"]),
+                )
+                google_secret = decrypt_google_identity_key(
+                    google_encrypted,
+                    self.settings.key_encryption_key,
+                    (
+                        f"pinqeva:google-eik:v1:{row['session_id']}:"
+                        f"{user_id}:{device_id}"
+                    ).encode("ascii"),
+                )
+                google_hash = bytes(row["google_advertisement_key_sha256"])
+                if len(google_hash) != 32 or not hmac.compare_digest(
+                    hashlib.sha256(
+                        derive_google_advertisement_key(google_secret)
+                    ).digest(),
+                    google_hash,
+                ):
+                    raise ValueError("Google identity does not match tag fingerprint")
         except (InvalidTag, KeyError, TypeError, ValueError) as exc:
             logger.error(
                 "finder_key_unwrap_failed device=%s error_type=%s",
@@ -441,22 +459,27 @@ class LocationService:
                 503,
             ) from None
 
-        return _ReportBinding(
-            device_id=row["device_id"],
-            serial_number=row["serial_number"],
-            session_id=row["session_id"],
-            providers=(
-                _ProviderBinding(
-                    finding_network="apple",
-                    advertisement_key_sha256=apple_hash,
-                    finder_secret=apple_secret,
-                ),
+        providers = [
+            _ProviderBinding(
+                finding_network="apple",
+                advertisement_key_sha256=apple_hash,
+                finder_secret=apple_secret,
+            )
+        ]
+        if google_hash is not None and google_secret is not None:
+            providers.append(
                 _ProviderBinding(
                     finding_network="google",
                     advertisement_key_sha256=google_hash,
                     finder_secret=google_secret,
-                ),
-            ),
+                )
+            )
+
+        return _ReportBinding(
+            device_id=row["device_id"],
+            serial_number=row["serial_number"],
+            session_id=row["session_id"],
+            providers=tuple(providers),
         )
 
     async def _accept_report(

@@ -301,6 +301,55 @@ async def test_request_report_returns_one_tag_coordinates_as_json(
 
 
 @pytest.mark.asyncio
+async def test_legacy_apple_binding_without_google_material_remains_available() -> None:
+    settings = _settings()
+    service = LocationService(settings)
+    user_id = uuid4()
+    device_id = uuid4()
+    session_id = uuid4()
+    binding, _private_key = _binding_row(
+        settings, user_id=user_id, device_id=device_id, session_id=session_id
+    )
+    for field in (
+        "google_identity_key_ciphertext",
+        "google_identity_key_nonce",
+        "google_identity_key_envelope_version",
+        "google_advertisement_key_sha256",
+    ):
+        binding[field] = None
+
+    loaded = await service._load_binding(
+        _Database(_Connection(binding_row=binding)),
+        user_id=user_id,
+        device_id=device_id,
+    )
+
+    assert [provider.finding_network for provider in loaded.providers] == ["apple"]
+
+
+@pytest.mark.asyncio
+async def test_partial_google_binding_is_rejected() -> None:
+    settings = _settings()
+    service = LocationService(settings)
+    user_id = uuid4()
+    device_id = uuid4()
+    session_id = uuid4()
+    binding, _private_key = _binding_row(
+        settings, user_id=user_id, device_id=device_id, session_id=session_id
+    )
+    binding["google_identity_key_nonce"] = None
+
+    with pytest.raises(LocationError) as error:
+        await service._load_binding(
+            _Database(_Connection(binding_row=binding)),
+            user_id=user_id,
+            device_id=device_id,
+        )
+
+    assert error.value.code == "LOCATION_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
 async def test_google_tag_uses_only_the_configured_find_hub_bridge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
