@@ -507,7 +507,7 @@ def _complete_two_factor(
             )
         else:
             challenge_response = requests.put(
-                "https://gsa.apple.com/auth/verify/phone/",
+                "https://gsa.apple.com/auth/verify/phone",
                 json={"phoneNumber": {"id": sms_phone_id}, "mode": "sms"},
                 headers=headers,
                 timeout=timeout_seconds,
@@ -516,10 +516,14 @@ def _complete_two_factor(
             )
         challenge_response.raise_for_status()
         if not 200 <= challenge_response.status_code < 300:
-            raise AppleAuthenticationError("Apple 2FA challenge could not be started")
+            raise AppleAuthenticationError(
+                "Apple 2FA challenge could not be started",
+                code="two_factor_challenge_failed",
+            )
     except requests.RequestException as exc:
         raise AppleAuthenticationError(
-            "Apple 2FA challenge could not be started"
+            "Apple 2FA challenge could not be started",
+            code="two_factor_challenge_failed",
         ) from exc
 
     code = two_factor_code_provider(

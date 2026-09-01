@@ -206,6 +206,7 @@ report URL or automatically switches protocols after an authentication failure.
 | `credentials_required` | Configure Apple ID and password; an old DSID/token file is insufficient. |
 | `two_factor_provider_required` | Complete interactive login or configure a proven SMS receiver. |
 | `two_factor_phone_selection_required` | Enroll the correct number or select its ID explicitly. |
+| `two_factor_challenge_failed` | Apple did not accept the request that starts the selected 2FA challenge; retry once, then check Apple account access and safe logs. |
 | `twilio_credentials_rejected` | Correct the subaccount credentials, recreate API, then explicitly retry login. |
 | `two_factor_sms_timeout` | Check delivery, sender allowlist and server UTC clock; retry after backoff or use manual fallback. |
 | `apple_auth_rejected` / `apple_session_rejected` | Check the account/password/provider. Even a fresh login can be rejected. After repeated failures, fix the cause and run `login --force`. |

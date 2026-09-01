@@ -196,8 +196,10 @@ def test_sms_flow_discovers_twilio_number_snapshots_then_sends_and_verifies(
 
     def send(url, **kwargs):
         events.append("send")
+        assert url == "https://gsa.apple.com/auth/verify/phone"
         assert kwargs["json"] == {"phoneNumber": {"id": 7}, "mode": "sms"}
         assert kwargs["verify"] == APPLE_GSA_CA_BUNDLE
+        assert kwargs["allow_redirects"] is False
         received.append(sms())  # Delivered before Apple's HTTP response returns.
         return Response()
 
