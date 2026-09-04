@@ -46,6 +46,9 @@ class CapturingWorker(NotificationWorker):
         self.gateway = gateway
         self.finishes: list[dict[str, Any]] = []
 
+    async def _lease_valid(self, notification: NotificationJob) -> bool:
+        return True
+
     async def _tokens(self, notification: NotificationJob) -> list[str]:
         return self.tokens
 
@@ -56,6 +59,17 @@ class CapturingWorker(NotificationWorker):
         self, notification: NotificationJob, **values: Any
     ) -> None:
         self.finishes.append(values)
+
+
+@pytest.mark.asyncio
+async def test_notification_does_not_send_after_lease_is_lost() -> None:
+    class LostLeaseWorker(CapturingWorker):
+        async def _lease_valid(self, notification: NotificationJob) -> bool:
+            return False
+
+    worker = LostLeaseWorker(["ExpoPushToken[token]"], object())
+    await worker.process(job())
+    assert worker.finishes == []
 
 
 def test_notification_copy_covers_renewal_end_and_expiry() -> None:

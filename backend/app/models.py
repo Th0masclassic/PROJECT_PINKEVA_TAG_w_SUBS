@@ -342,6 +342,13 @@ class DeviceLocationReportResponse(StrictModel):
     last_place: str | None = Field(default=None, min_length=1, max_length=160)
     confidence: int | None = Field(default=None, ge=0, le=255)
     status_code: int | None = Field(default=None, ge=0, le=255)
+    server_fetched_at: datetime | None = None
+    age_seconds: int | None = Field(default=None, ge=0)
+    fetch_age_seconds: int | None = Field(default=None, ge=0)
+    source: Literal["cache", "refresh"] = "cache"
+    stale: bool = True
+    refreshing: bool = False
+    upstream_refresh_failed: bool = False
 
 
 class DeviceLocationHistoryPoint(StrictModel):

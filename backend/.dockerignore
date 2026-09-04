@@ -7,3 +7,7 @@ tools/
 *.pyc
 *.pyo
 *.log
+.tools/
+.test-artifacts/
+sql/
+docs/

@@ -1,0 +1,58 @@
+name: pinkeva-backend
+
+x-runtime: &runtime
+  image: ${PINQEVA_IMAGE:-pinkeva-backend:local}
+  build: .
+  env_file: ${PINQEVA_ENV_FILE:-.env}
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs:
+    - /tmp:size=64m,mode=1777
+  stop_grace_period: 90s
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+x-worker-health: &worker-health
+  test: ["CMD", "python", "-c", "import os; from urllib.request import urlopen; urlopen('http://127.0.0.1:' + os.getenv('PINQEVA_WORKER_HEALTH_PORT', '8081') + '/ready', timeout=4).read()"]
+  interval: 30s
+  timeout: 5s
+  start_period: 30s
+  retries: 3
+
+services:
+  api:
+    <<: *runtime
+    profiles: [api]
+    ports:
+      - "${PINQEVA_HTTP_BIND:-127.0.0.1}:${PINQEVA_HTTP_PORT:-8080}:8080"
+
+  location-worker:
+    <<: *runtime
+    profiles: [workers]
+    command: [python, -m, app.worker, location]
+    environment:
+      PINQEVA_LOCATION_WORKER_QUEUE: scheduled
+    healthcheck: *worker-health
+
+  realtime-worker:
+    <<: *runtime
+    profiles: [workers]
+    command: [python, -m, app.worker, location]
+    environment:
+      PINQEVA_LOCATION_WORKER_QUEUE: realtime
+    healthcheck: *worker-health
+
+  scheduler:
+    <<: *runtime
+    profiles: [scheduler]
+    command: [python, -m, app.worker, scheduler]
+    healthcheck: *worker-health
+
+  maintenance:
+    <<: *runtime
+    profiles: [maintenance]
+    command: [python, -m, app.worker, maintenance]
+    healthcheck: *worker-health

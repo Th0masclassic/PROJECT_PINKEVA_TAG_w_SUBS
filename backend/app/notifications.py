@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import os
 import socket
 from dataclasses import dataclass
@@ -339,6 +340,7 @@ class NotificationWorker:
         self.poll_interval_seconds = poll_interval_seconds
         generated = f"{socket.gethostname()[:48]}:{os.getpid()}:{uuid4().hex[:12]}"
         self.worker_id = (worker_id or generated)[:128]
+        self._next_schedule_at = 0.0
 
     async def schedule_due(self) -> int:
         async with self.database.transaction() as connection:
@@ -391,7 +393,7 @@ class NotificationWorker:
 
             return inserted
 
-    async def claim_due(self, batch_size: int = 25) -> list[NotificationJob]:
+    async def claim_due(self, batch_size: int = 1) -> list[NotificationJob]:
         async with self.database.transaction() as connection:
             query = await connection.execute(
                 """
@@ -550,6 +552,8 @@ class NotificationWorker:
             )
 
     async def process(self, job: NotificationJob) -> None:
+        if not await self._lease_valid(job):
+            return
         if not await self._premium_access_active(job):
             await self._finish(job, status="skipped", error_code="SUBSCRIPTION_ENDED")
             return
@@ -614,9 +618,26 @@ class NotificationWorker:
             disabled_tokens=result.disabled_tokens,
         )
 
+    async def _lease_valid(self, job: NotificationJob) -> bool:
+        async with self.database.transaction() as connection:
+            cursor = await connection.execute(
+                """
+                SELECT id FROM public.user_notification
+                 WHERE id = %s AND push_status = 'processing'
+                   AND lease_owner = %s AND lease_expires_at > now()
+                """,
+                (job.id, self.worker_id),
+            )
+            return await cursor.fetchone() is not None
+
     async def run_once(self) -> int:
-        scheduled = await self.schedule_due()
-        jobs = await self.claim_due()
+        scheduled = 0
+        if time.monotonic() >= self._next_schedule_at:
+            scheduled = await self.schedule_due()
+            self._next_schedule_at = time.monotonic() + self.poll_interval_seconds
+        # Lease only work that can start immediately. A sequential batch used
+        # to spend its two-minute lease waiting behind earlier network calls.
+        jobs = await self.claim_due(batch_size=1)
         for job in jobs:
             await self.process(job)
         return scheduled + len(jobs)

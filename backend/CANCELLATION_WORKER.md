@@ -70,7 +70,7 @@ Optional bounded settings:
 
 | Variable | Default | Purpose |
 |---|---:|---|
-| `PINQEVA_CANCELLATION_BATCH_SIZE` | `10` | Jobs leased per cycle. |
+| `PINQEVA_CANCELLATION_BATCH_SIZE` | `10` | Legacy setting accepted for compatibility; each sequential consumer now leases one immediately runnable job. |
 | `PINQEVA_CANCELLATION_POLL_SECONDS` | `5` | Idle poll interval. |
 | `PINQEVA_CANCELLATION_LEASE_SECONDS` | `120` | Crash-recovery lease. |
 | `PINQEVA_CANCELLATION_MAX_ATTEMPTS` | `8` | Finite provider-call retry budget. |
@@ -83,6 +83,14 @@ and SIGTERM request a cooperative stop: an in-flight provider call completes
 and persists its result before the database pool closes. A hard process kill is
 safe because the lease expires and the next attempt reuses the same Stripe
 idempotency key.
+
+The backend Docker deployment runs cancellation through
+`python -m app.worker maintenance` or `python -m app.worker cancellation`, with
+private `/health` and `/ready` endpoints. These shared-runtime commands read the
+full backend configuration. The standalone command above retains its smaller
+secret set. Each provider call uses a dedicated Stripe HTTP client with a
+15-second socket timeout and SDK retries disabled; durable queue retries own
+backoff. No consumer leases a waiting sequential batch.
 
 ## Operations
 

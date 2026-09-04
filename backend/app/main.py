@@ -16,24 +16,19 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .admin import AdminError, AdminService, router as admin_router
-from .anisette_provider import NativeAnisetteError, NativeAnisetteService
-from .apple_auth import AppleAuthManager, AppleAuthenticationError
 from .auth import AccountAccessError, AuthenticatedPrincipal
 from .billing import BillingError, BillingService, MAX_WEBHOOK_BYTES
 from .config import get_settings
-from .database import Database
+from .observability import configure_logging
+from .database import Database, READINESS_QUERY
 from .firmware import FirmwareError, FirmwareService
 from .location import LocationError, LocationService
-from .location_worker import LocationSyncWorker
 from .notifications import (
-    ExpoPushGateway,
     NotificationError,
     NotificationService,
-    NotificationWorker,
 )
 from .premium import (
     PremiumError,
-    PremiumRetentionWorker,
     PremiumService,
     router as premium_router,
 )
@@ -192,14 +187,7 @@ SAFE_FIRMWARE_MESSAGES = {
 
 
 def _configure_application_logging() -> None:
-    """Send structured application events to Uvicorn's visible error stream."""
-
-    application_logger = logging.getLogger("pinqeva")
-    uvicorn_logger = logging.getLogger("uvicorn")
-    if uvicorn_logger.handlers:
-        application_logger.handlers = list(uvicorn_logger.handlers)
-        application_logger.propagate = False
-    application_logger.setLevel(logging.INFO)
+    configure_logging()
 
 
 def _request_id(request: Request) -> str:
@@ -231,119 +219,25 @@ def _error_response(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """API replicas serve durable state; workers own all background activity."""
     _configure_application_logging()
     settings = get_settings()
-    native_anisette: NativeAnisetteService | None = None
-    opened_database: Database | None = None
-    background_stop = asyncio.Event()
-    notification_task: asyncio.Task[None] | None = None
-    premium_retention_task: asyncio.Task[None] | None = None
-    location_sync_task: asyncio.Task[None] | None = None
+    database = Database(settings)
     try:
-        if settings.findmy_anisette_provider == "native":
-            native_anisette = NativeAnisetteService(
-                settings.findmy_anisette_url,
-                settings.findmy_anisette_state_path,
-            )
-            logger.info("native_anisette_starting")
-            try:
-                await asyncio.to_thread(native_anisette.start)
-            except NativeAnisetteError as exc:
-                logger.error(
-                    "native_anisette_start_failed error_type=%s",
-                    type(exc).__name__,
-                )
-                raise RuntimeError("Native Anisette startup failed") from None
-
-        findmy_auth: AppleAuthManager | None = None
-        if settings.findmy_apple_id or settings.findmy_auth_file:
-            findmy_auth = AppleAuthManager(
-                apple_id=settings.findmy_apple_id,
-                apple_password=settings.findmy_apple_password,
-                second_factor=settings.findmy_second_factor,
-                anisette_url=settings.findmy_anisette_url,
-                timeout_seconds=settings.findmy_request_timeout_seconds,
-                auth_file=settings.findmy_auth_file,
-                login_on_startup=settings.findmy_login_on_startup,
-            )
-        if findmy_auth is not None and findmy_auth.should_login_on_startup:
-            logger.info("findmy_authentication_starting")
-            try:
-                await asyncio.to_thread(findmy_auth.initialize)
-                logger.info("findmy_authenticated")
-            except AppleAuthenticationError as exc:
-                logger.error(
-                    "findmy_authentication_failed error_type=%s error=%s",
-                    type(exc).__name__,
-                    str(exc),
-                )
-                raise RuntimeError("Find My authentication failed") from None
-
-        database = Database(settings)
         await database.open()
-        opened_database = database
         app.state.database = database
         app.state.service = ProvisioningService(settings)
         app.state.firmware = FirmwareService(settings)
-        app.state.findmy_auth = findmy_auth
-        app.state.location = LocationService(settings, auth_manager=findmy_auth)
+        app.state.location = LocationService(settings)
         app.state.billing = BillingService(settings)
         app.state.admin = AdminService(settings)
         app.state.notifications = NotificationService()
         app.state.premium = PremiumService()
         app.state.settings = settings
-        app.state.native_anisette = native_anisette
         await app.state.billing.bootstrap_catalog(database)
-        premium_retention_worker = PremiumRetentionWorker(database)
-        app.state.premium_retention_worker = premium_retention_worker
-        premium_retention_task = asyncio.create_task(
-            premium_retention_worker.run(background_stop),
-            name="premium-location-retention-worker",
-        )
-        enabled_location_networks: set[str] = set()
-        if findmy_auth is not None or (
-            settings.findmy_dsid and settings.findmy_search_party_token
-        ):
-            enabled_location_networks.add("apple")
-        if settings.google_findhub_bridge_url:
-            enabled_location_networks.add("google")
-        if settings.location_sync_worker_enabled and enabled_location_networks:
-            location_sync_worker = LocationSyncWorker(
-                database,
-                app.state.location,
-                enabled_networks=frozenset(enabled_location_networks),
-                interval_seconds=settings.location_sync_interval_seconds,
-                batch_size=settings.location_sync_batch_size,
-            )
-            app.state.location_sync_worker = location_sync_worker
-            location_sync_task = asyncio.create_task(
-                location_sync_worker.run(background_stop),
-                name="provider-location-sync-worker",
-            )
-        if settings.notification_worker_enabled:
-            notification_worker = NotificationWorker(
-                database,
-                ExpoPushGateway(settings.expo_push_access_token),
-                poll_interval_seconds=settings.notification_poll_interval_seconds,
-            )
-            app.state.notification_worker = notification_worker
-            notification_task = asyncio.create_task(
-                notification_worker.run(background_stop),
-                name="renewal-notification-worker",
-            )
         yield
     finally:
-        background_stop.set()
-        if notification_task is not None:
-            await notification_task
-        if location_sync_task is not None:
-            await location_sync_task
-        if premium_retention_task is not None:
-            await premium_retention_task
-        if opened_database is not None:
-            await opened_database.close()
-        if native_anisette is not None:
-            await asyncio.to_thread(native_anisette.stop)
+        await database.close()
 
 
 app = FastAPI(
@@ -391,6 +285,9 @@ async def request_context(request: Request, call_next):
         )
     response = await call_next(request)
     response.headers["X-Request-ID"] = request.state.request_id
+    if request.url.path.startswith("/v1/devices/") and "/location/" in request.url.path:
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["Pragma"] = "no-cache"
     if request.url.path.startswith("/v1/devices/") and request.url.path.endswith(
         "/ring/authorize"
     ):
@@ -575,8 +472,9 @@ async def health() -> dict[str, str]:
 @app.get("/ready", include_in_schema=False, response_model=None)
 async def readiness(request: Request) -> dict[str, str] | JSONResponse:
     try:
-        async with app.state.database.transaction() as connection:
-            await connection.execute("SELECT 1")
+        async with asyncio.timeout(3):
+            async with app.state.database.transaction() as connection:
+                await connection.execute(READINESS_QUERY)
     except Exception as exc:
         request_id = _request_id(request)
         logger.warning(
@@ -602,7 +500,7 @@ async def request_device_location_report(
     request: Request,
     principal: AuthenticatedPrincipal,
 ) -> DeviceLocationReportResponse:
-    """Request one fresh report and return only the safe location projection."""
+    """Read cache; premium callers may briefly await one coalesced refresh."""
 
     request_id = getattr(request.state, "request_id", "unknown")
     logger.info(

@@ -1,0 +1,21 @@
+# Override for a single developer machine connected to its existing local or
+# hosted Supabase instance. Docker host access: host.docker.internal.
+# Usage: docker compose -f compose.yaml -f compose.dev.yaml --profile api --profile workers --profile scheduler --profile maintenance up --build
+services:
+  api:
+    volumes:
+      - ./app:/srv/pinqeva/app:ro
+    ports: !override
+      - "127.0.0.1::8080"
+  location-worker:
+    volumes:
+      - ./app:/srv/pinqeva/app:ro
+  realtime-worker:
+    volumes:
+      - ./app:/srv/pinqeva/app:ro
+  scheduler:
+    volumes:
+      - ./app:/srv/pinqeva/app:ro
+  maintenance:
+    volumes:
+      - ./app:/srv/pinqeva/app:ro

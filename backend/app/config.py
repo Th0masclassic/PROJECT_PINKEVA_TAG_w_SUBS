@@ -4,10 +4,12 @@ import base64
 import binascii
 import ipaddress
 import json
+import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
+from pathlib import Path
 from urllib.parse import parse_qsl, urlparse
 from uuid import UUID
 
@@ -22,9 +24,7 @@ class ConfigurationError(RuntimeError):
 PLAN_CODE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 STRIPE_PRICE_ID_PATTERN = re.compile(r"^price_[A-Za-z0-9]{8,}$")
 STRIPE_PRODUCT_ID_PATTERN = re.compile(r"^prod_[A-Za-z0-9]{8,}$")
-STRIPE_API_VERSION_PATTERN = re.compile(
-    r"^20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:\.[a-z]+)?$"
-)
+STRIPE_API_VERSION_PATTERN = re.compile(r"^20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:\.[a-z]+)?$")
 FIRMWARE_VERSION_PATTERN = re.compile(
     r"^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$"
 )
@@ -166,9 +166,9 @@ def parse_stripe_price_map(value: str) -> tuple[tuple[str, str, str], ...]:
             raise ConfigurationError(
                 "STRIPE_PRICE_MAP_JSON contains an invalid Stripe Price ID"
             )
-        if not isinstance(
-            product_id, str
-        ) or not STRIPE_PRODUCT_ID_PATTERN.fullmatch(product_id):
+        if not isinstance(product_id, str) or not STRIPE_PRODUCT_ID_PATTERN.fullmatch(
+            product_id
+        ):
             raise ConfigurationError(
                 "STRIPE_PRICE_MAP_JSON contains an invalid Stripe Product ID"
             )
@@ -214,9 +214,7 @@ def parse_findmy_anisette_provider(value: str) -> str:
     normalized = value.strip().lower()
     if normalized in {"http", "native"}:
         return normalized
-    raise ConfigurationError(
-        "PINQEVA_FINDMY_ANISETTE_PROVIDER must be http or native"
-    )
+    raise ConfigurationError("PINQEVA_FINDMY_ANISETTE_PROVIDER must be http or native")
 
 
 def parse_firmware_release(image_path: str, version: str) -> tuple[str, str]:
@@ -277,14 +275,14 @@ def parse_allowed_origins(value: str) -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Settings:
-    database_url: str
+    database_url: str = field(repr=False)
     supabase_jwks_url: str
     supabase_jwt_issuer: str
     supabase_jwt_audience: str
     supabase_jwt_algorithms: tuple[str, ...]
-    key_encryption_key: bytes
-    bootstrap_key_encryption_key: bytes
-    claim_token_key: bytes
+    key_encryption_key: bytes = field(repr=False)
+    bootstrap_key_encryption_key: bytes = field(repr=False)
+    claim_token_key: bytes = field(repr=False)
     session_ttl_seconds: int
     claim_ttl_seconds: int
     firmware_signing_private_key: ec.EllipticCurvePrivateKey | None = None
@@ -294,23 +292,35 @@ class Settings:
     # fail closed with a short safe error until these values are configured.
     findmy_auth_file: str = ""
     findmy_apple_id: str = ""
-    findmy_apple_password: str = ""
+    findmy_apple_password: str = field(default="", repr=False)
     findmy_second_factor: str = "sms"
     findmy_login_on_startup: bool = True
     findmy_dsid: str = ""
-    findmy_search_party_token: str = ""
+    findmy_search_party_token: str = field(default="", repr=False)
     findmy_anisette_provider: str = "http"
     findmy_anisette_state_path: str = ""
     findmy_anisette_url: str = "http://127.0.0.1:6969"
     findmy_request_timeout_seconds: float = 15.0
     findmy_lookback_hours: int = 24
+    findmy_report_api: str = "v2"
+    findmy_state_path: str = ""
+    findmy_retry_initial_seconds: int = 60
+    findmy_retry_max_seconds: int = 1800
+    findmy_two_factor_provider: str = "none"
+    findmy_sms_phone_id: int = 0
+    findmy_twilio_account_sid: str = ""
+    findmy_twilio_auth_token: str = field(default="", repr=False)
+    findmy_twilio_phone_number: str = ""
+    findmy_twilio_allowed_senders: tuple[str, ...] = ()
+    findmy_twilio_timeout_seconds: int = 180
+    findmy_twilio_poll_seconds: int = 3
     google_findhub_bridge_url: str = ""
-    google_findhub_bridge_token: str = ""
+    google_findhub_bridge_token: str = field(default="", repr=False)
     location_sync_worker_enabled: bool = True
     location_sync_interval_seconds: int = 900
     location_sync_batch_size: int = 8
-    stripe_secret_key: str = ""
-    stripe_webhook_secret: str = ""
+    stripe_secret_key: str = field(default="", repr=False)
+    stripe_webhook_secret: str = field(default="", repr=False)
     stripe_price_map: tuple[tuple[str, str, str], ...] = ()
     stripe_checkout_success_url: str = ""
     stripe_checkout_cancel_url: str = ""
@@ -323,11 +333,78 @@ class Settings:
     dev_bypass_bootstrap_auth: bool = False
     notification_worker_enabled: bool = False
     notification_poll_interval_seconds: int = 60
-    expo_push_access_token: str = ""
+    expo_push_access_token: str = field(default="", repr=False)
     firmware_image_path: str = ""
     firmware_version: str = ""
+    database_pool_min_size: int = 1
+    database_pool_max_size: int = 10
+    database_pool_timeout_seconds: float = 5.0
+    database_pool_max_waiting: int = 100
+    database_statement_timeout_seconds: int = 30
+    database_lock_timeout_seconds: int = 5
+    database_connect_timeout_seconds: int = 5
+    premium_location_freshness_seconds: int = 30
+    location_refresh_wait_seconds: float = 8.0
+    location_job_timeout_seconds: float = 60.0
+    location_refresh_lease_seconds: int = 120
+    location_max_attempts: int = 5
+    location_retry_base_seconds: int = 30
+    location_premium_user_limit_per_minute: int = 30
+    location_account_limit_per_minute: int = 60
+    location_account_key: str = "default"
+    location_worker_queue: str = "all"
+    location_scheduler_interval_seconds: int = 60
+    location_inactive_after_days: int = 30
+    location_inactive_interval_seconds: int = 21600
+    findmy_session_encryption_key: bytes | None = field(default=None, repr=False)
+    worker_health_host: str = "0.0.0.0"
+    worker_health_port: int = 8081
+    worker_shutdown_grace_seconds: int = 75
+    premium_retention_interval_seconds: int = 3600
 
     def __post_init__(self) -> None:
+        bounds = {
+            "database_pool_min_size": (0, 100),
+            "database_pool_max_size": (1, 100),
+            "database_pool_timeout_seconds": (0.1, 60),
+            "database_pool_max_waiting": (1, 10000),
+            "database_statement_timeout_seconds": (1, 300),
+            "database_lock_timeout_seconds": (1, 60),
+            "database_connect_timeout_seconds": (1, 60),
+            "premium_location_freshness_seconds": (10, 900),
+            "location_refresh_wait_seconds": (0, 30),
+            "location_job_timeout_seconds": (1, 300),
+            "location_refresh_lease_seconds": (10, 900),
+            "location_max_attempts": (1, 20),
+            "location_retry_base_seconds": (1, 3600),
+            "location_premium_user_limit_per_minute": (1, 1000),
+            "location_account_limit_per_minute": (1, 10000),
+            "location_scheduler_interval_seconds": (1, 3600),
+            "location_inactive_after_days": (1, 3650),
+            "location_inactive_interval_seconds": (900, 604800),
+            "worker_health_port": (1, 65535),
+            "worker_shutdown_grace_seconds": (1, 600),
+            "premium_retention_interval_seconds": (60, 86400),
+        }
+        for name, (minimum, maximum) in bounds.items():
+            value = getattr(self, name)
+            if not math.isfinite(value) or not minimum <= value <= maximum:
+                raise ConfigurationError(f"{name} must be between {minimum} and {maximum}")
+        if self.database_pool_min_size > self.database_pool_max_size:
+            raise ConfigurationError("Database pool minimum exceeds maximum")
+        if self.location_refresh_lease_seconds < self.location_job_timeout_seconds + 10:
+            raise ConfigurationError("Location lease must exceed job timeout by at least 10 seconds")
+        if self.location_worker_queue not in {"all", "realtime", "scheduled"}:
+            raise ConfigurationError("Location worker queue must be all, realtime, or scheduled")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", self.location_account_key):
+            raise ConfigurationError("Location account key must be a short identifier")
+        if self.findmy_session_encryption_key is not None and (
+            len(self.findmy_session_encryption_key) != 32
+            or self.findmy_session_encryption_key in {
+                self.key_encryption_key, self.bootstrap_key_encryption_key, self.claim_token_key
+            }
+        ):
+            raise ConfigurationError("Find My session encryption requires an independent 32-byte key")
         if len(
             {
                 self.key_encryption_key,
@@ -354,6 +431,67 @@ class Settings:
         return mapping[2] if mapping else None
 
 
+def _distributed_settings() -> dict:
+    """Keep cloud infrastructure configuration out of business logic."""
+    names = (
+        "database_pool_min_size", "database_pool_max_size", "database_pool_timeout_seconds",
+        "database_pool_max_waiting", "premium_location_freshness_seconds",
+        "database_statement_timeout_seconds", "database_lock_timeout_seconds",
+        "database_connect_timeout_seconds",
+        "location_refresh_wait_seconds", "location_job_timeout_seconds",
+        "location_refresh_lease_seconds", "location_max_attempts", "location_retry_base_seconds",
+        "location_premium_user_limit_per_minute", "location_account_limit_per_minute",
+        "location_account_key", "location_worker_queue", "location_scheduler_interval_seconds",
+        "location_inactive_after_days", "location_inactive_interval_seconds",
+        "worker_health_host", "worker_health_port", "worker_shutdown_grace_seconds",
+        "premium_retention_interval_seconds",
+    )
+    result = {}
+    for name in names:
+        default = Settings.__dataclass_fields__[name].default
+        env_name = f"PINQEVA_{name.upper()}"
+        raw = os.getenv(env_name)
+        if raw is not None:
+            try:
+                result[name] = type(default)(raw.strip())
+            except ValueError:
+                raise ConfigurationError(f"{env_name} has an invalid value") from None
+    secret = os.getenv("PINQEVA_FINDMY_SESSION_ENCRYPTION_KEY", "").strip()
+    if secret:
+        result["findmy_session_encryption_key"] = decode_32_byte_secret(
+            "PINQEVA_FINDMY_SESSION_ENCRYPTION_KEY", secret
+        )
+    return result
+
+
+def read_optional_secret(name: str) -> str:
+    """Support mounted secrets without putting their contents in diagnostics."""
+    value = os.getenv(name, "")
+    path = os.getenv(name + "_FILE", "").strip()
+    if value and path:
+        raise ConfigurationError(f"Use only one of {name} and {name}_FILE")
+    if path:
+        try:
+            if Path(path).stat().st_size > 4096:
+                raise ValueError("oversized")
+            value = Path(path).read_text(encoding="utf-8").rstrip("\r\n")
+        except (OSError, UnicodeError, ValueError):
+            raise ConfigurationError(f"{name}_FILE could not be read") from None
+    if len(value) > 4096 or any(c in value for c in "\x00\r\n"):
+        raise ConfigurationError(f"{name} has an invalid format")
+    return value
+
+
+def _auth_integer(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError:
+        raise ConfigurationError(f"{name} must be an integer") from None
+    if not minimum <= value <= maximum:
+        raise ConfigurationError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
 @lru_cache
 def get_settings() -> Settings:
     algorithms = tuple(
@@ -367,7 +505,9 @@ def get_settings() -> Settings:
     session_ttl = int(os.getenv("PINQEVA_SESSION_TTL_SECONDS", "600"))
     claim_ttl = int(os.getenv("PINQEVA_CLAIM_TTL_SECONDS", "86400"))
     if not 60 <= session_ttl <= 3600:
-        raise ConfigurationError("PINQEVA_SESSION_TTL_SECONDS must be between 60 and 3600")
+        raise ConfigurationError(
+            "PINQEVA_SESSION_TTL_SECONDS must be between 60 and 3600"
+        )
     if not session_ttl <= claim_ttl <= 172800:
         raise ConfigurationError(
             "PINQEVA_CLAIM_TTL_SECONDS must be >= the session TTL and <= 172800"
@@ -445,9 +585,8 @@ def get_settings() -> Settings:
         google_findhub_bridge_url = validate_https_url(
             "PINQEVA_GOOGLE_FINDHUB_BRIDGE_URL", google_findhub_bridge_url
         )
-        if (
-            len(google_findhub_bridge_token) > 4096
-            or any(ord(character) < 0x21 for character in google_findhub_bridge_token)
+        if len(google_findhub_bridge_token) > 4096 or any(
+            ord(character) < 0x21 for character in google_findhub_bridge_token
         ):
             raise ConfigurationError(
                 "PINQEVA_GOOGLE_FINDHUB_BRIDGE_TOKEN has an invalid format"
@@ -475,32 +614,89 @@ def get_settings() -> Settings:
             "SUPABASE_JWT_ISSUER", _required("SUPABASE_JWT_ISSUER")
         )
 
-    stripe_api_version = os.getenv(
-        "STRIPE_API_VERSION", "2025-08-27.basil"
-    ).strip()
+    stripe_api_version = os.getenv("STRIPE_API_VERSION", "2025-08-27.basil").strip()
     if not STRIPE_API_VERSION_PATTERN.fullmatch(stripe_api_version):
         raise ConfigurationError("STRIPE_API_VERSION has an invalid format")
 
-    portal_configuration = os.getenv(
-        "STRIPE_PORTAL_CONFIGURATION_ID", ""
-    ).strip()
+    portal_configuration = os.getenv("STRIPE_PORTAL_CONFIGURATION_ID", "").strip()
     if (
         portal_configuration
         and not _is_here_placeholder(portal_configuration)
-        and not re.fullmatch(
-            r"^bpc_[A-Za-z0-9]{8,}$", portal_configuration
-        )
+        and not re.fullmatch(r"^bpc_[A-Za-z0-9]{8,}$", portal_configuration)
     ):
-        raise ConfigurationError(
-            "STRIPE_PORTAL_CONFIGURATION_ID has an invalid format"
-        )
+        raise ConfigurationError("STRIPE_PORTAL_CONFIGURATION_ID has an invalid format")
 
     findmy_apple_id = os.getenv("PINQEVA_FINDMY_APPLE_ID", "").strip()
-    findmy_apple_password = os.getenv("PINQEVA_FINDMY_APPLE_PASSWORD", "").strip()
+    findmy_apple_password = read_optional_secret("PINQEVA_FINDMY_APPLE_PASSWORD")
     if findmy_apple_password and not findmy_apple_id:
         raise ConfigurationError(
             "PINQEVA_FINDMY_APPLE_ID is required when an Apple password is configured"
         )
+
+    findmy_state_path = os.getenv(
+        "PINQEVA_FINDMY_STATE_PATH", "state/apple-auth-state.json"
+    ).strip()
+    if not findmy_state_path:
+        raise ConfigurationError(
+            "PINQEVA_FINDMY_STATE_PATH must name a durable, private file"
+        )
+    if Path(findmy_state_path).absolute() in {
+        Path(value).absolute()
+        for value in (
+            findmy_anisette_state_path,
+            os.getenv("PINQEVA_FINDMY_AUTH_FILE", "").strip(),
+        )
+        if value
+    }:
+        raise ConfigurationError(
+            "Find My session state must not overwrite the Anisette or legacy auth file"
+        )
+    retry_initial = _auth_integer("PINQEVA_FINDMY_RETRY_INITIAL_SECONDS", 60, 30, 3600)
+    retry_max = _auth_integer(
+        "PINQEVA_FINDMY_RETRY_MAX_SECONDS", 1800, retry_initial, 86400
+    )
+    sms_phone_id = _auth_integer("PINQEVA_FINDMY_SMS_PHONE_ID", 0, 0, 10000)
+    report_api = os.getenv("PINQEVA_FINDMY_REPORT_API", "v2").strip().lower()
+    if report_api not in {"v2", "legacy"}:
+        raise ConfigurationError("PINQEVA_FINDMY_REPORT_API must be v2 or legacy")
+    twilio_timeout = _auth_integer(
+        "PINQEVA_FINDMY_TWILIO_TIMEOUT_SECONDS", 180, 30, 300
+    )
+    twilio_poll = _auth_integer("PINQEVA_FINDMY_TWILIO_POLL_SECONDS", 3, 1, 15)
+    two_factor_provider = (
+        os.getenv("PINQEVA_FINDMY_2FA_PROVIDER", "none").strip().lower()
+    )
+    if two_factor_provider not in {"none", "twilio"}:
+        raise ConfigurationError("PINQEVA_FINDMY_2FA_PROVIDER must be none or twilio")
+    second_factor = parse_findmy_second_factor(
+        os.getenv("PINQEVA_FINDMY_SECOND_FACTOR", "sms")
+    )
+    twilio_sid = os.getenv("PINQEVA_FINDMY_TWILIO_ACCOUNT_SID", "").strip()
+    twilio_token = read_optional_secret("PINQEVA_FINDMY_TWILIO_AUTH_TOKEN")
+    twilio_number = os.getenv("PINQEVA_FINDMY_TWILIO_PHONE_NUMBER", "").strip()
+    twilio_senders = tuple(
+        s.strip()
+        for s in os.getenv("PINQEVA_FINDMY_TWILIO_ALLOWED_SENDERS", "").split(",")
+        if s.strip()
+    )
+    if two_factor_provider == "twilio":
+        if not findmy_apple_id or not findmy_apple_password or second_factor != "sms":
+            raise ConfigurationError(
+                "Twilio 2FA requires Apple ID, password, and PINQEVA_FINDMY_SECOND_FACTOR=sms"
+            )
+        if not re.fullmatch(r"AC[0-9a-fA-F]{32}", twilio_sid) or not twilio_token:
+            raise ConfigurationError("Configure the Twilio account SID and auth token")
+        if not re.fullmatch(r"\+[1-9][0-9]{7,14}", twilio_number):
+            raise ConfigurationError(
+                "Configure the Twilio receiving number in E.164 format"
+            )
+        if not twilio_senders or any(
+            not re.fullmatch(r"[+A-Za-z0-9][A-Za-z0-9+ _-]{0,31}", s)
+            for s in twilio_senders
+        ):
+            raise ConfigurationError(
+                "Configure exact Apple SMS senders in PINQEVA_FINDMY_TWILIO_ALLOWED_SENDERS"
+            )
 
     firmware_image_path, firmware_version = parse_firmware_release(
         os.getenv("PINQEVA_FIRMWARE_IMAGE_PATH", ""),
@@ -508,6 +704,7 @@ def get_settings() -> Settings:
     )
 
     return Settings(
+        **_distributed_settings(),
         database_url=validate_database_url(_required("DATABASE_URL")),
         supabase_jwks_url=jwks_url,
         supabase_jwt_issuer=jwt_issuer,
@@ -534,9 +731,7 @@ def get_settings() -> Settings:
         findmy_auth_file=os.getenv("PINQEVA_FINDMY_AUTH_FILE", "").strip(),
         findmy_apple_id=findmy_apple_id,
         findmy_apple_password=findmy_apple_password,
-        findmy_second_factor=parse_findmy_second_factor(
-            os.getenv("PINQEVA_FINDMY_SECOND_FACTOR", "sms")
-        ),
+        findmy_second_factor=second_factor,
         findmy_login_on_startup=parse_boolean(
             "PINQEVA_FINDMY_LOGIN_ON_STARTUP",
             os.getenv("PINQEVA_FINDMY_LOGIN_ON_STARTUP", "true"),
@@ -550,6 +745,18 @@ def get_settings() -> Settings:
         findmy_anisette_url=findmy_anisette_url,
         findmy_request_timeout_seconds=findmy_timeout,
         findmy_lookback_hours=findmy_lookback,
+        findmy_report_api=report_api,
+        findmy_state_path=findmy_state_path,
+        findmy_retry_initial_seconds=retry_initial,
+        findmy_retry_max_seconds=retry_max,
+        findmy_two_factor_provider=two_factor_provider,
+        findmy_sms_phone_id=sms_phone_id,
+        findmy_twilio_account_sid=twilio_sid,
+        findmy_twilio_auth_token=twilio_token,
+        findmy_twilio_phone_number=twilio_number,
+        findmy_twilio_allowed_senders=twilio_senders,
+        findmy_twilio_timeout_seconds=twilio_timeout,
+        findmy_twilio_poll_seconds=twilio_poll,
         google_findhub_bridge_url=google_findhub_bridge_url,
         google_findhub_bridge_token=google_findhub_bridge_token,
         location_sync_worker_enabled=parse_boolean(

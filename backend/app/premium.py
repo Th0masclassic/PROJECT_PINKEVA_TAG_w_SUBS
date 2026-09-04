@@ -1303,13 +1303,23 @@ class PremiumRetentionWorker:
         async with self.database.transaction() as connection:
             query = await connection.execute(
                 """
-                WITH deleted_locations AS (
-                    DELETE FROM public.device_location_report
+                WITH old_locations AS (
+                    SELECT id FROM public.device_location_report
                      WHERE recorded_at < now() - interval '30 days'
+                     ORDER BY recorded_at, id
+                     LIMIT 1000 FOR UPDATE SKIP LOCKED
+                ), old_observations AS (
+                    SELECT id FROM public.device_companion_observation
+                     WHERE sampled_at < now() - interval '24 hours'
+                     ORDER BY sampled_at, id
+                     LIMIT 1000 FOR UPDATE SKIP LOCKED
+                ), deleted_locations AS (
+                    DELETE FROM public.device_location_report
+                     WHERE id IN (SELECT id FROM old_locations)
                     RETURNING 1
                 ), deleted_observations AS (
                     DELETE FROM public.device_companion_observation
-                     WHERE sampled_at < now() - interval '24 hours'
+                     WHERE id IN (SELECT id FROM old_observations)
                     RETURNING 1
                 )
                 SELECT
@@ -1335,6 +1345,9 @@ class PremiumRetentionWorker:
                         "premium_location_retention_pruned deleted_count=%s",
                         deleted,
                     )
+                if deleted >= 1000:
+                    await asyncio.sleep(0)
+                    continue
             except Exception as exc:  # pragma: no cover - production resilience
                 logger.error(
                     "premium_location_retention_failed error_type=%s",

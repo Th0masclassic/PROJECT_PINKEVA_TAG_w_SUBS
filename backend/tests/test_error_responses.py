@@ -125,7 +125,9 @@ async def test_readiness_checks_the_database(monkeypatch: pytest.MonkeyPatch) ->
     response = await readiness(request_with_id())
 
     assert response == {"status": "ready"}
-    assert connection.queries == ["SELECT 1"]
+    from app.database import READINESS_QUERY
+
+    assert connection.queries == [READINESS_QUERY]
 
 
 @pytest.mark.asyncio

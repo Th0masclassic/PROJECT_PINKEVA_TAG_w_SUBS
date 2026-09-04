@@ -5,12 +5,15 @@ import hashlib
 import hmac
 import logging
 import struct
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
+from typing import Any, Literal, Protocol
 
 from cryptography.exceptions import InvalidTag
 from psycopg import AsyncConnection
+from psycopg.rows import DictRow
 
 from .apple_auth import AppleAuthManager
 from .config import Settings
@@ -42,6 +45,12 @@ from .models import (
 logger = logging.getLogger("pinqeva.location")
 APPLE_PROVIDER_LOOKBACK_HOURS = 7 * 24
 MAX_HISTORY_POINTS = 20_000
+
+
+class LocationProvider(Protocol):
+    """The same report contract for direct test clients and isolated workers."""
+
+    def fetch_reports(self, *args: Any, **kwargs: Any) -> list[FinderReport]: ...
 
 
 class LocationError(RuntimeError):
@@ -78,7 +87,7 @@ class LocationService:
     settings: Settings
     auth_manager: AppleAuthManager | None = None
 
-    def _client(self) -> FindMyClient:
+    def _client(self) -> LocationProvider:
         return FindMyClient(
             auth_file=self.settings.findmy_auth_file,
             dsid=self.settings.findmy_dsid,
@@ -87,9 +96,10 @@ class LocationService:
             anisette_url=self.settings.findmy_anisette_url,
             timeout_seconds=self.settings.findmy_request_timeout_seconds,
             lookback_hours=self.settings.findmy_lookback_hours,
+            report_api=self.settings.findmy_report_api,
         )
 
-    def _google_client(self) -> GoogleFindHubBridgeClient:
+    def _google_client(self) -> LocationProvider:
         return GoogleFindHubBridgeClient(
             base_url=self.settings.google_findhub_bridge_url,
             service_token=self.settings.google_findhub_bridge_token,
@@ -209,7 +219,142 @@ class LocationService:
         user_id: UUID,
         device_id: UUID,
     ) -> DeviceLocationReportResponse:
-        binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
+        """Read the owner-scoped cache; only entitled stale reads request work."""
+        from .location_queue import LocationQueue
+
+        queue = LocationQueue(database, self.settings)
+        row = await self._read_cached_location(database, user_id=user_id, device_id=device_id)
+        premium = bool(row["subscription_active"])
+        threshold = (
+            self.settings.premium_location_freshness_seconds
+            if premium else self.settings.location_sync_interval_seconds
+        )
+        result = self._cache_response(row, threshold=threshold)
+        if not premium or not self._fetch_is_stale(row, threshold):
+            logger.info("location_cache_hit device=%s premium=%s", device_id, premium)
+            return result
+
+        session_id = row["session_id"]
+        admitted = await queue.request_refresh(
+            user_id=user_id, device_id=device_id, session_id=session_id
+        )
+        before = row.get("last_location_fetched_at")
+        previous_location = (row.get("last_location_at"), row.get("last_latitude"), row.get("last_longitude"))
+        deadline = time.monotonic() + self.settings.location_refresh_wait_seconds
+        snapshot = None
+        while True:
+            snapshot = await queue.snapshot(
+                user_id=user_id, device_id=device_id, session_id=session_id
+            )
+            # Re-authorize every read, including a transfer or ban while waiting.
+            row = await self._read_cached_location(
+                database, user_id=user_id, device_id=device_id
+            )
+            if row["session_id"] != session_id:
+                raise LocationError("LOCATION_UNAVAILABLE", "This tag is unavailable", 404)
+            fetched = row.get("last_location_fetched_at")
+            if fetched is not None and (before is None or fetched > before):
+                return self._cache_response(row, threshold=threshold).model_copy(
+                    update={
+                        "source": "refresh",
+                        "report_status": "updated" if previous_location != (
+                            row.get("last_location_at"), row.get("last_latitude"), row.get("last_longitude")
+                        ) else ("unchanged" if row.get("last_location_at") else "no_report"),
+                    }
+                )
+            if (
+                not admitted or not snapshot
+                or not snapshot.get("refreshing", False)
+                or time.monotonic() >= deadline
+            ):
+                break
+            await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+        return self._cache_response(row, threshold=threshold).model_copy(update={
+            "refreshing": bool(snapshot and snapshot.get("refreshing")),
+            "upstream_refresh_failed": bool(snapshot and snapshot.get("last_error_code")),
+        })
+
+    @staticmethod
+    def _fetch_is_stale(row: dict, threshold: int) -> bool:
+        fetched = row.get("last_location_fetched_at")
+        return fetched is None or (datetime.now(UTC) - fetched).total_seconds() >= threshold
+
+    def _cache_response(self, row: dict, *, threshold: int) -> DeviceLocationReportResponse:
+        result = self._projection_response(
+            row, report_status="unchanged" if row.get("last_location_at") else "no_report"
+        )
+        current = datetime.now(UTC)
+        recorded = row.get("last_location_at")
+        fetched = row.get("last_location_fetched_at")
+        return result.model_copy(update={
+            "server_fetched_at": fetched,
+            "age_seconds": max(0, int((current - recorded).total_seconds())) if recorded else None,
+            "fetch_age_seconds": max(0, int((current - fetched).total_seconds())) if fetched else None,
+            "stale": self._fetch_is_stale(row, threshold) or recorded is None
+                or (current - recorded).total_seconds() >= threshold,
+        })
+
+    async def _read_cached_location(
+        self, database: Database, *, user_id: UUID, device_id: UUID
+    ) -> dict:
+        async with database.transaction() as connection:
+            query = await connection.execute(
+                """
+                SELECT d.id AS device_id, d.serial_number,
+                       d.last_latitude, d.last_longitude, d.last_location_at,
+                       d.last_place, d.last_location_fetched_at,
+                       d.last_location_confidence, d.last_location_status_code,
+                       ps.id AS session_id,
+                       public.pinqeva_active_subscription_id(o.user_id) IS NOT NULL
+                         AS subscription_active
+                  FROM public.device d
+                  JOIN public.ownership o ON o.device_id = d.id
+                   AND o.user_id = %s AND o.ended_at IS NULL
+                  JOIN public.profiles p ON p.id = o.user_id
+                   AND p.account_status <> 'banned'
+                  JOIN public.provisioning_session ps ON ps.id = d.provisioning_session_id
+                   AND ps.device_id = d.id AND ps.user_id = o.user_id AND ps.status = 'claimed'
+                 WHERE d.id = %s
+                """, (user_id, device_id),
+            )
+            row = await query.fetchone()
+            if row is None:
+                raise LocationError("LOCATION_UNAVAILABLE", "This tag is unavailable", 404)
+            # Throttle access writes. These are hints for scheduling, never auth state.
+            await connection.execute(
+                """UPDATE public.device_location_sync_state
+                      SET last_accessed_at = now()
+                    WHERE device_id = %s AND user_id = %s AND provisioning_session_id = %s
+                      AND (last_accessed_at IS NULL OR last_accessed_at < now() - interval '5 minutes')""",
+                (device_id, user_id, row["session_id"]),
+            )
+        return row
+
+    async def refresh_report(
+        self,
+        database: Database,
+        *,
+        user_id: UUID,
+        device_id: UUID,
+        session_id: UUID,
+        lease_owner: UUID,
+    ) -> DeviceLocationReportResponse:
+        """Worker-only upstream operation. All writes require the current lease."""
+        binding = await self._load_binding(
+            database, user_id=user_id, device_id=device_id, require_premium=False
+        )
+        if binding.session_id != session_id:
+            raise LocationError("LOCATION_UNAVAILABLE", "This tag is unavailable", 404)
+        async with database.transaction() as connection:
+            lease = await connection.execute(
+                """SELECT device_id FROM public.device_location_sync_state
+                    WHERE device_id = %s AND user_id = %s AND provisioning_session_id = %s
+                      AND lease_owner = %s
+                      AND lease_expires_at > clock_timestamp() + make_interval(secs => %s)""",
+                (device_id, user_id, session_id, lease_owner, self.settings.location_job_timeout_seconds),
+            )
+            if await lease.fetchone() is None:
+                raise LocationError("LOCATION_LEASE_LOST", "Refresh no longer active", 409)
         current = datetime.now(UTC)
         reports = await self._fetch_provider_reports(
             binding,
@@ -222,11 +367,40 @@ class LocationService:
         )
 
         async with database.transaction() as connection:
+            # Match ownership-release lock order: device before sync state.
+            await connection.execute("SELECT id FROM public.device WHERE id = %s FOR UPDATE", (device_id,))
+            fence = await connection.execute(
+                """SELECT device_id FROM public.device_location_sync_state
+                    WHERE device_id = %s AND user_id = %s AND provisioning_session_id = %s
+                      AND lease_owner = %s AND lease_expires_at > clock_timestamp()
+                      AND EXISTS (
+                        SELECT 1 FROM public.device d
+                          JOIN public.ownership o ON o.device_id = d.id AND o.ended_at IS NULL
+                          JOIN public.profiles p ON p.id = o.user_id AND p.account_status <> 'banned'
+                         WHERE d.id = device_location_sync_state.device_id
+                           AND d.provisioning_session_id = device_location_sync_state.provisioning_session_id
+                           AND o.user_id = device_location_sync_state.user_id
+                      )
+                    FOR UPDATE""", (device_id, user_id, session_id, lease_owner),
+            )
+            if await fence.fetchone() is None:
+                raise LocationError("LOCATION_LEASE_LOST", "Refresh no longer active", 409)
             sourced_report = await self._ingest_reports(
                 connection,
                 user_id=user_id,
                 binding=binding,
                 reports=reports,
+            )
+            # A successful empty response is still a successful fetch. It must
+            # not turn an old device report into a new device timestamp.
+            await connection.execute(
+                """UPDATE public.device SET last_location_fetched_at = now()
+                    WHERE id = %s AND provisioning_session_id = %s""", (device_id, session_id),
+            )
+            await connection.execute(
+                """UPDATE public.device_location_sync_state SET last_success_at = now(),
+                           last_error_code = NULL
+                    WHERE device_id = %s AND lease_owner = %s""", (device_id, lease_owner),
             )
             if sourced_report is None:
                 return await self._current_projection(
@@ -270,31 +444,14 @@ class LocationService:
                 "Location history is available for one to thirty days",
                 422,
             )
-        binding = await self._load_binding(database, user_id=user_id, device_id=device_id)
+        row = await self._read_cached_location(database, user_id=user_id, device_id=device_id)
+        if not row["subscription_active"]:
+            raise LocationError("PREMIUM_SUBSCRIPTION_REQUIRED", "An active subscription is required", 402)
+        # History uses the same coalesced refresh path and never bypasses its
+        # freshness/rate protections. Historical retention stays premium.
+        await self.request_report(database, user_id=user_id, device_id=device_id)
         current = datetime.now(UTC)
-        reports = await self._fetch_provider_reports(
-            binding,
-            current=current,
-            # Apple's reverse-engineered endpoint currently exposes at most
-            # seven days. Older premium history is served from our own table.
-            apple_lookback_hours=min(days * 24, APPLE_PROVIDER_LOOKBACK_HOURS),
-            google_lookback_hours=days * 24,
-        )
-
         async with database.transaction() as connection:
-            latest = await self._ingest_reports(
-                connection,
-                user_id=user_id,
-                binding=binding,
-                reports=reports,
-            )
-            if latest is not None:
-                await self._accept_report(
-                    connection,
-                    user_id=user_id,
-                    binding=binding,
-                    sourced_report=latest,
-                )
             history_query = await connection.execute(
                 """
                 SELECT latitude, longitude, recorded_at
@@ -304,14 +461,22 @@ class LocationService:
                    AND provisioning_session_id = %s
                    AND recorded_at >= %s
                    AND recorded_at <= %s
+                   AND EXISTS (
+                     SELECT 1 FROM public.device d JOIN public.ownership o ON o.device_id = d.id
+                       JOIN public.profiles p ON p.id = o.user_id AND p.account_status <> 'banned'
+                      WHERE d.id = device_location_report.device_id
+                        AND d.provisioning_session_id = device_location_report.provisioning_session_id
+                        AND o.user_id = device_location_report.user_id AND o.ended_at IS NULL
+                        AND public.pinqeva_active_subscription_id(o.user_id) IS NOT NULL
+                   )
                  ORDER BY recorded_at DESC, finding_network DESC,
                           source_fingerprint DESC, id DESC
                  LIMIT %s
                 """,
                 (
                     user_id,
-                    binding.device_id,
-                    binding.session_id,
+                    device_id,
+                    row["session_id"],
                     current - timedelta(days=days),
                     current + timedelta(minutes=5),
                     MAX_HISTORY_POINTS,
@@ -320,7 +485,7 @@ class LocationService:
             stored_reports = await history_query.fetchall()
 
         return DeviceLocationHistoryResponse(
-            device_id=binding.device_id,
+            device_id=device_id,
             locations=[
                 DeviceLocationHistoryPoint(
                     latitude=float(report["latitude"]),
@@ -337,6 +502,7 @@ class LocationService:
         *,
         user_id: UUID,
         device_id: UUID,
+        require_premium: bool = True,
     ) -> _ReportBinding:
         async with database.transaction() as connection:
             query = await connection.execute(
@@ -365,6 +531,7 @@ class LocationService:
                     ON o.device_id = d.id
                    AND o.user_id = %s
                    AND o.ended_at IS NULL
+                  JOIN public.profiles p ON p.id = o.user_id AND p.account_status <> 'banned'
                   JOIN public.provisioning_session ps
                     ON ps.id = d.provisioning_session_id
                    AND ps.device_id = d.id
@@ -381,7 +548,7 @@ class LocationService:
                 "This tag is not available for location reports",
                 404,
             )
-        if not bool(row.get("subscription_active", False)):
+        if require_premium and not bool(row.get("subscription_active", False)):
             raise LocationError(
                 "PREMIUM_SUBSCRIPTION_REQUIRED",
                 "An active subscription is required for cloud location reports",
@@ -484,7 +651,7 @@ class LocationService:
 
     async def _accept_report(
         self,
-        connection: AsyncConnection,
+        connection: AsyncConnection[DictRow],
         *,
         user_id: UUID,
         binding: _ReportBinding,
@@ -506,6 +673,8 @@ class LocationService:
                    last_place = %s,
                    last_location_finding_network = %s,
                    last_location_source_fingerprint = %s,
+                   last_location_confidence = %s,
+                   last_location_status_code = %s,
                    updated_at = now()
              WHERE d.id = %s
                AND d.provisioning_session_id = %s
@@ -543,6 +712,8 @@ class LocationService:
                 place,
                 provider.finding_network,
                 source_fingerprint,
+                report.confidence,
+                report.status,
                 binding.device_id,
                 binding.session_id,
                 user_id,
@@ -574,7 +745,7 @@ class LocationService:
 
     async def _persist_report(
         self,
-        connection: AsyncConnection,
+        connection: AsyncConnection[DictRow],
         *,
         user_id: UUID,
         binding: _ReportBinding,
@@ -641,7 +812,7 @@ class LocationService:
 
     async def _ingest_reports(
         self,
-        connection: AsyncConnection,
+        connection: AsyncConnection[DictRow],
         *,
         user_id: UUID,
         binding: _ReportBinding,
@@ -696,11 +867,11 @@ class LocationService:
 
     async def _current_projection(
         self,
-        connection: AsyncConnection,
+        connection: AsyncConnection[DictRow],
         *,
         user_id: UUID,
         device_id: UUID,
-        report_status: str,
+        report_status: Literal["updated", "unchanged", "no_report"],
     ) -> DeviceLocationReportResponse:
         query = await connection.execute(
             """
@@ -729,7 +900,7 @@ class LocationService:
     def _projection_response(
         row: dict,
         *,
-        report_status: str,
+        report_status: Literal["updated", "unchanged", "no_report"],
         report: FinderReport | None = None,
     ) -> DeviceLocationReportResponse:
         return DeviceLocationReportResponse(
@@ -740,6 +911,6 @@ class LocationService:
             longitude=row.get("last_longitude"),
             last_location_at=row.get("last_location_at"),
             last_place=row.get("last_place"),
-            confidence=report.confidence if report else None,
-            status_code=report.status if report else None,
+            confidence=report.confidence if report else row.get("last_location_confidence"),
+            status_code=report.status if report else row.get("last_location_status_code"),
         )

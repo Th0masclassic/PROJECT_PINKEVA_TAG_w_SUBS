@@ -99,6 +99,52 @@ def test_invalid_existing_state_fails_closed(
     assert state_path.read_bytes() == b"invalid-state"
 
 
+def test_native_failure_reloads_same_identity_after_backoff(tmp_path, monkeypatch):
+    state = tmp_path / "anisette.bin"
+    state.write_bytes(b"keep-this-identity")
+    provider = NativeAnisetteProvider(state)
+    old = _FakeAnisette.session
+    monkeypatch.setattr(old, "get_data", lambda: (_ for _ in ()).throw(RuntimeError("temporary outage")))
+    with pytest.raises(NativeAnisetteError):
+        provider.headers()
+    with pytest.raises(NativeAnisetteError):
+        provider.headers()
+    assert _FakeAnisette.loaded_from == [state]
+    _FakeAnisette.session = _FakeSession()
+    monkeypatch.setattr("app.anisette_provider.time.monotonic", lambda: provider._retry_at + 1)
+    assert provider.headers()["X-Apple-I-MD"] == "otp"
+    assert _FakeAnisette.loaded_from == [state, state]
+    assert _FakeAnisette.initialized_from == []
+    assert state.read_bytes() == b"keep-this-identity"
+
+
+def test_native_http_start_does_not_wait_for_apple_provisioning(tmp_path, monkeypatch):
+    service = NativeAnisetteService("http://127.0.0.1:6970", tmp_path / "state.bin")
+    service.port = 0  # OS-selected test port; production validation still forbids zero.
+    monkeypatch.setattr(service.provider, "initialize", lambda: pytest.fail("Startup must not block on Apple"))
+    try:
+        service.start()
+        assert service._server is not None
+    finally:
+        service.stop()
+
+
+def test_native_save_is_private_before_library_writes(tmp_path, monkeypatch):
+    import os
+    provider = NativeAnisetteProvider(tmp_path / "state.bin")
+    session = _FakeAnisette.session
+    save = session.save_all
+
+    def checked_save(path):
+        assert Path(path).exists()
+        if os.name != "nt":
+            assert Path(path).stat().st_mode & 0o077 == 0
+        save(path)
+
+    monkeypatch.setattr(session, "save_all", checked_save)
+    provider.headers()
+
+
 def test_loopback_http_compatibility_endpoint_returns_headers(tmp_path: Path) -> None:
     provider = NativeAnisetteProvider(tmp_path / "anisette.bin")
     server = NativeAnisetteHTTPServer(("127.0.0.1", 0), provider)

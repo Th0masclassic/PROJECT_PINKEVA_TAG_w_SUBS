@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-import stat
+import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -38,29 +39,46 @@ class NativeAnisetteProvider:
         self.library_source = library_source
         self._session: Anisette | None = None
         self._lock = threading.Lock()
+        self._retry_at = 0.0
+        self._failures = 0
 
     def initialize(self) -> None:
-        """Provision and persist the device before the API starts accepting traffic."""
+        """Warm up the provider; failures never require resetting its identity."""
 
         self.headers()
 
     def headers(self) -> dict[str, str]:
-        with self._lock:
+        if not self._lock.acquire(blocking=False):
+            raise NativeAnisetteError("The native Anisette device is initializing")
+        try:
+            if time.monotonic() < self._retry_at:
+                raise NativeAnisetteError("The native Anisette device is recovering")
             created = self._session is None and not self.state_path.is_file()
-            session = self._load_session()
             try:
+                session = self._load_session()
                 values = session.get_data()
                 headers = self._validate_headers(values)
                 if created:
                     self._save_session(session)
                     logger.info("native_anisette_state_created")
+                self._retry_at = 0
+                self._failures = 0
                 return headers
-            except NativeAnisetteError:
-                raise
             except Exception as exc:
+                # Discard only the in-memory emulator. Reload the SAME durable
+                # identity on retry; never delete/reprovision an existing file.
+                self._session = None
+                self._failures = min(self._failures + 1, 10)
+                delay = min(30 * 2 ** (self._failures - 1), 600)
+                self._retry_at = time.monotonic() + delay
+                logger.warning(
+                    "native_anisette_recovering retry_after_seconds=%s", delay
+                )
                 raise NativeAnisetteError(
                     "The native Anisette device could not produce headers"
                 ) from exc
+        finally:
+            self._lock.release()
 
     def _load_session(self) -> Anisette:
         if self._session is not None:
@@ -92,7 +110,11 @@ class NativeAnisetteProvider:
         for name, value in values.items():
             if isinstance(name, str) and isinstance(value, str):
                 headers[name] = value
-        if any(not headers.get(name) for name in REQUIRED_HEADERS):
+        if any(
+            not headers.get(name, "").strip()
+            or any(c in headers[name] for c in "\x00\r\n")
+            for name in REQUIRED_HEADERS
+        ):
             raise NativeAnisetteError(
                 "The native Anisette response is missing required headers"
             )
@@ -100,20 +122,26 @@ class NativeAnisetteProvider:
 
     def _save_session(self, session: Anisette) -> None:
         parent = self.state_path.parent
-        temporary_path = parent / f".{self.state_path.name}.{os.getpid()}.tmp"
+        temporary_path: Path | None = None
         try:
-            parent.mkdir(parents=True, exist_ok=True)
+            parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd, temporary = tempfile.mkstemp(
+                prefix=f".{self.state_path.name}.", dir=parent
+            )
+            temporary_path = Path(temporary)
+            os.close(fd)  # mkstemp creates mode 0600 BEFORE library writes.
             session.save_all(temporary_path)
-            temporary_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+            with temporary_path.open("r+b") as saved:
+                os.fsync(saved.fileno())
             os.replace(temporary_path, self.state_path)
+            temporary_path = None
         except Exception as exc:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
             raise NativeAnisetteError(
                 "The native Anisette state could not be persisted"
             ) from exc
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
 
 class _AnisetteRequestHandler(BaseHTTPRequestHandler):
@@ -139,7 +167,10 @@ class _AnisetteRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # A client may time out while first provisioning finishes.
 
     def log_message(self, _format: str, *args: object) -> None:
         return
@@ -189,7 +220,6 @@ class NativeAnisetteService:
     def start(self) -> None:
         if self._server is not None:
             return
-        self.provider.initialize()
         try:
             server = NativeAnisetteHTTPServer(
                 (self.host, self.port),
@@ -207,7 +237,11 @@ class NativeAnisetteService:
         thread.start()
         self._server = server
         self._thread = thread
-        logger.info("native_anisette_ready host=%s port=%s", self.host, self.port)
+        logger.info(
+            "native_anisette_http_ready host=%s port=%s provisioning=lazy",
+            self.host,
+            self.port,
+        )
 
     def stop(self) -> None:
         server = self._server

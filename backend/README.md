@@ -1,4 +1,8 @@
-# Pinqeva provisioning backend
+# Pinkeva backend
+
+The API and background workers now run independently against shared PostgreSQL.
+Start with [the architecture audit and deployment runbook](docs/DISTRIBUTED_ARCHITECTURE.md)
+for migrations, shared Apple authentication, worker roles, scaling, and failure recovery.
 
 This service implements the payment-gated dual-network identity lifecycle and
 signed firmware release portion of protocol v1.9:
@@ -45,74 +49,49 @@ Responses use `Cache-Control: private, no-store`.
 
 ## Run locally
 
-Apply the Supabase migrations, copy `.env.example` to `.env` in a local secret manager/shell, install the package, and start:
+Apply the existing Supabase migrations followed by the ordered SQL files in
+`backend/sql/migrations`. Existing runtime roles also need
+`backend/sql/upgrade_runtime_role_distributed.sql`.
+Copy `.env.example` into the local secret manager/environment, install, and run
+from `backend`:
 
 ```bash
 python -m pip install -e '.[test]'
 python -m app.server
 ```
 
-The launcher uses Uvicorn's normal event loop on Unix and a Selector event loop
-on Windows so Psycopg's async pool works on Python 3.14.
+`app.server` loads `.env` and uses Psycopg's compatible event loop on Windows.
+The API starts no Anisette service, interactive Apple login, notification worker,
+location collector, or retention timer. In separate shells with the same shared
+infrastructure environment exported, start:
 
-On the Windows RDC server, keep the already-working Anisette executable as a
-separately managed loopback service. The backend does not spawn or replace it:
-
-```powershell
-# backend/.env
-# PINQEVA_FINDMY_ANISETTE_PROVIDER=http
-# PINQEVA_FINDMY_ANISETTE_URL=http://127.0.0.1:6969
-python -m app.server
+```bash
+python -m app.worker scheduler
+python -m app.worker location
+python -m app.worker maintenance
 ```
 
-Embedded `native` mode remains available on Windows when no external executable
-is used. Configure a durable absolute state path; the first start downloads
-Apple's Android Apple Music package, provisions one virtual device, and saves it:
+Each process on the same host needs a different `PINQEVA_WORKER_HEALTH_PORT`.
+Containers have separate network namespaces and use port 8081 independently.
+Workers use exported environment variables; unlike `app.server`, they do not
+implicitly load `.env`. Docker Compose injects the chosen environment file.
 
-```powershell
-cd C:\Users\tomas\Documents\PINKEVA\backend
-# Add these deployment-specific values to the ignored backend/.env:
-# PINQEVA_FINDMY_ANISETTE_PROVIDER=native
-# PINQEVA_FINDMY_ANISETTE_STATE_PATH=C:\ProgramData\PINKEVA\anisette-state.bin
-# PINQEVA_FINDMY_ANISETTE_URL=http://127.0.0.1:6970
-.\run_local.ps1
-```
+Use the backend-only `Dockerfile` and `compose.yaml` for distributed deployment;
+the repository-root storefront image and Compose file are a separate legacy
+launch path. The existing Windows Anisette executable can remain an independently
+managed service; cloud workers require a stable HTTPS endpoint reachable from
+all worker machines. Anisette supplies Apple authentication headers, while the
+Find My provider retrieves and decrypts tracker reports.
 
-Keep the generated state file private and backed up; replacing it creates a new
-Anisette device that must be provisioned again. For Linux/Docker, the checked-in
-`backend/Dockerfile` defaults to embedded `native` mode and stores that state at
-`/var/lib/pinqeva/anisette-state.bin`. Mount `/var/lib/pinqeva` as a durable
-volume. `http` mode is still supported for a separately managed HTTPS service or
-a loopback sidecar. In both modes the same backend Apple-login code consumes the
-HTTP header contract; only ownership of the Anisette process changes.
+An operator imports or logs in once using `python -m app.shared_apple_auth`.
+Workers read the encrypted session from PostgreSQL and never require an Apple
+password, local auth file, terminal, or shared filesystem. See the runbook for
+endpoint affinity, secret rotation, and account restrictions.
 
-The repository-root `Dockerfile` is the production web image. It builds the
-static storefront from `website/`, serves it at `/`, and retains every API route
-on the same FastAPI origin. The root `compose.yaml` binds the service only to
-`127.0.0.1:8080`, loads the ignored `backend/.env`, and mounts `./state` at the
-durable runtime path expected by Anisette and Apple authentication.
-
-On the configured development Mac, `./run_local_secure.sh` loads application
-settings from the ignored `backend/.env`, keeps the hosted database password in
-macOS Keychain, and starts the same server against Supabase cloud. It is a
-development convenience only; production must use the deployment platform's
-secret manager. The checked-in development firmware bypasses bootstrap proof
-verification; to test that firmware, set
-`PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH=true` in the ignored local `.env`. This
-keeps the setting opt-in and must remain false for shared or production servers.
-
-For a hosted project, follow
-[`docs/supabase-cloud-deployment.md`](../docs/supabase-cloud-deployment.md).
-The hosted database URL must use TLS and must never be placed in Expo/Xcode.
-`SUPABASE_URL` is enough for the backend to derive the public JWT issuer and
-JWKS endpoints.
-
-The API deliberately disables interactive documentation in its production app object. Generate a separate internal OpenAPI artifact during deployment if operators need it.
-
-All public error responses contain a stable code, a short safe message, and a
-correlation ID. Validation input, access tokens, keys, database errors, and
-stack traces are never returned to the client. Server logs record only the
-correlation ID and exception type for unexpected failures.
+`/health` is process liveness and `/ready` verifies database availability.
+Application logs are JSON with safe event messages; public failures contain a
+stable code, short message, and correlation ID. Interactive API docs remain
+disabled. `PINQEVA_DEV_BYPASS_BOOTSTRAP_AUTH` must stay false in shared deployments.
 
 ## Administrator bootstrap and integrity
 
@@ -382,10 +361,10 @@ GET|POST   /v1/devices/{device_id}/replacement-claims
 ```
 
 Accepted Finder reports are provider-tagged, deduplicated, retained for at most
-30 days, and bound to the active owner and provisioning session. A leased
-background collector polls only configured Apple/Google providers while the
-account subscription is active; manual requests use the same idempotent ingest
-path, and the latest provider timestamp wins. Main-phone observations are retained for
+30 days, and bound to the active owner and provisioning session. Independent leased workers poll configured Apple/Google providers for active
+owners, including free accounts. Free location requests read cached state; stale
+premium requests coalesce into a high-priority job and wait briefly for it.
+Workers use the same idempotent ingest path, and the latest provider timestamp wins. Main-phone observations are retained for
 at most 24 hours. A database trigger combines the nearest-in-time phone GPS,
 finder-network location, and an authenticated BLE-nearby observation. A tag may
 remain in any safe zone without an alert; an alert is emitted only when the tag
@@ -521,9 +500,8 @@ separation/movement events. Native clients register Expo
 destinations at `POST /v1/notifications/push-token`; the worker leases due jobs,
 uses exponential retry for temporary failures, and disables destinations that
 Expo reports as unregistered. `GET /v1/notifications` exposes the durable inbox
-independently of push delivery. Set `PINQEVA_NOTIFICATION_WORKER_ENABLED=true`,
-configure the poll interval, and set `EXPO_PUSH_ACCESS_TOKEN` when enhanced Expo
-push security is enabled.
+independently of push delivery. Run `python -m app.worker maintenance` (or `notification`), configure the poll
+interval, and set `EXPO_PUSH_ACCESS_TOKEN` when enhanced Expo push security is enabled.
 
 Dashboard setup still requires an operator to:
 

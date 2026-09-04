@@ -258,19 +258,16 @@ async def test_gateway_uses_immediate_idempotent_cancellation(
         captured.update(parameters)
         return {"id": provider_subscription_id, "status": "canceled"}
 
-    monkeypatch.setattr("stripe.Subscription.cancel", fake_cancel)
     gateway = StripeCancellationGateway(worker_settings())
+    monkeypatch.setattr(gateway._client.v1.subscriptions, "cancel", fake_cancel)
 
     await gateway.cancel_subscription(
         "sub_12345678", idempotency_key="pinqeva-release-cancel-test"
     )
 
     assert captured["provider_subscription_id"] == "sub_12345678"
-    assert captured["idempotency_key"] == "pinqeva-release-cancel-test"
-    assert captured["invoice_now"] is False
-    assert captured["prorate"] is False
-    assert "api_key" in captured
-    assert "stripe_version" in captured
+    assert captured["options"]["idempotency_key"] == "pinqeva-release-cancel-test"
+    assert captured["params"] == {"invoice_now": False, "prorate": False}
 
 
 class Cursor:

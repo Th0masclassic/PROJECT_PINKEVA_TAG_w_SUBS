@@ -70,6 +70,14 @@ class _Connection:
         self.executed.append((query, parameters))
         if "private_key_ciphertext" in query:
             return _Cursor(self.binding_row)
+        if query.lstrip().startswith("SELECT device_id FROM public.device_location_sync_state"):
+            return _Cursor(self.binding_row)
+        if "AS subscription_active" in query and "last_latitude" in query:
+            return _Cursor({
+                **self.binding_row,
+                **(self.current_row or self.accepted_row or {}),
+                "last_location_fetched_at": datetime.now(UTC),
+            } if self.binding_row else None)
         if query.lstrip().startswith("SELECT latitude, longitude, recorded_at"):
             return _Cursor(self.history_rows)
         if query.lstrip().startswith("UPDATE public.device"):
@@ -84,6 +92,15 @@ class _Database:
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[_Connection]:
         yield self.connection
+
+
+async def _refresh_report(service, database, *, user_id, device_id):
+    """Exercise worker provider ingestion with a scripted valid database lease."""
+    binding = database.connection.binding_row
+    return await service.refresh_report(
+        database, user_id=user_id, device_id=device_id,
+        session_id=binding["session_id"] if binding else uuid4(), lease_owner=uuid4(),
+    )
 
 
 class _Response:
@@ -234,19 +251,19 @@ def _install_apple_response(
         return _Response({"X-Apple-I-MD": "otp", "X-Apple-I-MD-M": "machine"})
 
     def fake_post(url: str, **kwargs: object) -> _Response:
-        assert url == "https://gateway.icloud.com/acsnservice/fetch"
+        assert url == "https://gateway.icloud.com/findmyservice/v2/fetch"
         assert kwargs["auth"] == ("123", "search-token")
         request = kwargs["json"]
         assert isinstance(request, dict)
-        assert request["search"][0]["ids"] == [identifier]
+        assert request["fetch"][0]["primaryIds"] == [identifier]
         return _Response(
             {
-                "results": [
+                "acsnLocations": {"statusCode": "200", "locationPayload": [
                     {
                         "id": identifier,
-                        "payload": _encoded_report(private_key, apple_timestamp),
+                        "locationInfo": [_encoded_report(private_key, apple_timestamp)],
                     }
-                ]
+                ]}
             }
         )
 
@@ -283,7 +300,7 @@ async def test_request_report_returns_one_tag_coordinates_as_json(
     }
     database = _Database(_Connection(binding_row=binding, accepted_row=accepted))
 
-    result = await service.request_report(
+    result = await _refresh_report(service,
         database, user_id=user_id, device_id=device_id
     )
     payload = result.model_dump(mode="json")
@@ -415,7 +432,7 @@ async def test_google_tag_uses_only_the_configured_find_hub_bridge(
     }
     database = _Database(_Connection(binding_row=binding, accepted_row=accepted))
 
-    result = await service.request_report(
+    result = await _refresh_report(service,
         database, user_id=user_id, device_id=device_id
     )
 
@@ -467,7 +484,7 @@ async def test_dual_provider_reports_project_the_newest_ecosystem(
         },
     )
 
-    result = await LocationService(settings).request_report(
+    result = await _refresh_report(LocationService(settings),
         _Database(connection), user_id=user_id, device_id=device_id
     )
 
@@ -480,7 +497,7 @@ async def test_dual_provider_reports_project_the_newest_ecosystem(
     projection = next(
         parameters
         for query, parameters in connection.executed
-        if query.lstrip().startswith("UPDATE public.device")
+        if "SET last_latitude" in query
     )
     assert projection[0:5] == (38.73, -9.13, google_time, "38.73000, -9.13000", "google")
     assert result.last_location_at == google_time
@@ -507,7 +524,7 @@ async def test_google_tag_fails_closed_when_bridge_is_not_configured(
     )
 
     with pytest.raises(LocationError) as error:
-        await LocationService(settings).request_report(
+        await _refresh_report(LocationService(settings),
             _Database(_Connection(binding_row=binding)),
             user_id=user_id,
             device_id=device_id,
@@ -524,7 +541,7 @@ async def test_request_report_cannot_read_a_tag_owned_by_another_user() -> None:
     database = _Database(_Connection(binding_row=None))
 
     with pytest.raises(LocationError) as error:
-        await service.request_report(
+        await _refresh_report(service,
             database, user_id=uuid4(), device_id=uuid4()
         )
 
@@ -559,7 +576,7 @@ async def test_no_report_returns_existing_coordinates_without_fabricating_values
         _Connection(binding_row=binding, current_row=current)
     )
 
-    result = await service.request_report(
+    result = await _refresh_report(service,
         database, user_id=user_id, device_id=device_id
     )
     payload = result.model_dump(mode="json")
@@ -739,7 +756,7 @@ async def test_report_history_24h_cannot_read_another_users_tag(
 
 
 @pytest.mark.asyncio
-async def test_cloud_location_requires_subscription_without_tag_state() -> None:
+async def test_free_location_is_cached_without_subscription() -> None:
     settings = _settings()
     user_id = uuid4()
     device_id = uuid4()
@@ -749,20 +766,17 @@ async def test_cloud_location_requires_subscription_without_tag_state() -> None:
     binding["subscription_active"] = False
     database = _Database(_Connection(binding_row=binding))
 
-    with pytest.raises(LocationError) as error:
-        await LocationService(settings).request_report(
-            database, user_id=user_id, device_id=device_id
-        )
-
-    assert error.value.code == "PREMIUM_SUBSCRIPTION_REQUIRED"
-    assert error.value.status_code == 402
-    binding_query = database.connection.executed[0][0]
-    assert "public.subscription" in binding_query
-    assert "device_entitlement_sync" not in binding_query
+    result = await LocationService(settings).request_report(
+        database, user_id=user_id, device_id=device_id
+    )
+    assert result.source == "cache"
+    assert result.report_status == "no_report"
+    assert not result.refreshing
+    assert "pinqeva_active_subscription_id" in database.connection.executed[0][0]
 
 
 @pytest.mark.asyncio
-async def test_premium_history_supports_thirty_days_and_persists_reports(
+async def test_premium_history_supports_thirty_days_from_durable_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = _settings()
@@ -815,7 +829,7 @@ async def test_premium_history_supports_thirty_days_and_persists_reports(
         for query, _parameters in database.connection.executed
         if "INSERT INTO public.device_location_report" in query
     ]
-    assert len(history_inserts) == 1
+    assert len(history_inserts) == 0
     history_reads = [
         (query, parameters)
         for query, parameters in database.connection.executed
@@ -857,7 +871,7 @@ async def test_unsorted_provider_batch_is_stored_oldest_first_and_projects_newes
         },
     )
 
-    result = await LocationService(settings).request_report(
+    result = await _refresh_report(LocationService(settings),
         _Database(connection), user_id=user_id, device_id=device_id
     )
 
@@ -873,7 +887,7 @@ async def test_unsorted_provider_batch_is_stored_oldest_first_and_projects_newes
     projection_update = next(
         parameters
         for query, parameters in connection.executed
-        if query.lstrip().startswith("UPDATE public.device")
+        if "SET last_latitude" in query
     )
     assert projection_update[0:3] == (38.73, -9.13, newer)
 

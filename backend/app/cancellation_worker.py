@@ -160,6 +160,12 @@ class StripeCancellationGateway:
     def __init__(self, settings: CancellationWorkerSettings) -> None:
         self._api_key = settings.stripe_secret_key
         self._api_version = settings.stripe_api_version
+        self._client = stripe.StripeClient(
+            self._api_key,
+            stripe_version=self._api_version,
+            max_network_retries=0,
+            http_client=stripe.RequestsClient(timeout=15),
+        )
 
     async def cancel_subscription(
         self, provider_subscription_id: str, *, idempotency_key: str
@@ -168,13 +174,10 @@ class StripeCancellationGateway:
             raise PermanentProviderError("PROVIDER_IDENTIFIER_INVALID")
         try:
             response = await asyncio.to_thread(
-                stripe.Subscription.cancel,
+                self._client.v1.subscriptions.cancel,
                 provider_subscription_id,
-                api_key=self._api_key,
-                stripe_version=self._api_version,
-                idempotency_key=idempotency_key,
-                invoice_now=False,
-                prorate=False,
+                params={"invoice_now": False, "prorate": False},
+                options={"idempotency_key": idempotency_key},
             )
         except (stripe.RateLimitError, stripe.APIConnectionError, stripe.APIError):
             raise RetryableProviderError() from None
@@ -521,7 +524,8 @@ class CancellationWorker:
         expired = await self.repository.expire_webhook_waits()
         jobs = await self.repository.claim_due(
             lease_owner=self.worker_id,
-            batch_size=self.settings.batch_size,
+            # Do not lease a batch that waits through earlier provider calls.
+            batch_size=1,
             lease_seconds=self.settings.lease_seconds,
         )
         for job in jobs:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import socket
@@ -32,6 +33,10 @@ def _free_tcp_port() -> int:
 def migrated_postgres_url() -> Iterator[str]:
     initdb = shutil.which("initdb")
     pg_ctl = shutil.which("pg_ctl")
+    local_bin = REPOSITORY_ROOT / "backend" / ".tools" / "postgres" / "pgsql" / "bin"
+    if os.name == "nt" and (local_bin / "initdb.exe").is_file():
+        initdb = str(local_bin / "initdb.exe")
+        pg_ctl = str(local_bin / "pg_ctl.exe")
     if initdb is None or pg_ctl is None or getattr(os, "geteuid", lambda: 1)() == 0:
         pytest.skip("local PostgreSQL binaries are unavailable")
 
@@ -57,7 +62,9 @@ def migrated_postgres_url() -> Iterator[str]:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
-        options = f"-h 127.0.0.1 -p {port} -k {socket_directory}"
+        options = f"-h 127.0.0.1 -p {port}"
+        if os.name != "nt":
+            options += f" -k {socket_directory}"
         subprocess.run(
             [pg_ctl, "-D", str(data_directory), "-o", options, "-w", "start"],
             check=True,
@@ -110,6 +117,10 @@ def migrated_postgres_url() -> Iterator[str]:
                 )
                 for migration in sorted(
                     (REPOSITORY_ROOT / "supabase" / "migrations").glob("*.sql")
+                ):
+                    connection.execute(migration.read_text(encoding="utf-8"))
+                for migration in sorted(
+                    (REPOSITORY_ROOT / "backend" / "sql" / "migrations").glob("*.sql")
                 ):
                     connection.execute(migration.read_text(encoding="utf-8"))
             yield database_url
@@ -189,8 +200,20 @@ def _subscription_object(
     }
 
 
-@pytest.mark.asyncio
-async def test_former_owner_compensation_is_atomic_and_webhook_confirmed(
+def test_unavailable_account_compensation_is_atomic_and_webhook_confirmed(
+    migrated_postgres_url: str,
+) -> None:
+    # Psycopg requires a selector loop on Windows; loop policies were removed
+    # from recent pytest-asyncio, so choose the loop explicitly for this test.
+    scenario = _unavailable_account_compensation_is_atomic_and_webhook_confirmed(migrated_postgres_url)
+    if os.name == "nt":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(scenario)
+    else:
+        asyncio.run(scenario)
+
+
+async def _unavailable_account_compensation_is_atomic_and_webhook_confirmed(
     migrated_postgres_url: str,
 ) -> None:
     user_id = uuid.uuid4()
@@ -261,6 +284,13 @@ async def test_former_owner_compensation_is_atomic_and_webhook_confirmed(
                 """,
                 (checkout_id, user_id, device_id),
             )
+            # Subscription entitlement is account-wide. Losing this tracker
+            # alone is valid; an account ban after Checkout requires compensation.
+            await connection.execute(
+                """UPDATE public.profiles SET account_status='banned', banned_at=now(),
+                       banned_by=id, ban_reason='Integration test account unavailable'
+                     WHERE id=%s""", (user_id,),
+            )
 
         active = _subscription_object(
             user_id=user_id,
@@ -292,10 +322,10 @@ async def test_former_owner_compensation_is_atomic_and_webhook_confirmed(
         ).fetchone()
         assert row == {
             "status": "ended",
-            "ended_reason": "ownership_lost_checkout",
+            "ended_reason": "account_unavailable_checkout",
             "provider_terminal_event_at": None,
             "queue_status": "pending",
-            "cancellation_reason": "ownership_lost_checkout",
+            "cancellation_reason": "account_unavailable_checkout",
             "device_release_id": None,
         }
 

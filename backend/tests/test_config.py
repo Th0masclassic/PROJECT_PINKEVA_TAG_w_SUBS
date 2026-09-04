@@ -1,4 +1,5 @@
 import pytest
+from dataclasses import replace
 
 from app.config import (
     ConfigurationError,
@@ -11,6 +12,30 @@ from app.config import (
     validate_https_url,
     validate_stripe_secret,
 )
+
+
+@pytest.mark.parametrize("changes", [
+    {"location_job_timeout_seconds": 120, "location_refresh_lease_seconds": 120},
+    {"location_job_timeout_seconds": float("nan")},
+    {"location_refresh_wait_seconds": float("inf")},
+    {"database_pool_max_size": 1, "database_pool_min_size": 2},
+    {"location_worker_queue": "unknown"},
+    {"premium_location_freshness_seconds": 0},
+    {"findmy_session_encryption_key": b"a" * 32},
+])
+def test_distributed_configuration_rejects_unsafe_values(changes):
+    from test_location import _settings
+    with pytest.raises(ConfigurationError):
+        replace(_settings(), **changes)
+
+
+def test_distributed_environment_parsing(monkeypatch):
+    from app.config import _distributed_settings
+    monkeypatch.setenv("PINQEVA_PREMIUM_LOCATION_FRESHNESS_SECONDS", "45")
+    monkeypatch.setenv("PINQEVA_LOCATION_REFRESH_WAIT_SECONDS", "2.5")
+    result = _distributed_settings()
+    assert result["premium_location_freshness_seconds"] == 45
+    assert result["location_refresh_wait_seconds"] == 2.5
 
 
 def test_admin_owner_rejects_example_uuid() -> None:

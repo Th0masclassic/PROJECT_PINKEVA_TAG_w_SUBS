@@ -68,3 +68,28 @@ ALTER ROLE pinqeva_backend SET idle_in_transaction_session_timeout = '30s';
 
 COMMENT ON ROLE pinqeva_backend IS
   'Least-privilege runtime login for the Pinqeva provisioning API; secret outside Git';
+
+-- Schema migrations also grant these privileges when the role already exists.
+-- Role creation after the distributed upgrade must not erase those grants.
+DO $$
+BEGIN
+  IF to_regclass('public.upstream_apple_session') IS NOT NULL THEN
+    GRANT SELECT ON public.upstream_apple_session TO pinqeva_backend;
+  END IF;
+  IF to_regclass('public.upstream_apple_session_status') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE ON public.upstream_apple_session_status TO pinqeva_backend;
+    REVOKE DELETE ON public.upstream_apple_session_status FROM pinqeva_backend;
+  END IF;
+  IF to_regclass('public.location_refresh_failure') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE, DELETE ON
+      public.device_location_report, public.device_location_sync_state,
+      public.device_safe_zone, public.device_protection_profile,
+      public.device_recovery_share, public.device_primary_companion,
+      public.device_companion_observation, public.device_separation_state,
+      public.device_replacement_claim, public.location_refresh_failure,
+      public.location_rate_limit, public.backend_schedule TO pinqeva_backend;
+    GRANT USAGE ON SEQUENCE public.location_refresh_failure_id_seq TO pinqeva_backend;
+    GRANT SELECT (account_status, banned_at, banned_by, ban_reason)
+      ON public.profiles TO pinqeva_backend;
+  END IF;
+END $$;
