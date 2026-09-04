@@ -9,6 +9,7 @@ import {
   type ProvisioningApiConfig,
 } from './api';
 import { createTagRadio, type DiscoveredTag, type StopTagScan, type TagRadio } from './radio';
+import { provisioningRequestAction } from './requestState';
 import { safeTagSetupErrorCode, type TagSetupErrorCode } from './setup';
 
 export type TagSetupPhase =
@@ -351,10 +352,24 @@ export function useTagSetup(input: {
         if (currentSequence !== sequence.current) return;
         if (
           !provisioningRequest.device_id ||
-          provisioningRequest.serial_number !== identity.serialNumber ||
-          provisioningRequest.available_plans.length === 0
+          provisioningRequest.serial_number !== identity.serialNumber
         ) {
           throw new Error('Invalid provisioning request binding');
+        }
+        const nextAction = provisioningRequestAction(provisioningRequest.status);
+        if (nextAction === 'unavailable') {
+          await releaseRadio();
+          setState((current) => ({
+            ...current,
+            phase: 'error',
+            selected: candidate,
+            provisioningRequest,
+            error: 'unavailable',
+          }));
+          return;
+        }
+        if (nextAction === 'payment' && provisioningRequest.available_plans.length === 0) {
+          throw new Error('No account billing plans are available');
         }
         request.current = {
           ...request.current,
@@ -363,21 +378,29 @@ export function useTagSetup(input: {
           serialNumber: provisioningRequest.serial_number,
           deviceId: provisioningRequest.device_id,
         };
-        await releaseRadio();
-        setState((current) => ({
-          ...current,
-          phase: 'payment',
-          selected: candidate,
-          provisioningRequest,
-          claim: null,
-          error: null,
-        }));
-        return;
+        if (nextAction === 'payment') {
+          await releaseRadio();
+          setState((current) => ({
+            ...current,
+            phase: 'payment',
+            selected: candidate,
+            provisioningRequest,
+            claim: null,
+            error: null,
+          }));
+          return;
+        }
+        // An active account subscription causes the backend to return a paid
+        // request. Keep this setup session and move directly into the secure
+        // claim instead of showing a second payment sheet or asking the owner
+        // to choose the same tag again.
       }
+      const provisioningRequestId = request.current.provisioningRequestId;
+      if (!provisioningRequestId) throw new Error('Provisioning request is unavailable');
       const claim = await currentRadio.provision(backend, {
         peripheralId: candidate.peripheralId,
         idempotencyKey,
-        provisioningRequestId: currentRequest.provisioningRequestId,
+        provisioningRequestId,
         onProgress: (phase) => {
           if (currentSequence !== sequence.current) return;
           setState((current) => ({ ...current, phase }));

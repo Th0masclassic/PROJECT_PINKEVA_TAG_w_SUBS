@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { Tracker } from '../model.ts';
-import { selectClosestLocatedTracker } from './nearestTracker.ts';
+import { distanceInMeters, selectClosestLocatedTracker } from './nearestTracker.ts';
 
 function tracker(id: string, latitude?: number, longitude?: number): Tracker {
   return {
@@ -42,4 +42,19 @@ test('falls back to the preferred located tag while user location is unavailable
     preferred.id,
   );
   assert.equal(selectClosestLocatedTracker([tracker('missing')], undefined), undefined);
+});
+
+test('calculates a zero distance for the same coordinate', () => {
+  const coordinate = { latitude: 38.7223, longitude: -9.1393 };
+  assert.equal(distanceInMeters(coordinate, coordinate), 0);
+});
+
+test('calculates a realistic short distance in meters', () => {
+  const origin = { latitude: 38.7223, longitude: -9.1393 };
+  const roughlyOneHundredMetersNorth = {
+    latitude: origin.latitude + (100 / 6_371_000) * (180 / Math.PI),
+    longitude: origin.longitude,
+  };
+
+  assert.ok(Math.abs(distanceInMeters(origin, roughlyOneHundredMetersNorth) - 100) < 0.1);
 });

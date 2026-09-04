@@ -8,10 +8,13 @@ import type {
 import {
   PinqevaProvisioningClient,
   type DeviceClaim,
+  type DeviceRelease,
 } from './api.ts';
 import {
   ADVERTISEMENT_KEY_LENGTH,
   ADVERTISEMENT_KEY_UUID,
+  AUTHENTICATED_RESET_CAPABILITY,
+  AUTHENTICATED_RESET_UUID,
   DEVICE_IDENTIFIER_UUID,
   DUAL_FINDING_NETWORK_CAPABILITY,
   FINDING_NETWORK_UUID,
@@ -24,6 +27,7 @@ import {
   PROTOCOL_INFO_UUID,
   PROVISIONING_STATUS_UUID,
   ProvisioningClientError,
+  RESET_COMMAND_LENGTH,
   TAG_AUTHORIZATION_CAPABILITY,
   TAG_AUTHORIZATION_PROOF_LENGTH,
   TAG_AUTHORIZATION_PROOF_UUID,
@@ -64,6 +68,26 @@ export type TagIdentity = {
   findingNetwork: FindingNetwork | null;
 };
 
+export type ReleaseProgress =
+  | 'connecting'
+  | 'verifying'
+  | 'authorizing'
+  | 'erasing'
+  | 'finalizing';
+
+export type ReleaseTagInput = {
+  peripheralId: string;
+  deviceId: string;
+  expectedSerialNumber: string;
+  idempotencyKey: string;
+  signal: AbortSignal;
+  onProgress?: (progress: ReleaseProgress) => void;
+  onResetVerified?: (
+    release: Awaited<ReturnType<PinqevaProvisioningClient['startDeviceRelease']>>,
+  ) => Promise<void>;
+  onCompleted?: () => Promise<void>;
+};
+
 // Provisioning is a one-shot BLE session. The app deliberately does not call
 // any platform pairing/bonding API (the BLE library does not expose one), does
 // not request an automatic reconnect, and never persists the peripheral ID.
@@ -74,6 +98,12 @@ const NON_BONDING_CONNECTION_OPTIONS = Object.freeze({
   autoConnect: false,
   timeout: 15_000,
 });
+
+function requireReleaseActive(signal: AbortSignal): void {
+  if (signal.aborted) {
+    throw new ProvisioningClientError('RELEASE_CANCELLED', 'Tracker release cancelled');
+  }
+}
 
 export class TagProvisioner {
   private readonly ble: BleManager;
@@ -507,6 +537,183 @@ export class TagProvisioner {
       cancelReadyWait?.();
       statusSubscription?.remove();
       tagChallenge?.fill(0);
+      if (device) {
+        await this.ble.cancelDeviceConnection(device.id).catch(() => undefined);
+      }
+    }
+  }
+
+  async release(input: ReleaseTagInput): Promise<DeviceRelease> {
+    let device: Device | undefined;
+    let tagChallenge: Uint8Array | undefined;
+    let release: Awaited<ReturnType<PinqevaProvisioningClient['startDeviceRelease']>> | undefined;
+    try {
+      requireReleaseActive(input.signal);
+      input.onProgress?.('connecting');
+      device = await this.ble.connectToDevice(
+        input.peripheralId,
+        NON_BONDING_CONNECTION_OPTIONS,
+      );
+      requireReleaseActive(input.signal);
+      device = await device.discoverAllServicesAndCharacteristics();
+      device = await device.requestMTU(128).catch(() => device as Device);
+      requireReleaseActive(input.signal);
+
+      input.onProgress?.('verifying');
+      const [
+        protocolValue,
+        identifierValue,
+        fingerprintValue,
+        googleFingerprintValue,
+        findingNetworkValue,
+        challengeValue,
+      ] = await Promise.all([
+        device.readCharacteristicForService(PINKEVA_SERVICE_UUID, PROTOCOL_INFO_UUID),
+        device.readCharacteristicForService(PINKEVA_SERVICE_UUID, DEVICE_IDENTIFIER_UUID),
+        device.readCharacteristicForService(PINKEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+        device.readCharacteristicForService(PINKEVA_SERVICE_UUID, GOOGLE_KEY_FINGERPRINT_UUID),
+        device.readCharacteristicForService(PINKEVA_SERVICE_UUID, FINDING_NETWORK_UUID),
+        device.readCharacteristicForService(PINKEVA_SERVICE_UUID, TAG_CHALLENGE_UUID),
+      ]);
+      requireReleaseActive(input.signal);
+      const protocol = parseProtocolInformation(decodeBleBase64(protocolValue.value));
+      if (
+        protocol.protocolMajor !== 1 ||
+        (protocol.capabilities & AUTHENTICATED_RESET_CAPABILITY) === 0 ||
+        (protocol.capabilities & TAG_AUTHORIZATION_CAPABILITY) === 0 ||
+        (protocol.capabilities & DUAL_FINDING_NETWORK_CAPABILITY) === 0
+      ) {
+        throw new ProvisioningClientError(
+          'AUTHENTICATED_RESET_UNSUPPORTED',
+          'Tracker firmware does not support secure release',
+        );
+      }
+
+      const serialNumber = decodeDeviceIdentifier(decodeBleBase64(identifierValue.value));
+      if (serialNumber !== input.expectedSerialNumber.trim().toUpperCase()) {
+        throw new ProvisioningClientError(
+          'SERIAL_MISMATCH',
+          'Connected tracker does not match the selected tracker',
+        );
+      }
+      const fingerprint = decodeTagKeyFingerprint(decodeBleBase64(fingerprintValue.value));
+      const googleFingerprint = decodeGoogleKeyFingerprint(
+        decodeBleBase64(googleFingerprintValue.value),
+      );
+      const findingNetwork = decodeFindingNetwork(decodeBleBase64(findingNetworkValue.value));
+      tagChallenge = decodeBleBase64(challengeValue.value);
+      if (tagChallenge.length !== TAG_CHALLENGE_LENGTH) {
+        throw new ProvisioningClientError('INVALID_TAG_CHALLENGE', 'Unexpected tag challenge');
+      }
+      if (fingerprint === null || googleFingerprint === null || findingNetwork === null) {
+        throw new ProvisioningClientError(
+          'RECOVERY_REQUIRED',
+          'Tracker identity is incomplete and needs assisted recovery',
+        );
+      }
+
+      input.onProgress?.('authorizing');
+      release = await this.backend.startDeviceRelease({
+        deviceId: input.deviceId,
+        serialNumber,
+        tagAdvertisementKeySha256Base64url: encodeBase64Url(fingerprint),
+        tagGoogleAdvertisementKeySha256Base64url: encodeBase64Url(googleFingerprint),
+        findingNetwork,
+        tagChallengeBase64url: encodeBase64Url(tagChallenge),
+        idempotencyKey: input.idempotencyKey,
+      });
+      requireReleaseActive(input.signal);
+      if (release.serial_number !== serialNumber || release.device_id !== input.deviceId) {
+        throw new ProvisioningClientError(
+          'BACKEND_BINDING_MISMATCH',
+          'Backend release is bound to another tracker',
+        );
+      }
+      if (Date.parse(release.expires_at) <= Date.now()) {
+        throw new ProvisioningClientError('RELEASE_EXPIRED', 'Secure release command expired');
+      }
+
+      const authorizationProof = decodeBase64Url(
+        release.tag_authorization_proof_base64url,
+      );
+      release.tag_authorization_proof_base64url = '';
+      if (authorizationProof.length !== TAG_AUTHORIZATION_PROOF_LENGTH) {
+        authorizationProof.fill(0);
+        throw new ProvisioningClientError(
+          'INVALID_BACKEND_AUTHORIZATION',
+          'Unexpected release authorization',
+        );
+      }
+      try {
+        await device.writeCharacteristicWithResponseForService(
+          PINKEVA_SERVICE_UUID,
+          TAG_AUTHORIZATION_PROOF_UUID,
+          toBleBase64(authorizationProof),
+        );
+      } finally {
+        authorizationProof.fill(0);
+        tagChallenge.fill(0);
+        tagChallenge = undefined;
+      }
+      requireReleaseActive(input.signal);
+
+      input.onProgress?.('erasing');
+      const resetCommand = decodeBase64Url(release.reset_command_base64url);
+      release.reset_command_base64url = '';
+      if (resetCommand.length !== RESET_COMMAND_LENGTH) {
+        resetCommand.fill(0);
+        throw new ProvisioningClientError('INVALID_RESET_COMMAND', 'Unexpected reset command');
+      }
+      try {
+        await device.writeCharacteristicWithResponseForService(
+          PINKEVA_SERVICE_UUID,
+          AUTHENTICATED_RESET_UUID,
+          toBleBase64(resetCommand),
+        );
+      } finally {
+        resetCommand.fill(0);
+      }
+      requireReleaseActive(input.signal);
+
+      const [emptyFingerprint, emptyGoogleFingerprint, emptyFindingNetwork] =
+        await Promise.all([
+          device.readCharacteristicForService(PINKEVA_SERVICE_UUID, KEY_FINGERPRINT_UUID),
+          device.readCharacteristicForService(
+            PINKEVA_SERVICE_UUID,
+            GOOGLE_KEY_FINGERPRINT_UUID,
+          ),
+          device.readCharacteristicForService(PINKEVA_SERVICE_UUID, FINDING_NETWORK_UUID),
+        ]);
+      if (
+        decodeTagKeyFingerprint(decodeBleBase64(emptyFingerprint.value)) !== null ||
+        decodeGoogleKeyFingerprint(decodeBleBase64(emptyGoogleFingerprint.value)) !== null ||
+        decodeFindingNetwork(decodeBleBase64(emptyFindingNetwork.value)) !== null
+      ) {
+        throw new ProvisioningClientError(
+          'TAG_RESET_FAILED',
+          'Tracker did not confirm identity erasure',
+        );
+      }
+
+      input.onProgress?.('finalizing');
+      await input.onResetVerified?.(release).catch(() => undefined);
+      const completed = await this.backend.completeDeviceRelease({ release });
+      if (completed.device_id !== input.deviceId || completed.serial_number !== serialNumber) {
+        throw new ProvisioningClientError(
+          'BACKEND_BINDING_MISMATCH',
+          'Backend completed release for another tracker',
+        );
+      }
+      release.release_completion_token_base64url = '';
+      await input.onCompleted?.().catch(() => undefined);
+      return completed;
+    } finally {
+      tagChallenge?.fill(0);
+      if (release) {
+        release.tag_authorization_proof_base64url = '';
+        release.reset_command_base64url = '';
+        release.release_completion_token_base64url = '';
+      }
       if (device) {
         await this.ble.cancelDeviceConnection(device.id).catch(() => undefined);
       }

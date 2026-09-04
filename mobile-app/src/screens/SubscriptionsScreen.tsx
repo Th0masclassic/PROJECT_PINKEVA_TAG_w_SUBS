@@ -31,7 +31,7 @@ import {
   type BillingMode,
   type BillingPlan,
   type BillingPortalAction,
-  type DeviceSubscription,
+  type AccountSubscription,
 } from '../billing/types';
 import {
   AppSafeArea,
@@ -57,7 +57,7 @@ export function SubscriptionsScreen({
   onPortal,
   onNotice,
 }: {
-  subscription?: DeviceSubscription;
+  subscription?: AccountSubscription;
   loading: boolean;
   error?: BillingErrorCode;
   mode: BillingMode;

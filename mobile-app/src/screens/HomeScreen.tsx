@@ -19,6 +19,7 @@ import {
 } from '../components';
 import { formatRelativeTime, localizeTrackerPlace, useI18n } from '../i18n';
 import { selectClosestLocatedTracker } from '../location/nearestTracker';
+import { trackerProximityStatus } from '../location/proximity';
 import { useUserLocation } from '../location/useUserLocation';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
@@ -64,6 +65,13 @@ export function HomeScreen({
   if (!focusedTracker) {
     return <TrackerSetupStart onAddTracker={onAddTracker} onNotice={onNotice} />;
   }
+
+  // The backend status is a safe fallback when the phone has denied location
+  // permission or the tracker has not reported coordinates yet. Once both
+  // points are available, the Home card reflects the physical distance using
+  // the selected tracker type (100 m for Card/Keys/Bag, 1 km for Car).
+  const proximityStatus = trackerProximityStatus(focusedTracker, userCoordinate);
+  const displayStatus = proximityStatus ?? focusedTracker.status;
 
   return (
     <AppSafeArea style={styles.safeArea}>
@@ -124,7 +132,7 @@ export function HomeScreen({
                 <View style={styles.trackerStatus}>
                   <View style={styles.trackerStatusDot} />
                   <Text style={styles.trackerStatusText}>
-                    {focusedTracker.status === 'nearby' ? t('tracker.nearby') : t('tracker.away')}
+                    {displayStatus === 'nearby' ? t('tracker.nearby') : t('tracker.away')}
                   </Text>
                 </View>
                 <Text style={styles.trackerLabel}>{t('home.lastSeen')}</Text>
@@ -170,9 +178,9 @@ function TrackerSetupStart({
       body: t('pairing.keepNear'),
     },
     {
-      icon: 'location-outline',
-      title: t('trackers.learn'),
-      body: t('trackers.learnNotice'),
+      icon: 'options-outline',
+      title: t('trackers.setupTypeTitle'),
+      body: t('trackers.setupTypeBody'),
     },
   ];
 

@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createDemoSubscription } from './demo.ts';
+import { createDemoAccountSubscription, createDemoSubscription } from './demo.ts';
+
+test('demo billing is available without selecting or owning a tracker', () => {
+  const subscription = createDemoAccountSubscription();
+
+  assert.equal(subscription.status, 'active');
+  assert.equal(subscription.planCode, 'monthly_basic');
+  assert.equal(subscription.availablePlans.length, 4);
+  assert.equal('deviceId' in subscription, false);
+});
 
 test('one demo account subscription is projected onto every owned tag', () => {
   const card = createDemoSubscription('pinkeva-card');

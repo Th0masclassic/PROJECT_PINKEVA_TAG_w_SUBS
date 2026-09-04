@@ -44,7 +44,7 @@ available. Before choosing **Connect & Update**, hold the tracker's maintenance
 button for five seconds as shown on the firmware screen.
 
 The native app then scans for that exact `PKV-XXXXXXXXXXXX` serial, verifies
-protocol `1.6` and OTA capability `0x0080`, obtains a challenge-bound backend
+protocol `1.9` and OTA capability `0x0080`, obtains a challenge-bound backend
 authorization, validates the signed manifest binding and downloaded SHA-256,
 and streams the application over BLE. The progress sheet reflects actual bytes
 written. After commit, the app reconnects to the rebooted tracker, reads its
@@ -86,6 +86,13 @@ development profile bypasses bootstrap proof verification and does not request
 OS-level GATT encryption. It is suitable for the present hardware workflow
 only; production must add a reviewed authenticated application-layer secure
 channel to preserve key confidentiality without introducing an OS bond.
+
+Removing a hosted tracker is also a native, nearby operation. The app verifies
+the exact serial and both stored finder identities, obtains an owner-authorized
+reset from `POST /v1/devices/{device_id}/release`, writes the authenticated
+reset command, verifies both identities and the finding network are empty, and
+only then calls `/release/complete`. A failed completion remains retryable and
+does not remove the tracker locally.
 
 Before a physical tag can be claimed, manufacturing must inject its unique
 `boot_key` and register the matching encrypted bootstrap credential in the

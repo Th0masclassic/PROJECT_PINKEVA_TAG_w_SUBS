@@ -10,6 +10,7 @@ import { normalizeAdvertisedSerial } from './protocol';
 import { TagProvisioner, type ProvisioningProgress } from './provisionTag';
 import { TagFirmwareUpdater, type FirmwareUpdateProgress } from './firmwareUpdate';
 import { TagRinger, type RingConnectionInput } from './ring';
+import { TagReleaser, type NearbyReleaseInput } from './release';
 import type { DiscoveredTag, StopTagScan, TagRadio } from './radio.types';
 import { TagRadioError } from './radio.types';
 
@@ -92,7 +93,7 @@ class NativeTagRadio implements TagRadio {
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
     return new TagProvisioner(this.manager, backend).provision({
       ...input,
-      // Protocol 1.8 advertises both identities. This legacy write-once value
+      // Protocol 1.9 advertises both identities. This legacy write-once value
       // only selects the first 500 ms slot after boot, so provisioning must not
       // vary the tag's finder-network behavior by phone platform.
       findingNetwork: 'apple',
@@ -136,6 +137,14 @@ class NativeTagRadio implements TagRadio {
     await this.waitUntilReady();
     if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
     return new TagRinger(this.manager, backend).connectNearby(input);
+  }
+
+  async releaseTracker(backend: PinqevaProvisioningClient, input: NearbyReleaseInput) {
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    await requestAndroidPermissions();
+    await this.waitUntilReady();
+    if (this.destroyed) throw new TagRadioError('BLUETOOTH_UNAVAILABLE');
+    return new TagReleaser(this.manager, backend).releaseNearby(input);
   }
 
   private async stopScan(): Promise<void> {

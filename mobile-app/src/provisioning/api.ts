@@ -28,6 +28,26 @@ export type DeviceClaim = {
   finding_network: 'apple' | 'google';
 };
 
+export type DeviceReleaseStart = {
+  release_id: string;
+  device_id: string;
+  serial_number: string;
+  tag_authorization_proof_base64url: string;
+  reset_command_base64url: string;
+  release_completion_token_base64url: string;
+  expires_at: string;
+};
+
+export type DeviceRelease = {
+  device_id: string;
+  serial_number: string;
+  status: 'unprovisioned';
+  released_at: string;
+  cancelled_subscriptions: number;
+  provider_cancellations_queued: number;
+  next_action: 'ready_for_new_owner';
+};
+
 export type RingAuthorization = {
   device_id: string;
   serial_number: string;
@@ -106,6 +126,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const FIRMWARE_DOWNLOAD_TIMEOUT_MS = 120_000;
 const FIRMWARE_PARTITION_MAX_SIZE = 0xe0000;
 const FIRMWARE_VERSION_PATTERN = /^(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})\.(?:0|[1-9][0-9]{0,2})$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function isFirmwareVersion(value: unknown): value is string {
   return (
@@ -177,6 +198,46 @@ function isDeviceClaim(value: unknown): value is DeviceClaim {
     hasString(value, 'claimed_at') &&
     value.next_action === 'ready' &&
     (value.finding_network === 'apple' || value.finding_network === 'google')
+  );
+}
+
+function isDeviceReleaseStart(value: unknown): value is DeviceReleaseStart {
+  return (
+    isRecord(value) &&
+    typeof value.release_id === 'string' &&
+    UUID_PATTERN.test(value.release_id) &&
+    typeof value.device_id === 'string' &&
+    UUID_PATTERN.test(value.device_id) &&
+    typeof value.serial_number === 'string' &&
+    /^PKV-[0-9A-F]{12}$/.test(value.serial_number) &&
+    typeof value.tag_authorization_proof_base64url === 'string' &&
+    /^[A-Za-z0-9_-]{43}$/.test(value.tag_authorization_proof_base64url) &&
+    typeof value.reset_command_base64url === 'string' &&
+    /^[A-Za-z0-9_-]{86}$/.test(value.reset_command_base64url) &&
+    typeof value.release_completion_token_base64url === 'string' &&
+    /^[A-Za-z0-9_-]{43}$/.test(value.release_completion_token_base64url) &&
+    typeof value.expires_at === 'string' &&
+    Number.isFinite(Date.parse(value.expires_at))
+  );
+}
+
+function isDeviceRelease(value: unknown): value is DeviceRelease {
+  return (
+    isRecord(value) &&
+    typeof value.device_id === 'string' &&
+    UUID_PATTERN.test(value.device_id) &&
+    typeof value.serial_number === 'string' &&
+    /^PKV-[0-9A-F]{12}$/.test(value.serial_number) &&
+    value.status === 'unprovisioned' &&
+    typeof value.released_at === 'string' &&
+    Number.isFinite(Date.parse(value.released_at)) &&
+    typeof value.cancelled_subscriptions === 'number' &&
+    Number.isSafeInteger(value.cancelled_subscriptions) &&
+    value.cancelled_subscriptions >= 0 &&
+    typeof value.provider_cancellations_queued === 'number' &&
+    Number.isSafeInteger(value.provider_cancellations_queued) &&
+    value.provider_cancellations_queued >= 0 &&
+    value.next_action === 'ready_for_new_owner'
   );
 }
 
@@ -443,6 +504,53 @@ export class PinqevaProvisioningClient {
         }),
       },
       isDeviceClaim,
+    );
+  }
+
+  startDeviceRelease(input: {
+    deviceId: string;
+    serialNumber: string;
+    tagAdvertisementKeySha256Base64url: string;
+    tagGoogleAdvertisementKeySha256Base64url: string;
+    findingNetwork: 'apple' | 'google';
+    tagChallengeBase64url: string;
+    idempotencyKey: string;
+  }): Promise<DeviceReleaseStart> {
+    return this.request(
+      `/v1/devices/${encodeURIComponent(input.deviceId)}/release`,
+      {
+        method: 'POST',
+        headers: { 'Idempotency-Key': input.idempotencyKey },
+        body: JSON.stringify({
+          serial_number: input.serialNumber,
+          tag_challenge_base64url: input.tagChallengeBase64url,
+          tag_advertisement_key_sha256_base64url:
+            input.tagAdvertisementKeySha256Base64url,
+          tag_google_advertisement_key_sha256_base64url:
+            input.tagGoogleAdvertisementKeySha256Base64url,
+          finding_network: input.findingNetwork,
+        }),
+      },
+      isDeviceReleaseStart,
+    );
+  }
+
+  completeDeviceRelease(input: { release: DeviceReleaseStart }): Promise<DeviceRelease> {
+    return this.request(
+      `/v1/devices/${encodeURIComponent(input.release.device_id)}/release/complete`,
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          release_id: input.release.release_id,
+          serial_number: input.release.serial_number,
+          tag_key_state: 'empty',
+          tag_google_key_state: 'empty',
+          tag_finding_network_state: 'empty',
+          release_completion_token_base64url:
+            input.release.release_completion_token_base64url,
+        }),
+      },
+      isDeviceRelease,
     );
   }
 

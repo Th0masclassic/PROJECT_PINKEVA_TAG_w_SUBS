@@ -1,14 +1,12 @@
 import Constants from 'expo-constants';
-import { randomUUID } from 'expo-crypto';
 import * as Notifications from 'expo-notifications';
-import * as SecureStore from 'expo-secure-store';
 import { useEffect, useRef } from 'react';
 import { Platform } from 'react-native';
 
 import type { ProvisioningApiConfig } from '../provisioning/api';
+import { getInstallationId } from '../device/installationId';
 
 
-const INSTALLATION_ID_KEY = 'pinqeva.push.installation-id.v1';
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -26,16 +24,6 @@ Notifications.setNotificationHandler({
     shouldSetBadge: false,
   }),
 });
-
-async function installationId(): Promise<string> {
-  const stored = await SecureStore.getItemAsync(INSTALLATION_ID_KEY);
-  if (stored && UUID_PATTERN.test(stored)) return stored;
-  const created = randomUUID();
-  await SecureStore.setItemAsync(INSTALLATION_ID_KEY, created, {
-    keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-  });
-  return created;
-}
 
 function easProjectId(): string | null {
   const value =
@@ -75,7 +63,7 @@ async function register(input: {
       projectId,
       devicePushToken: input.devicePushToken,
     }),
-    installationId(),
+    getInstallationId(),
     input.getAccessToken(),
   ]);
   if (!accessToken) return null;

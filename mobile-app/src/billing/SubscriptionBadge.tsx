@@ -3,14 +3,14 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { colors } from '../theme';
 import { subscriptionStatusLabel, useBillingCopy } from './copy';
-import type { DeviceSubscription } from './types';
+import type { AccountSubscription } from './types';
 
 export function SubscriptionBadge({
   subscription,
   loading = false,
   compact = false,
 }: {
-  subscription?: DeviceSubscription;
+  subscription?: AccountSubscription;
   loading?: boolean;
   compact?: boolean;
 }) {

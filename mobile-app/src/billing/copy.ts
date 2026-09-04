@@ -1,5 +1,5 @@
 import { useI18n, type Language } from '../i18n';
-import type { BillingErrorCode, DeviceSubscription, SubscriptionStatus } from './types';
+import type { AccountSubscription, BillingErrorCode, SubscriptionStatus } from './types';
 
 type BillingCopy = {
   title: string;
@@ -89,7 +89,7 @@ export function interpolateBillingCopy(template: string, values: Record<string, 
 
 export function subscriptionStatusLabel(
   copy: BillingCopy,
-  subscription: DeviceSubscription | undefined,
+  subscription: AccountSubscription | undefined,
 ): string {
   if (!subscription || subscription.status === 'unknown') return copy.unavailable;
   if (subscription.cancelAtPeriodEnd) return copy.ending;

@@ -1,4 +1,4 @@
-import type { BillingPlan, DeviceSubscription } from './types';
+import type { AccountSubscription, BillingPlan, DeviceSubscription } from './types';
 
 export const DEMO_BILLING_PLANS: BillingPlan[] = [
   {
@@ -43,10 +43,13 @@ const DEMO_PERIOD_START = '2026-08-12T12:00:00.000Z';
 const DEMO_MONTH_END = '2026-09-12T12:00:00.000Z';
 
 export function createDemoSubscription(deviceId: string): DeviceSubscription {
+  return { deviceId, ...createDemoAccountSubscription() };
+}
+
+export function createDemoAccountSubscription(): AccountSubscription {
   const availablePlans = DEMO_BILLING_PLANS.map((plan) => ({ ...plan }));
   const plan = availablePlans[0];
   return {
-    deviceId,
     status: 'active',
     planCode: plan.code,
     planName: plan.name,

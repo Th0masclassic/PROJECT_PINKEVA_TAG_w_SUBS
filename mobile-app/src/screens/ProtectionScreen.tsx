@@ -1,4 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
+import * as Location from 'expo-location';
 import { useState } from 'react';
 import {
   ActivityIndicator,
@@ -10,6 +11,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -26,6 +28,8 @@ import {
 } from '../components';
 import { useI18n, type Language } from '../i18n';
 import type { Tracker } from '../model';
+import { ProtectionServicesPanel } from '../premium/ProtectionServicesPanel';
+import { SafeZoneMapPicker } from '../premium/SafeZoneMapPicker';
 import {
   PremiumApiError,
   SAFE_ZONE_LIMIT,
@@ -42,6 +46,7 @@ import {
   type ProtectionCopy,
 } from '../premium/copy';
 import { useSafeZones } from '../premium/useSafeZones';
+import { useProtectionServices } from '../premium/useProtectionServices';
 import type { ProvisioningApiConfig } from '../provisioning/api';
 import { colors, radii, shadow } from '../theme';
 
@@ -94,7 +99,16 @@ export function ProtectionScreen({
     getAccessToken,
     demoPreviewEnabled,
   });
+  const protectionServices = useProtectionServices({
+    ownerKey,
+    deviceId: tracker.id,
+    enabled: active,
+    apiConfig,
+    getAccessToken,
+    demoPreviewEnabled,
+  });
   const [refreshing, setRefreshing] = useState(false);
+  const [locating, setLocating] = useState(false);
   const [draft, setDraft] = useState<ZoneDraft | null>(null);
   const [draftError, setDraftError] = useState<string | null>(null);
 
@@ -102,9 +116,52 @@ export function ProtectionScreen({
     setRefreshing(true);
     try {
       await onRefreshPremium();
-      if (safeZonesAvailable) await safeZoneState.refresh();
+      await Promise.all([
+        safeZonesAvailable ? safeZoneState.refresh() : Promise.resolve(),
+        active ? protectionServices.refresh() : Promise.resolve(),
+      ]);
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const useCurrentPhoneLocation = async () => {
+    if (Platform.OS !== 'ios' && Platform.OS !== 'android') {
+      onNotice('Current-phone location is available in the iPhone and Android app.');
+      return;
+    }
+    setLocating(true);
+    try {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== 'granted') {
+        onNotice('Location permission is required to select the current phone location.');
+        return;
+      }
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setDraft((current) => current ? {
+        ...current,
+        latitude: String(location.coords.latitude),
+        longitude: String(location.coords.longitude),
+      } : null);
+      setDraftError(null);
+    } catch {
+      onNotice('The current phone location could not be read. Enter coordinates or select the map instead.');
+    } finally {
+      setLocating(false);
+    }
+  };
+
+  const toggleZone = async (zone: DeviceSafeZone) => {
+    try {
+      const updated = await safeZoneState.update(zone.id, { enabled: !zone.enabled });
+      onNotice(demoPreviewEnabled
+        ? `Preview only — ${updated.name} is ${updated.enabled ? 'enabled' : 'paused'} on this phone.`
+        : `${updated.name} is ${updated.enabled ? 'enabled' : 'paused'}.`);
+      await onRefreshPremium();
+    } catch {
+      onNotice(copy.saveError);
     }
   };
 
@@ -209,6 +266,15 @@ export function ProtectionScreen({
               </View>
             </Surface>
 
+            {demoPreviewEnabled ? (
+              <View style={styles.previewBanner} testID="protection-screen-preview-banner">
+                <Ionicons name="flask-outline" size={22} color="#704600" />
+                <Text style={styles.previewText}>
+                  Preview only — sample zones and protection settings stay on this phone. No hosted tracker, backend share, claim, phone registration, or deletion is performed.
+                </Text>
+              </View>
+            ) : null}
+
             <Text style={styles.sectionTitle}>{copy.overview}</Text>
             {overview ? (
               <View style={styles.overviewGrid}>
@@ -297,6 +363,7 @@ export function ProtectionScreen({
                         disabled={safeZoneState.mutating}
                         onEdit={() => openZone(zone)}
                         onDelete={() => confirmDelete(zone)}
+                        onToggle={() => void toggleZone(zone)}
                       />
                     ))}
                   </View>
@@ -317,6 +384,14 @@ export function ProtectionScreen({
                 )}
               </View>
             ) : null}
+
+            <ProtectionServicesPanel
+              tracker={tracker}
+              services={protectionServices}
+              apiConfig={apiConfig}
+              onNotice={onNotice}
+              onRefreshOverview={onRefreshPremium}
+            />
           </>
         ) : (
           <>
@@ -396,6 +471,24 @@ export function ProtectionScreen({
                     testID="safe-zone-longitude"
                   />
                 </View>
+                <SafeZoneMapPicker
+                  coordinate={draftCoordinate(draft)}
+                  onChange={({ latitude, longitude }) => {
+                    setDraft((current) => current ? {
+                      ...current,
+                      latitude: String(latitude),
+                      longitude: String(longitude),
+                    } : null);
+                    setDraftError(null);
+                  }}
+                />
+                <Text style={styles.mapHint}>Tap the map or drag its pin to select the safe-zone centre.</Text>
+                <OutlineButton
+                  label={locating ? 'Reading phone location…' : 'Use current phone location'}
+                  icon="navigate-outline"
+                  disabled={locating}
+                  onPress={() => void useCurrentPhoneLocation()}
+                />
                 {hasTrackerCoordinate(tracker) ? (
                   <OutlineButton
                     label={copy.useTrackerLocation}
@@ -468,6 +561,7 @@ function ZoneRow({
   disabled,
   onEdit,
   onDelete,
+  onToggle,
 }: {
   zone: DeviceSafeZone;
   copy: ProtectionCopy;
@@ -475,6 +569,7 @@ function ZoneRow({
   disabled: boolean;
   onEdit: () => void;
   onDelete: () => void;
+  onToggle: () => void;
 }) {
   const stateLabel = !zone.enabled
     ? copy.paused
@@ -522,6 +617,16 @@ function ZoneRow({
         </View>
         <Ionicons name="create-outline" size={21} color={colors.muted} />
       </Pressable>
+      <View style={styles.zoneToggle}>
+        <Switch
+          accessibilityLabel={`${zone.enabled ? 'Pause' : 'Enable'} ${zone.name}`}
+          disabled={disabled}
+          onValueChange={onToggle}
+          value={zone.enabled}
+          trackColor={{ false: '#CED4DF', true: '#8BAEFF' }}
+          thumbColor={zone.enabled ? colors.blue : '#FFFFFF'}
+        />
+      </View>
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`${copy.deleteAction} ${zone.name}`}
@@ -601,6 +706,16 @@ function numberInputValue(value: number | undefined): string {
   return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
 }
 
+function draftCoordinate(draft: ZoneDraft | null): { latitude: number; longitude: number } | undefined {
+  if (!draft) return undefined;
+  const latitude = parseLocalizedNumber(draft.latitude);
+  const longitude = parseLocalizedNumber(draft.longitude);
+  return Number.isFinite(latitude) && latitude >= -90 && latitude <= 90 &&
+    Number.isFinite(longitude) && longitude >= -180 && longitude <= 180
+    ? { latitude, longitude }
+    : undefined;
+}
+
 function hasTrackerCoordinate(
   tracker: Tracker,
 ): tracker is Tracker & { latitude: number; longitude: number } {
@@ -663,6 +778,8 @@ const styles = StyleSheet.create({
   heroEyebrow: { color: '#9EBCFF', fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1 },
   heroTitle: { color: '#FFFFFF', fontSize: 22, lineHeight: 27, fontWeight: '900' },
   heroBody: { color: '#D7E2FA', fontSize: 13, lineHeight: 19 },
+  previewBanner: { borderRadius: radii.medium, borderWidth: 1, borderColor: '#F5D58A', backgroundColor: '#FFF5D9', padding: 14, flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  previewText: { flex: 1, color: '#745516', fontSize: 13, lineHeight: 19, fontWeight: '600' },
   lockedHero: { padding: 22, borderRadius: radii.large, alignItems: 'center', gap: 11 },
   lockedIcon: { width: 62, height: 62, borderRadius: 21, backgroundColor: colors.bluePale, alignItems: 'center', justifyContent: 'center' },
   lockedTitle: { color: colors.text, fontSize: 24, lineHeight: 29, fontWeight: '900', textAlign: 'center' },
@@ -690,6 +807,7 @@ const styles = StyleSheet.create({
   zoneState: { color: colors.blue, fontSize: 12, lineHeight: 16, fontWeight: '800', marginTop: 5 },
   zoneStateOutside: { color: '#A54900' },
   zoneEvaluated: { color: colors.mutedDark, fontSize: 11, lineHeight: 15, marginTop: 2 },
+  zoneToggle: { width: 60, alignItems: 'center', justifyContent: 'center', borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
   deleteButton: { width: 50, alignItems: 'center', justifyContent: 'center', borderLeftWidth: StyleSheet.hairlineWidth, borderLeftColor: colors.border },
   centerCard: { minHeight: 120, padding: 20, alignItems: 'center', justifyContent: 'center', gap: 10 },
   centerText: { color: colors.mutedDark, fontSize: 14, lineHeight: 20, textAlign: 'center' },
@@ -713,6 +831,7 @@ const styles = StyleSheet.create({
   fieldLabel: { color: colors.text, fontSize: 13, lineHeight: 17, fontWeight: '800' },
   input: { minHeight: 52, borderWidth: 1, borderColor: colors.border, borderRadius: 15, paddingHorizontal: 14, color: colors.text, backgroundColor: colors.background, fontSize: 16 },
   coordinateRow: { flexDirection: 'row', gap: 10 },
+  mapHint: { color: colors.muted, fontSize: 12, lineHeight: 16, marginTop: -6 },
   radiusHint: { color: colors.muted, fontSize: 12, lineHeight: 16, marginTop: -6 },
   draftError: { padding: 12, borderRadius: 14, flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FFF0F0' },
   draftErrorText: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: '700' },

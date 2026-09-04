@@ -5,7 +5,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const androidKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_ANDROID_API_KEY?.trim();
   const plugins = [...(config.plugins ?? [])];
   const locationPermission =
-    'Pinkeva uses your location to center the map on the nearest tag.';
+    'Pinkeva uses your location when you choose it for maps, safe zones, or main-phone protection.';
 
   plugins.push([
     'expo-location',

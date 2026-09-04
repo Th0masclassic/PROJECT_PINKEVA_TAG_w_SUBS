@@ -24,6 +24,10 @@ Test/Apple_FindMy_test/ESP32/tests/build/
 **/*.keys
 **/tmp.key
 **/reports.db
+/state/
+/backend/state/
+**/apple-auth-state.json*
+**/anisette-state.bin
 mobile-app/build-location/
 **/*.p8
 **/*.p12

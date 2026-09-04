@@ -5,6 +5,8 @@ import type {
 import type { ProvisioningProgress, TagIdentity } from './provisionTag';
 import type { FirmwareUpdateProgress, InstalledFirmware } from './firmwareUpdate';
 import type { RingConnectionInput, TagRingSession } from './ring';
+import type { DeviceRelease } from './api';
+import type { NearbyReleaseInput } from './release';
 
 export type DiscoveredTag = {
   peripheralId: string;
@@ -45,6 +47,10 @@ export interface TagRadio {
     },
   ): Promise<InstalledFirmware>;
   connectRing(backend: PinqevaProvisioningClient, input: RingConnectionInput): Promise<TagRingSession>;
+  releaseTracker(
+    backend: PinqevaProvisioningClient,
+    input: NearbyReleaseInput,
+  ): Promise<DeviceRelease>;
   destroy(): Promise<void>;
 }
 

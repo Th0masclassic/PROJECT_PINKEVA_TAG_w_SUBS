@@ -90,6 +90,7 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
   zonesRef.current = zones;
   const [loading, setLoading] = useState(false);
   const [mutating, setMutating] = useState(false);
+  const mutationActive = useRef(false);
   const [error, setError] = useState<string | undefined>();
 
   const refresh = useCallback(async (): Promise<void> => {
@@ -119,6 +120,7 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
     setZones([]);
     setError(undefined);
     setLoading(false);
+    mutationActive.current = false;
     setMutating(false);
     if (mode !== 'unavailable') void refresh();
   }, [contextIdentity, mode, refresh]);
@@ -129,6 +131,8 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
     if (zonesRef.current.length >= SAFE_ZONE_LIMIT) {
       throw new PremiumApiError('SAFE_ZONE_LIMIT_REACHED', 409);
     }
+    if (mutationActive.current) throw new PremiumApiError('OPERATION_IN_PROGRESS', 409);
+    mutationActive.current = true;
     setMutating(true);
     try {
       const created = mode === 'demo'
@@ -160,7 +164,10 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
       if (currentContext.current === requestContext) setError(premiumErrorCode(requestError));
       throw requestError;
     } finally {
-      if (currentContext.current === requestContext) setMutating(false);
+      if (currentContext.current === requestContext) {
+        mutationActive.current = false;
+        setMutating(false);
+      }
     }
   }, [contextIdentity, mode, scope.apiConfig, scope.deviceId, scope.getAccessToken]);
 
@@ -170,6 +177,8 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
   ): Promise<DeviceSafeZone> => {
     const requestContext = contextIdentity;
     if (mode === 'unavailable') throw new PremiumApiError('PREMIUM_UNAVAILABLE');
+    if (mutationActive.current) throw new PremiumApiError('OPERATION_IN_PROGRESS', 409);
+    mutationActive.current = true;
     setMutating(true);
     try {
       const existing = zonesRef.current.find((zone) => zone.id === safeZoneId);
@@ -204,13 +213,18 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
       if (currentContext.current === requestContext) setError(premiumErrorCode(requestError));
       throw requestError;
     } finally {
-      if (currentContext.current === requestContext) setMutating(false);
+      if (currentContext.current === requestContext) {
+        mutationActive.current = false;
+        setMutating(false);
+      }
     }
   }, [contextIdentity, mode, scope.apiConfig, scope.deviceId, scope.getAccessToken]);
 
   const remove = useCallback(async (safeZoneId: string): Promise<void> => {
     const requestContext = contextIdentity;
     if (mode === 'unavailable') throw new PremiumApiError('PREMIUM_UNAVAILABLE');
+    if (mutationActive.current) throw new PremiumApiError('OPERATION_IN_PROGRESS', 409);
+    mutationActive.current = true;
     setMutating(true);
     try {
       if (mode !== 'demo') {
@@ -229,7 +243,10 @@ export function useSafeZones(scope: SafeZoneScope): SafeZoneState {
       if (currentContext.current === requestContext) setError(premiumErrorCode(requestError));
       throw requestError;
     } finally {
-      if (currentContext.current === requestContext) setMutating(false);
+      if (currentContext.current === requestContext) {
+        mutationActive.current = false;
+        setMutating(false);
+      }
     }
   }, [contextIdentity, mode, scope.apiConfig, scope.deviceId, scope.getAccessToken]);
 
