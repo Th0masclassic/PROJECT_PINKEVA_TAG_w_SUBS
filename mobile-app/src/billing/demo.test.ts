@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createDemoAccountSubscription, createDemoSubscription } from './demo.ts';
+import { hasActiveSubscriptionAccess } from './types.ts';
 
 test('demo billing is available without selecting or owning a tracker', () => {
   const subscription = createDemoAccountSubscription();
@@ -27,4 +28,12 @@ test('one demo account subscription is projected onto every owned tag', () => {
   assert.equal(bag.status, 'active');
   assert.equal(bag.planCode, card.planCode);
   assert.equal(bag.cancelAtPeriodEnd, false);
+});
+
+test('active access matches backend entitlement statuses', () => {
+  const subscription = createDemoAccountSubscription();
+  assert.equal(hasActiveSubscriptionAccess(subscription), true);
+  assert.equal(hasActiveSubscriptionAccess({ ...subscription, status: 'trialing' }), true);
+  assert.equal(hasActiveSubscriptionAccess({ ...subscription, status: 'past_due' }), false);
+  assert.equal(hasActiveSubscriptionAccess({ ...subscription, status: 'paused' }), false);
 });

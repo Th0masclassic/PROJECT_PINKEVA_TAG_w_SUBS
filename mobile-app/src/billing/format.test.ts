@@ -2,10 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  billingDurationLabel,
   billingIntervalLabel,
   formatBillingDate,
   formatBillingMoney,
+  formatMonthlyEquivalent,
   localizedBillingPlanName,
+  planSavingsPercent,
+  recommendedBillingPlanCode,
 } from './format.ts';
 
 test('formats validated minor-unit prices and rejects invalid values', () => {
@@ -13,6 +17,17 @@ test('formats validated minor-unit prices and rejects invalid values', () => {
   assert.ok(value?.includes('2.99'));
   assert.equal(formatBillingMoney(-1, 'EUR', 'en'), null);
   assert.equal(formatBillingMoney(299, 'EURO', 'en'), null);
+});
+
+test('derives monthly equivalents, savings, and best value from server prices', () => {
+  const monthly = { code: 'm', amountMinor: 299, currency: 'EUR', durationMonths: 1 };
+  const annual = { code: 'y', amountMinor: 2699, currency: 'EUR', durationMonths: 12 };
+  assert.ok(formatMonthlyEquivalent(annual, 'en')?.includes('2.25'));
+  assert.equal(planSavingsPercent(annual, monthly), 25);
+  assert.equal(recommendedBillingPlanCode([monthly, annual]), 'y');
+  assert.equal(recommendedBillingPlanCode([monthly]), undefined);
+  assert.equal(billingDurationLabel(3, 'en'), '3 months');
+  assert.equal(billingDurationLabel(12, 'pt'), 'ano');
 });
 
 test('localizes known plan names and preserves safe server fallbacks', () => {

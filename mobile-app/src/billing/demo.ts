@@ -31,7 +31,7 @@ export const DEMO_BILLING_PLANS: BillingPlan[] = [
   {
     code: 'yearly_pro',
     name: 'Pinkeva Annual',
-    amountMinor: 2999,
+    amountMinor: 2699,
     currency: 'EUR',
     interval: 'year',
     intervalCount: 1,

@@ -24,7 +24,9 @@ export function useUserLocation(enabled: boolean): GeographicCoordinate | undefi
     let active = true;
     void (async () => {
       try {
-        const permission = await Location.requestForegroundPermissionsAsync();
+        // Home and Map are useful without phone location. Only read it when the
+        // user has already granted access through a contextual app action.
+        const permission = await Location.getForegroundPermissionsAsync();
         if (!active || permission.status !== 'granted') return;
 
         const cached = await Location.getLastKnownPositionAsync({

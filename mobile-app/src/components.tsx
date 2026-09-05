@@ -15,11 +15,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   formatRelativeTime,
-  localizeTrackerPlace,
   useI18n,
   type TranslationKey,
 } from './i18n';
 import type { MainTab, Tracker, TrackerKind } from './model';
+import { createTrackerLocationPresentation } from './location/presentation';
 import { colors, radii, shadow } from './theme';
 
 export type IconName = ComponentProps<typeof Ionicons>['name'];
@@ -290,7 +290,8 @@ export function TrackerRow({
   onPress: () => void;
   compact?: boolean;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
+  const location = createTrackerLocationPresentation({ tracker, language, t });
   return (
     <Pressable
       accessibilityRole="button"
@@ -319,7 +320,7 @@ export function TrackerRow({
           </Text>
         )}
         {!compact && tracker.status === 'nearby' ? (
-          <Text style={styles.trackerRowMeta}>{localizeTrackerPlace(t, tracker.place)}</Text>
+          <Text style={styles.trackerRowMeta}>{location.primary}</Text>
         ) : null}
       </View>
       <Ionicons name="chevron-forward" size={25} color={colors.muted} />

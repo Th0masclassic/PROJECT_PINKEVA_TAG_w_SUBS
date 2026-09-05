@@ -210,10 +210,17 @@ npm install
 npm run start
 ```
 
-From Expo, press `i` for the iOS Simulator, `a` for an Android emulator, or `w` for web. Native Apple authentication requires a development build generated after the Supabase and Apple configuration is complete. You can also use:
+For a standalone iPhone install, use the Release command below; it embeds the
+JavaScript bundle and does not depend on Metro staying available. Use
+`npm run ios:dev` only when you want a Debug build with a running Metro server.
+From Expo, press `i` for the iOS Simulator, `a` for an Android emulator, or
+`w` for web. Native Apple authentication requires a development build
+generated after the Supabase and Apple configuration is complete. You can also
+use:
 
 ```sh
 npm run ios
+npm run ios:dev
 npm run android
 npm run web
 ```

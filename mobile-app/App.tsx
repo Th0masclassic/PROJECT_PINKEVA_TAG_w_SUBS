@@ -615,6 +615,7 @@ function AppContent() {
         <MapScreen
           trackers={displayTrackers}
           premiumFeatures={premium.features}
+          safeZones={premium.safeZones}
           requestedHistoryTrackerId={
             route.name === 'map' ? route.historyTrackerId : undefined
           }
@@ -622,6 +623,7 @@ function AppContent() {
           onRequestTrackerLocation={locationReports.refreshTracker}
           onRequestTrackerHistory={requestTrackerHistory}
           onShowTrackers={() => changeTab('trackers')}
+          onOpenTracker={openTracker}
           onNotice={showNotice}
         />
       );
@@ -840,6 +842,7 @@ function AppContent() {
         trackers={displayTrackers}
         mainTracker={mainTracker}
         premiumFeatures={premium.features}
+        safeZones={premium.safeZones}
         onOpenTracker={openTracker}
         onAddTracker={openPairing}
         onOpenHistory={(trackerId) => {

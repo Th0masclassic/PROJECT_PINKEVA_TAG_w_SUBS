@@ -27,6 +27,13 @@ test('requests one authenticated report and validates the safe location projecti
         last_place: '38.72230, -9.13930',
         confidence: 3,
         status_code: 1,
+        server_fetched_at: '2026-08-24T12:00:05Z',
+        age_seconds: 5,
+        fetch_age_seconds: 0,
+        source: 'refresh',
+        stale: false,
+        refreshing: false,
+        upstream_refresh_failed: false,
       }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     );
@@ -36,6 +43,9 @@ test('requests one authenticated report and validates the safe location projecti
     const report = await requestLocationReport(CONFIG, async () => 'access-token', DEVICE_ID);
     assert.equal(report.device_id, DEVICE_ID);
     assert.equal(report.latitude, 38.7223);
+    assert.equal(report.source, 'refresh');
+    assert.equal(report.age_seconds, 5);
+    assert.equal(report.stale, false);
     assert.equal(request?.url, `${CONFIG.baseUrl}/v1/devices/${DEVICE_ID}/location/report`);
     assert.equal(request?.init?.method, 'POST');
     assert.equal(

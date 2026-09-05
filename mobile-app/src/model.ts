@@ -26,6 +26,13 @@ export type Tracker = {
   latitude?: number;
   longitude?: number;
   lastLocationAt?: string;
+  lastLocationFetchedAt?: string;
+  locationAgeSeconds?: number;
+  locationFetchAgeSeconds?: number;
+  locationSource?: 'cache' | 'refresh';
+  locationStale?: boolean;
+  locationRefreshing?: boolean;
+  locationRefreshFailed?: boolean;
 };
 
 export type InfoTopic =

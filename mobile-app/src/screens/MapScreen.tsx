@@ -17,15 +17,20 @@ import {
   useCloudPlusCopy,
 } from '../billing/cloudPlusCopy';
 import { AppSafeArea, TrackerArtwork } from '../components';
-import { formatRelativeTime, useI18n } from '../i18n';
+import { useI18n } from '../i18n';
 import type {
   DeviceLocationHistory,
   DeviceLocationReport,
   LocationHistoryRange,
 } from '../location/api';
+import { createTrackerLocationPresentation } from '../location/presentation';
+import { useResolvedTrackerLocations } from '../location/useResolvedTrackerLocations';
+import { useLocationPresentationNow } from '../location/useLocationPresentationNow';
+import { useUserLocation } from '../location/useUserLocation';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
-import type { PremiumFeatureAccess } from '../premium/api';
+import type { DeviceSafeZone, PremiumFeatureAccess } from '../premium/api';
+import { canUseSafeZones } from '../premium/entitlements';
 import { colors, radii, shadow } from '../theme';
 
 const LONG_PRESS_DURATION_MS = 3000;
@@ -33,15 +38,18 @@ const LONG_PRESS_DURATION_MS = 3000;
 export function MapScreen({
   trackers,
   premiumFeatures,
+  safeZones,
   requestedHistoryTrackerId,
   onHistoryRequestHandled,
   onRequestTrackerLocation,
   onRequestTrackerHistory,
   onShowTrackers,
+  onOpenTracker,
   onNotice,
 }: {
   trackers: Tracker[];
   premiumFeatures: Record<string, PremiumFeatureAccess>;
+  safeZones: Record<string, DeviceSafeZone[]>;
   requestedHistoryTrackerId?: string;
   onHistoryRequestHandled: () => void;
   onRequestTrackerLocation: (trackerId: string) => Promise<DeviceLocationReport>;
@@ -50,11 +58,30 @@ export function MapScreen({
     range: LocationHistoryRange,
   ) => Promise<DeviceLocationHistory>;
   onShowTrackers: () => void;
+  onOpenTracker: (trackerId: string) => void;
   onNotice: (message: string) => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const cloudCopy = useCloudPlusCopy();
   const mapTrackers = trackers;
+  const userCoordinate = useUserLocation(trackers.length > 0);
+  const locationNow = useLocationPresentationNow();
+  const resolvedLocations = useResolvedTrackerLocations(trackers);
+  const locationPresentations = useMemo(
+    () => Object.fromEntries(mapTrackers.map((tracker) => [
+      tracker.id,
+      createTrackerLocationPresentation({
+        tracker,
+        language,
+        t,
+        userCoordinate,
+        resolvedAddress: resolvedLocations[tracker.id],
+        now: locationNow,
+        safeZones: canUseSafeZones(premiumFeatures[tracker.id]) ? safeZones[tracker.id] : [],
+      }),
+    ])),
+    [language, locationNow, mapTrackers, premiumFeatures, resolvedLocations, safeZones, t, userCoordinate],
+  );
   const { height: windowHeight } = useWindowDimensions();
   const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
   const [recenterToken, setRecenterToken] = useState(0);
@@ -325,6 +352,18 @@ export function MapScreen({
       longitude: latestPoint.longitude,
     }];
   }, [canUseHistory, historyPoints, historyRange, historyTrackerId, mapTrackers]);
+  const focusedTracker = focusedTrackerId
+    ? mapTrackers.find((tracker) => tracker.id === focusedTrackerId)
+    : undefined;
+  const markerDescriptions = useMemo(
+    () => Object.fromEntries(mapTrackers.map((tracker) => {
+      const presentation = locationPresentations[tracker.id];
+      return [tracker.id, presentation
+        ? [presentation.primary, presentation.secondary, presentation.freshness].filter(Boolean).join('\n')
+        : undefined];
+    })),
+    [locationPresentations, mapTrackers],
+  );
 
   return (
     <AppSafeArea style={styles.safeArea}>
@@ -334,6 +373,8 @@ export function MapScreen({
           mapType={mapType}
           recenterToken={recenterToken}
           focusTrackerId={focusedTrackerId ?? historyTrackerId ?? undefined}
+          showsUserLocation={Boolean(userCoordinate)}
+          markerDescriptions={markerDescriptions}
           pathCoordinates={
             historyTrackerId && canUseHistory(historyTrackerId, historyRange)
               ? historyPoints
@@ -440,6 +481,41 @@ export function MapScreen({
           </View>
         ) : null}
 
+        {focusedTracker && !historyTrackerId ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={t('a11y.openTracker', { name: focusedTracker.name })}
+            onPress={() => onOpenTracker(focusedTracker.id)}
+            style={({ pressed }) => [styles.focusedCard, shadow, pressed && styles.pressed]}
+            testID="map-focused-tracker"
+          >
+            <View style={styles.focusedIcon}>
+              <Ionicons
+                name={locationPresentations[focusedTracker.id]?.safeZoneName ? 'shield-checkmark' : 'location'}
+                size={23}
+                color={colors.blue}
+              />
+            </View>
+            <View style={styles.focusedCopy}>
+              <Text numberOfLines={1} style={styles.focusedName}>{focusedTracker.name}</Text>
+              <Text numberOfLines={1} style={styles.focusedPrimary}>
+                {locationPresentations[focusedTracker.id]?.primary}
+              </Text>
+              {locationPresentations[focusedTracker.id]?.secondary ? (
+                <Text numberOfLines={1} style={styles.focusedSecondary}>
+                  {locationPresentations[focusedTracker.id]?.secondary}
+                </Text>
+              ) : null}
+              {locationPresentations[focusedTracker.id]?.freshness ? (
+                <Text numberOfLines={1} style={styles.focusedFreshness}>
+                  {locationPresentations[focusedTracker.id]?.freshness}
+                </Text>
+              ) : null}
+            </View>
+            <Ionicons name="chevron-forward" size={23} color={colors.muted} />
+          </Pressable>
+        ) : null}
+
         <Animated.View
           style={[
             styles.bottomSheet,
@@ -467,6 +543,7 @@ export function MapScreen({
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.sheetList}>
             {mapTrackers.length ? mapTrackers.slice(0, 4).map((tracker) => {
               const linkedTrackerId = resolveMapTrackerId(tracker, trackers);
+              const location = locationPresentations[tracker.id];
               return (
                 <Pressable
                   key={tracker.id}
@@ -489,8 +566,13 @@ export function MapScreen({
                   </View>
                   <View style={styles.mapListCopy}>
                     <Text style={styles.mapListTitle}>{tracker.name}</Text>
-                    <Text style={styles.mapListAddress} numberOfLines={1}>{tracker.address}</Text>
-                    <Text style={styles.mapListTime}>{formatRelativeTime(t, tracker.lastSeen)}</Text>
+                    <Text style={styles.mapListPrimary} numberOfLines={1}>{location?.primary}</Text>
+                    {location?.secondary ? (
+                      <Text style={styles.mapListAddress} numberOfLines={1}>{location.secondary}</Text>
+                    ) : null}
+                    {location?.freshness ? (
+                      <Text style={styles.mapListTime} numberOfLines={1}>{location.freshness}</Text>
+                    ) : null}
                   </View>
                   {linkedTrackerId ? (
                     locationLoadingId === linkedTrackerId
@@ -547,6 +629,13 @@ const styles = StyleSheet.create({
   historyLoading: { position: 'absolute', top: 90, left: 28, right: 28, minHeight: 52, borderRadius: 18, backgroundColor: '#FFFFFF', paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12 },
   historyLoadingWithPanel: { top: 132 },
   historyLoadingText: { flex: 1, color: colors.text, fontSize: 14, fontWeight: '600' },
+  focusedCard: { position: 'absolute', left: 16, right: 16, bottom: 104, minHeight: 104, borderRadius: 22, backgroundColor: '#FFFFFF', padding: 14, flexDirection: 'row', alignItems: 'center', gap: 12 },
+  focusedIcon: { width: 44, height: 44, borderRadius: 15, backgroundColor: colors.bluePale, alignItems: 'center', justifyContent: 'center' },
+  focusedCopy: { flex: 1, minWidth: 0 },
+  focusedName: { color: colors.text, fontSize: 17, lineHeight: 21, fontWeight: '800' },
+  focusedPrimary: { color: colors.blueDark, fontSize: 13, lineHeight: 18, fontWeight: '800', marginTop: 2 },
+  focusedSecondary: { color: colors.mutedDark, fontSize: 12, lineHeight: 17, marginTop: 1 },
+  focusedFreshness: { color: colors.muted, fontSize: 11, lineHeight: 16, marginTop: 2 },
   bottomSheet: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#FFFFFF', borderTopLeftRadius: 30, borderTopRightRadius: 30, paddingTop: 4, ...shadow },
   sheetGrabArea: { minHeight: 82 },
   sheetDragHandle: { height: 34, alignItems: 'center', justifyContent: 'center' },
@@ -562,6 +651,7 @@ const styles = StyleSheet.create({
   mapThumbImage: { width: 58, height: 50 },
   mapListCopy: { flex: 1 },
   mapListTitle: { color: colors.text, fontSize: 17, fontWeight: '700' },
+  mapListPrimary: { color: colors.blueDark, fontSize: 12, fontWeight: '700', marginTop: 3 },
   mapListAddress: { color: colors.muted, fontSize: 12, marginTop: 3 },
   mapListTime: { color: colors.blue, fontSize: 12, fontWeight: '600', marginTop: 3 },
   pressed: { opacity: 0.68, transform: [{ scale: 0.985 }] },

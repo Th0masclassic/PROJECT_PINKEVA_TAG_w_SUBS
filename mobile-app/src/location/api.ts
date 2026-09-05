@@ -15,6 +15,13 @@ export type DeviceLocationReport = {
   last_place: string | null;
   confidence: number | null;
   status_code: number | null;
+  server_fetched_at: string | null;
+  age_seconds: number | null;
+  fetch_age_seconds: number | null;
+  source: 'cache' | 'refresh';
+  stale: boolean;
+  refreshing: boolean;
+  upstream_refresh_failed: boolean;
 };
 
 export type DeviceLocationHistoryPoint = {
@@ -56,6 +63,14 @@ function isNullableText(value: unknown, maximum: number): value is string | null
   );
 }
 
+function isNullableNonNegativeInteger(value: unknown): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0);
+}
+
+function isNullableDate(value: unknown): value is string | null {
+  return isNullableText(value, 64) && (value === null || Number.isFinite(Date.parse(value)));
+}
+
 function parseLocationReport(value: unknown, expectedDeviceId: string): DeviceLocationReport {
   if (!isRecord(value)) throw new ProvisioningApiError('INVALID_RESPONSE', 502);
   const deviceId = value.device_id;
@@ -86,16 +101,21 @@ function parseLocationReport(value: unknown, expectedDeviceId: string): DeviceLo
   if ((value.latitude === null) !== (value.longitude === null)) {
     throw new ProvisioningApiError('INVALID_RESPONSE', 502);
   }
-  if (!isNullableText(value.last_location_at, 64) || !isNullableText(value.last_place, 160)) {
-    throw new ProvisioningApiError('INVALID_RESPONSE', 502);
-  }
-  if (
-    value.last_location_at !== null &&
-    !Number.isFinite(Date.parse(value.last_location_at))
-  ) {
+  if (!isNullableDate(value.last_location_at) || !isNullableText(value.last_place, 160)) {
     throw new ProvisioningApiError('INVALID_RESPONSE', 502);
   }
   if (!isNullableNumber(value.confidence, 0, 255) || !isNullableNumber(value.status_code, 0, 255)) {
+    throw new ProvisioningApiError('INVALID_RESPONSE', 502);
+  }
+  if (
+    !isNullableDate(value.server_fetched_at) ||
+    !isNullableNonNegativeInteger(value.age_seconds) ||
+    !isNullableNonNegativeInteger(value.fetch_age_seconds) ||
+    (value.source !== 'cache' && value.source !== 'refresh') ||
+    typeof value.stale !== 'boolean' ||
+    typeof value.refreshing !== 'boolean' ||
+    typeof value.upstream_refresh_failed !== 'boolean'
+  ) {
     throw new ProvisioningApiError('INVALID_RESPONSE', 502);
   }
   return {
@@ -108,6 +128,13 @@ function parseLocationReport(value: unknown, expectedDeviceId: string): DeviceLo
     last_place: value.last_place,
     confidence: value.confidence,
     status_code: value.status_code,
+    server_fetched_at: value.server_fetched_at,
+    age_seconds: value.age_seconds,
+    fetch_age_seconds: value.fetch_age_seconds,
+    source: value.source,
+    stale: value.stale,
+    refreshing: value.refreshing,
+    upstream_refresh_failed: value.upstream_refresh_failed,
   };
 }
 

@@ -44,6 +44,13 @@ function applyReport(current: Tracker[], report: DeviceLocationReport): Tracker[
       ...(report.last_location_at ? { lastLocationAt: report.last_location_at } : {}),
       ...(report.last_place ? { place: report.last_place, address: report.last_place } : {}),
       ...(lastSeen ? { lastSeen } : {}),
+      ...(report.server_fetched_at ? { lastLocationFetchedAt: report.server_fetched_at } : {}),
+      ...(report.age_seconds !== null ? { locationAgeSeconds: report.age_seconds } : {}),
+      ...(report.fetch_age_seconds !== null ? { locationFetchAgeSeconds: report.fetch_age_seconds } : {}),
+      locationSource: report.source,
+      locationStale: report.stale,
+      locationRefreshing: report.refreshing,
+      locationRefreshFailed: report.upstream_refresh_failed,
     };
   });
 }

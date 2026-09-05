@@ -45,8 +45,9 @@
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
-    "ios": "expo run:ios",
-    "ios:release": "expo run:ios --configuration Release",
+    "ios": "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer expo run:ios --configuration Release",
+    "ios:dev": "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer expo run:ios",
+    "ios:release": "DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer expo run:ios --configuration Release",
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "test": "node --test src/model.test.ts src/auth/*.test.ts src/billing/*.test.ts src/location/*.test.ts src/notifications/*.test.ts src/premium/*.test.ts src/provisioning/*.test.ts src/trackers/*.test.ts",

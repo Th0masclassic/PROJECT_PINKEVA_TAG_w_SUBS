@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useBillingCopy } from '../billing/copy';
 import { useAccountBillingCopy } from '../billing/accountCopy';
-import { billingIntervalLabel, formatBillingMoney } from '../billing/format';
+import { billingDurationLabel, formatBillingMoney } from '../billing/format';
 import { OutlineButton, PrimaryButton } from '../components';
 import { useI18n, type TranslationKey } from '../i18n';
 import { colors, radii, shadow } from '../theme';
@@ -244,12 +244,7 @@ export function TagSetupModal({
                           <Text style={styles.planTerms}>
                             {formatBillingMoney(plan.amount_minor, plan.currency, language)}{' '}
                             /{' '}
-                            {billingIntervalLabel(
-                              plan.billing_interval,
-                              billingCopy.month,
-                              billingCopy.year,
-                              plan.billing_interval_count,
-                            )}
+                            {billingDurationLabel(plan.duration_months, language)}
                           </Text>
                         </View>
                         <Ionicons name="chevron-forward" size={23} color={colors.blue} />

@@ -13,6 +13,7 @@ export function GoogleTrackerMap({
   focusTrackerId,
   showsUserLocation: _showsUserLocation = false,
   pathCoordinates: _pathCoordinates = EMPTY_PATH,
+  markerDescriptions: _markerDescriptions = {},
   onPressInTracker,
   onPressOutTracker,
   onLongPressTracker,
@@ -24,6 +25,7 @@ export function GoogleTrackerMap({
   focusTrackerId?: string;
   showsUserLocation?: boolean;
   pathCoordinates?: { latitude: number; longitude: number }[];
+  markerDescriptions?: Record<string, string | undefined>;
   onPressInTracker?: (trackerId: string) => void;
   onPressOutTracker?: () => void;
   onLongPressTracker?: (trackerId: string) => void;

@@ -1,15 +1,20 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { useAccountBillingCopy } from '../billing/accountCopy';
+import {
+  interpolateAccountBillingCopy,
+  useAccountBillingCopy,
+} from '../billing/accountCopy';
 import { CloudPlusFeatures } from '../billing/CloudPlusFeatures';
 import { useCloudPlusCopy } from '../billing/cloudPlusCopy';
 import {
@@ -18,13 +23,17 @@ import {
   useBillingCopy,
 } from '../billing/copy';
 import {
-  billingIntervalLabel,
+  billingDurationLabel,
   formatBillingDate,
   formatBillingMoney,
+  formatMonthlyEquivalent,
   localizedBillingPlanName,
+  planSavingsPercent,
+  recommendedBillingPlanCode,
 } from '../billing/format';
 import { SubscriptionBadge } from '../billing/SubscriptionBadge';
 import {
+  hasActiveSubscriptionAccess,
   isCurrentSubscription,
   type BillingActionResult,
   type BillingErrorCode,
@@ -68,27 +77,20 @@ export function SubscriptionsScreen({
   onPortal: (action: BillingPortalAction) => Promise<BillingActionResult>;
   onNotice: (message: string) => void;
 }) {
-  const { language } = useI18n();
+  const { language, t } = useI18n();
   const accountCopy = useAccountBillingCopy();
   const billingCopy = useBillingCopy();
   const cloudCopy = useCloudPlusCopy();
-  const plans = subscription?.availablePlans ?? EMPTY_PLANS;
-  const current = subscription ? isCurrentSubscription(subscription) : false;
-  const [selectedPlanCode, setSelectedPlanCode] = useState<string | null>(null);
-  const [actionBusy, setActionBusy] = useState(false);
-
-  useEffect(() => {
-    const preferred = plans.find((plan) => plan.code === selectedPlanCode)?.code
-      ?? plans.find((plan) => plan.code === subscription?.planCode)?.code
-      ?? plans[0]?.code
-      ?? null;
-    setSelectedPlanCode(preferred);
-  }, [plans, selectedPlanCode, subscription?.planCode]);
-
-  const selectedPlan = useMemo(
-    () => plans.find((plan) => plan.code === selectedPlanCode),
-    [plans, selectedPlanCode],
+  const plans = useMemo(
+    () => [...(subscription?.availablePlans ?? EMPTY_PLANS)].sort((left, right) => left.durationMonths - right.durationMonths),
+    [subscription?.availablePlans],
   );
+  const manageable = subscription ? isCurrentSubscription(subscription) : false;
+  const activeAccess = subscription ? hasActiveSubscriptionAccess(subscription) : false;
+  const monthlyPlan = plans.find((plan) => plan.durationMonths === 1);
+  const recommendedPlanCode = recommendedBillingPlanCode(plans);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [manageVisible, setManageVisible] = useState(false);
   const currentPlanName =
     subscription?.planCode && subscription.planName
       ? localizedBillingPlanName(subscription.planCode, subscription.planName, language)
@@ -102,17 +104,24 @@ export function SubscriptionsScreen({
     else onNotice(billingErrorMessage(billingCopy, result.code));
   };
 
-  const submit = async () => {
-    if (!checkoutAvailable || (!current && !selectedPlan)) return;
-    setActionBusy(true);
+  const submitCheckout = async (plan: BillingPlan) => {
+    if (!checkoutAvailable || manageable) return;
+    setActionBusy(plan.code);
     try {
-      presentResult(
-        current
-          ? await onPortal('update')
-          : await onCheckout(selectedPlan!.code),
-      );
+      presentResult(await onCheckout(plan.code));
     } finally {
-      setActionBusy(false);
+      setActionBusy(null);
+    }
+  };
+
+  const submitPortal = async (action: BillingPortalAction) => {
+    setActionBusy(action);
+    try {
+      const result = await onPortal(action);
+      setManageVisible(false);
+      presentResult(result);
+    } finally {
+      setActionBusy(null);
     }
   };
 
@@ -146,11 +155,11 @@ export function SubscriptionsScreen({
           <Text style={styles.sectionTitle}>{accountCopy.membership}</Text>
         </View>
         <Surface style={styles.membershipCard}>
-          <View style={[styles.membershipIcon, current && styles.membershipIconActive]}>
+          <View style={[styles.membershipIcon, activeAccess && styles.membershipIconActive]}>
             <Ionicons
-              name={current ? 'shield-checkmark' : 'shield-outline'}
+              name={activeAccess ? 'shield-checkmark' : 'shield-outline'}
               size={25}
-              color={current ? '#FFFFFF' : colors.blue}
+              color={activeAccess ? '#FFFFFF' : colors.blue}
             />
           </View>
           <View style={styles.membershipCopy}>
@@ -158,7 +167,7 @@ export function SubscriptionsScreen({
               {subscriptionStatusLabel(billingCopy, subscription)}
             </Text>
             <Text style={styles.membershipBody}>
-              {current ? accountCopy.activeBody : accountCopy.inactiveBody}
+              {activeAccess ? accountCopy.activeBody : accountCopy.inactiveBody}
             </Text>
             {currentPlanName ? (
               <Text style={styles.membershipMeta}>
@@ -201,41 +210,69 @@ export function SubscriptionsScreen({
         ) : plans.length ? (
           <View style={styles.planStack}>
             {plans.map((plan) => {
-              const selected = plan.code === selectedPlanCode;
+              const isCurrent = plan.code === subscription?.planCode && manageable;
+              const recommended = plan.code === recommendedPlanCode;
               const price = formatBillingMoney(plan.amountMinor, plan.currency, language);
-              const interval = billingIntervalLabel(
-                plan.interval,
-                billingCopy.month,
-                billingCopy.year,
-                plan.intervalCount,
-              );
+              const interval = billingDurationLabel(plan.durationMonths, language);
+              const monthlyEquivalent = formatMonthlyEquivalent(plan, language);
+              const savings = planSavingsPercent(plan, monthlyPlan);
               return (
-                <Pressable
+                <View
                   key={plan.code}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected, disabled: current }}
-                  disabled={current}
-                  onPress={() => setSelectedPlanCode(plan.code)}
-                  style={({ pressed }) => [
+                  accessibilityLabel={localizedBillingPlanName(plan.code, plan.name, language)}
+                  style={[
                     styles.planCard,
-                    selected && styles.planCardSelected,
-                    current && styles.planCardDisabled,
-                    pressed && styles.pressed,
+                    (recommended || isCurrent) && styles.planCardSelected,
                   ]}
                   testID={`billing-plan-${plan.code}`}
                 >
-                  <View style={[styles.radio, selected && styles.radioSelected]}>
-                    {selected ? <View style={styles.radioDot} /> : null}
+                  <View style={styles.planHeader}>
+                    <View style={styles.planCopy}>
+                      <Text style={styles.planName}>
+                        {localizedBillingPlanName(plan.code, plan.name, language)}
+                      </Text>
+                      <Text style={styles.planPrice}>
+                        {price && interval ? `${price} / ${interval}` : billingCopy.priceAtCheckout}
+                      </Text>
+                    </View>
+                    {isCurrent ? (
+                      <View style={styles.currentBadge}><Text style={styles.currentBadgeText}>{accountCopy.currentPlan}</Text></View>
+                    ) : recommended ? (
+                      <View style={styles.valueBadge}><Text style={styles.valueBadgeText}>{accountCopy.bestValue}</Text></View>
+                    ) : null}
                   </View>
-                  <View style={styles.planCopy}>
-                    <Text style={styles.planName}>
-                      {localizedBillingPlanName(plan.code, plan.name, language)}
-                    </Text>
-                    <Text style={styles.planPrice}>
-                      {price && interval ? `${price} / ${interval}` : billingCopy.priceAtCheckout}
-                    </Text>
+                  <View style={styles.planEconomics}>
+                    {plan.durationMonths > 1 && monthlyEquivalent ? (
+                      <Text style={styles.planEquivalent}>
+                        {interpolateAccountBillingCopy(accountCopy.perMonth, { price: monthlyEquivalent })}
+                      </Text>
+                    ) : null}
+                    {savings ? (
+                      <Text style={styles.planSavings}>
+                        {interpolateAccountBillingCopy(accountCopy.save, { percent: savings })}
+                      </Text>
+                    ) : null}
                   </View>
-                </Pressable>
+                  <View style={styles.planBenefits}>
+                    {[accountCopy.safeZones, accountCopy.history, accountCopy.smartAlerts,
+                      ...(plan.durationMonths >= 6 ? [accountCopy.replacement] : [])].map((benefit) => (
+                      <View key={benefit} style={styles.planBenefit}>
+                        <Ionicons name="checkmark-circle" size={16} color={colors.blue} />
+                        <Text style={styles.planBenefitText}>{benefit}</Text>
+                      </View>
+                    ))}
+                  </View>
+                  {!manageable && checkoutAvailable ? (
+                    <OutlineButton
+                      label={actionBusy === plan.code ? billingCopy.loading : accountCopy.subscribe}
+                      icon="card-outline"
+                      disabled={Boolean(actionBusy) || loading || !purchasesEnabled}
+                      onPress={() => void submitCheckout(plan)}
+                      testID={`subscribe-${plan.code}`}
+                      style={styles.planAction}
+                    />
+                  ) : null}
+                </View>
               );
             })}
           </View>
@@ -246,12 +283,12 @@ export function SubscriptionsScreen({
           </Surface>
         )}
 
-        {(current || selectedPlan) && checkoutAvailable ? (
+        {manageable && checkoutAvailable ? (
           <PrimaryButton
-            label={actionBusy ? billingCopy.loading : current ? accountCopy.manage : accountCopy.subscribe}
-            icon={current ? 'open-outline' : 'card-outline'}
-            onPress={() => void submit()}
-            disabled={actionBusy || loading || !purchasesEnabled}
+            label={actionBusy ? billingCopy.loading : accountCopy.manage}
+            icon="options-outline"
+            onPress={() => setManageVisible(true)}
+            disabled={Boolean(actionBusy) || loading}
             testID="subscription-primary-action"
           />
         ) : null}
@@ -268,6 +305,78 @@ export function SubscriptionsScreen({
           <Text style={styles.secureText}>{billingCopy.secureNotice}</Text>
         </View>
       </ScrollView>
+
+      <Modal
+        transparent
+        animationType="slide"
+        visible={manageVisible}
+        onRequestClose={() => setManageVisible(false)}
+      >
+        <View style={styles.modalRoot}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setManageVisible(false)} />
+          <SafeAreaView edges={['bottom']} style={styles.modalSafeArea}>
+            <View style={styles.modalCard}>
+              <View style={styles.modalHeader}>
+                <View style={styles.modalHeaderCopy}>
+                  <Text style={styles.modalTitle}>{accountCopy.manageTitle}</Text>
+                  <Text style={styles.modalBody}>{accountCopy.manageBody}</Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={t('common.close')}
+                  onPress={() => setManageVisible(false)}
+                  style={styles.modalClose}
+                >
+                  <Ionicons name="close" size={23} color={colors.mutedDark} />
+                </Pressable>
+              </View>
+
+              <View style={styles.modalCurrent}>
+                <Text style={styles.modalLabel}>{billingCopy.currentPlan}</Text>
+                <Text style={styles.modalCurrentPlan}>{currentPlanName ?? billingCopy.unavailable}</Text>
+                <Text style={styles.modalCurrentMeta}>{subscriptionStatusLabel(billingCopy, subscription)}</Text>
+                {periodEnd ? (
+                  <Text style={styles.modalCurrentMeta}>
+                    {subscription?.cancelAtPeriodEnd ? billingCopy.endsOn : billingCopy.renewsOn} {periodEnd}
+                  </Text>
+                ) : null}
+              </View>
+
+              <ScrollView style={styles.modalPlans} contentContainerStyle={styles.modalPlanList}>
+                {plans.map((plan) => (
+                  <View key={plan.code} style={[styles.modalPlan, plan.code === subscription?.planCode && styles.modalPlanCurrent]}>
+                    <View style={styles.modalPlanCopy}>
+                      <Text style={styles.modalPlanName}>{localizedBillingPlanName(plan.code, plan.name, language)}</Text>
+                      <Text style={styles.modalPlanPrice}>
+                        {formatBillingMoney(plan.amountMinor, plan.currency, language)} / {billingDurationLabel(plan.durationMonths, language)}
+                      </Text>
+                    </View>
+                    {plan.code === subscription?.planCode ? <Ionicons name="checkmark-circle" size={22} color={colors.blue} /> : null}
+                  </View>
+                ))}
+              </ScrollView>
+
+              <PrimaryButton
+                label={actionBusy === 'update' ? billingCopy.loading : accountCopy.changePlan}
+                icon="swap-horizontal-outline"
+                disabled={Boolean(actionBusy)}
+                onPress={() => void submitPortal('update')}
+                testID="subscription-change-plan"
+              />
+              {!subscription?.cancelAtPeriodEnd ? (
+                <OutlineButton
+                  label={actionBusy === 'cancel' ? billingCopy.loading : billingCopy.cancel}
+                  icon="close-circle-outline"
+                  disabled={Boolean(actionBusy)}
+                  onPress={() => void submitPortal('cancel')}
+                  testID="subscription-cancel"
+                />
+              ) : null}
+              <Text style={styles.portalNotice}>{accountCopy.portalNotice}</Text>
+            </View>
+          </SafeAreaView>
+        </View>
+      </Modal>
     </AppSafeArea>
   );
 }
@@ -325,18 +434,27 @@ const styles = StyleSheet.create({
   loadingText: { color: colors.muted, fontSize: 14 },
   planStack: { gap: 10 },
   planCard: {
-    minHeight: 78,
+    minHeight: 156,
     borderWidth: 1.5,
     borderColor: colors.border,
     borderRadius: radii.medium,
     backgroundColor: colors.surface,
     padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+    gap: 11,
   },
   planCardSelected: { borderColor: colors.blue, backgroundColor: '#F5F8FF' },
-  planCardDisabled: { opacity: 0.76 },
+  planHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  planEconomics: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8 },
+  planEquivalent: { color: colors.mutedDark, fontSize: 12, fontWeight: '600' },
+  planSavings: { color: '#087B49', fontSize: 12, fontWeight: '800' },
+  valueBadge: { borderRadius: 9, backgroundColor: colors.blue, paddingHorizontal: 8, paddingVertical: 5 },
+  valueBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
+  currentBadge: { borderRadius: 9, backgroundColor: '#DDE9FF', paddingHorizontal: 8, paddingVertical: 5 },
+  currentBadgeText: { color: colors.blueDark, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
+  planBenefits: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 12, rowGap: 6 },
+  planBenefit: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+  planBenefitText: { color: colors.mutedDark, fontSize: 11, lineHeight: 16 },
+  planAction: { marginTop: 2 },
   radio: {
     width: 22,
     height: 22,
@@ -364,5 +482,26 @@ const styles = StyleSheet.create({
   policyText: { color: colors.mutedDark, flex: 1, fontSize: 13, lineHeight: 19 },
   secureNotice: { flexDirection: 'row', alignItems: 'flex-start', gap: 10, paddingHorizontal: 6 },
   secureText: { color: colors.muted, flex: 1, fontSize: 12, lineHeight: 18 },
+  modalRoot: { flex: 1, justifyContent: 'flex-end' },
+  modalBackdrop: { position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'rgba(3,17,45,0.48)' },
+  modalSafeArea: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28 },
+  modalCard: { maxHeight: '88%', paddingHorizontal: 20, paddingTop: 20, paddingBottom: 12, gap: 14 },
+  modalHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
+  modalHeaderCopy: { flex: 1, gap: 5 },
+  modalTitle: { color: colors.text, fontSize: 23, lineHeight: 28, fontWeight: '900' },
+  modalBody: { color: colors.mutedDark, fontSize: 13, lineHeight: 19 },
+  modalClose: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F0F3F8', alignItems: 'center', justifyContent: 'center' },
+  modalCurrent: { borderRadius: 18, backgroundColor: colors.navy, padding: 16, gap: 4 },
+  modalLabel: { color: '#AFC7FF', fontSize: 10, fontWeight: '900', letterSpacing: 0.8 },
+  modalCurrentPlan: { color: '#FFFFFF', fontSize: 19, lineHeight: 24, fontWeight: '900' },
+  modalCurrentMeta: { color: '#D9E5FF', fontSize: 12, lineHeight: 17 },
+  modalPlans: { maxHeight: 230 },
+  modalPlanList: { gap: 8 },
+  modalPlan: { minHeight: 62, borderRadius: 15, borderWidth: 1, borderColor: colors.border, paddingHorizontal: 13, paddingVertical: 10, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  modalPlanCurrent: { borderColor: colors.blue, backgroundColor: '#F5F8FF' },
+  modalPlanCopy: { flex: 1, gap: 3 },
+  modalPlanName: { color: colors.text, fontSize: 14, fontWeight: '800' },
+  modalPlanPrice: { color: colors.mutedDark, fontSize: 11, lineHeight: 16 },
+  portalNotice: { color: colors.muted, fontSize: 11, lineHeight: 16, textAlign: 'center', paddingHorizontal: 8 },
   pressed: { opacity: 0.72, transform: [{ scale: 0.99 }] },
 });

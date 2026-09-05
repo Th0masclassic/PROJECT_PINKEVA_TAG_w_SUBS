@@ -17,19 +17,23 @@ import {
   TextButton,
   TrackerArtwork,
 } from '../components';
-import { formatRelativeTime, localizeTrackerPlace, useI18n } from '../i18n';
+import { useI18n } from '../i18n';
 import { selectClosestLocatedTracker } from '../location/nearestTracker';
-import { trackerProximityStatus } from '../location/proximity';
+import { createTrackerLocationPresentation } from '../location/presentation';
+import { useResolvedTrackerLocations } from '../location/useResolvedTrackerLocations';
+import { useLocationPresentationNow } from '../location/useLocationPresentationNow';
 import { useUserLocation } from '../location/useUserLocation';
 import { GoogleTrackerMap } from '../maps/GoogleTrackerMap';
 import type { Tracker } from '../model';
-import type { PremiumFeatureAccess } from '../premium/api';
+import type { DeviceSafeZone, PremiumFeatureAccess } from '../premium/api';
+import { canUseSafeZones } from '../premium/entitlements';
 import { colors, radii, shadow } from '../theme';
 
 export function HomeScreen({
   trackers,
   mainTracker,
   premiumFeatures,
+  safeZones,
   onOpenTracker,
   onAddTracker,
   onOpenHistory,
@@ -42,6 +46,7 @@ export function HomeScreen({
   trackers: Tracker[];
   mainTracker?: Tracker;
   premiumFeatures: Record<string, PremiumFeatureAccess>;
+  safeZones: Record<string, DeviceSafeZone[]>;
   onOpenTracker: (trackerId: string) => void;
   onAddTracker: () => void;
   onOpenHistory: (trackerId: string) => void;
@@ -51,13 +56,15 @@ export function HomeScreen({
   unreadNotificationCount: number;
   onNotice: (message: string) => void;
 }) {
-  const { t } = useI18n();
+  const { language, t } = useI18n();
   const userCoordinate = useUserLocation(trackers.length > 0);
+  const locationNow = useLocationPresentationNow();
+  const resolvedLocations = useResolvedTrackerLocations(trackers);
   const closestLocatedTracker = useMemo(
     () => selectClosestLocatedTracker(trackers, userCoordinate, mainTracker?.id),
     [mainTracker?.id, trackers, userCoordinate],
   );
-  const focusedTracker = closestLocatedTracker ?? mainTracker ?? trackers[0];
+  const focusedTracker = mainTracker ?? closestLocatedTracker ?? trackers[0];
   const mapTrackers = useMemo(
     () => (focusedTracker ? [focusedTracker] : []),
     [focusedTracker],
@@ -66,12 +73,17 @@ export function HomeScreen({
     return <TrackerSetupStart onAddTracker={onAddTracker} onNotice={onNotice} />;
   }
 
-  // The backend status is a safe fallback when the phone has denied location
-  // permission or the tracker has not reported coordinates yet. Once both
-  // points are available, the Home card reflects the physical distance using
-  // the selected tracker type (100 m for Card/Keys/Bag, 1 km for Car).
-  const proximityStatus = trackerProximityStatus(focusedTracker, userCoordinate);
-  const displayStatus = proximityStatus ?? focusedTracker.status;
+  const location = createTrackerLocationPresentation({
+    tracker: focusedTracker,
+    language,
+    t,
+    userCoordinate,
+    resolvedAddress: resolvedLocations[focusedTracker.id],
+    now: locationNow,
+    safeZones: canUseSafeZones(premiumFeatures[focusedTracker.id])
+      ? safeZones[focusedTracker.id]
+      : [],
+  });
 
   return (
     <AppSafeArea style={styles.safeArea}>
@@ -83,6 +95,11 @@ export function HomeScreen({
             recenterToken={0}
             focusTrackerId={focusedTracker?.id}
             showsUserLocation={Boolean(userCoordinate)}
+            markerDescriptions={{
+              [focusedTracker.id]: [location.primary, location.secondary, location.freshness]
+                .filter(Boolean)
+                .join('\n'),
+            }}
             onOpenTracker={onOpenTracker}
           />
           <View pointerEvents="none" style={styles.mapWash} />
@@ -130,18 +147,19 @@ export function HomeScreen({
               <View style={styles.trackerCopy}>
                 <Text numberOfLines={1} style={styles.trackerName}>{focusedTracker.name}</Text>
                 <View style={styles.trackerStatus}>
-                  <View style={styles.trackerStatusDot} />
-                  <Text style={styles.trackerStatusText}>
-                    {displayStatus === 'nearby' ? t('tracker.nearby') : t('tracker.away')}
-                  </Text>
+                  <Ionicons
+                    name={location.safeZoneName ? 'shield-checkmark' : 'navigate'}
+                    size={15}
+                    color="#72A6FF"
+                  />
+                  <Text numberOfLines={1} style={styles.trackerStatusText}>{location.primary}</Text>
                 </View>
-                <Text style={styles.trackerLabel}>{t('home.lastSeen')}</Text>
-                <Text numberOfLines={1} style={styles.trackerTime}>
-                  {formatRelativeTime(t, focusedTracker.lastSeen)}
-                </Text>
-                <Text numberOfLines={1} style={styles.trackerMeta}>
-                  {localizeTrackerPlace(t, focusedTracker.place)}
-                </Text>
+                {location.secondary ? (
+                  <Text numberOfLines={1} style={styles.trackerLocation}>{location.secondary}</Text>
+                ) : null}
+                {location.freshness ? (
+                  <Text numberOfLines={1} style={styles.trackerMeta}>{location.freshness}</Text>
+                ) : null}
               </View>
               <View style={styles.trackerChevron}>
                 <Ionicons name="chevron-forward" size={25} color="#FFFFFF" />
@@ -335,11 +353,9 @@ const styles = StyleSheet.create({
   trackerCopy: { flex: 0.92, minWidth: 0, paddingRight: 31 },
   trackerName: { color: '#FFFFFF', fontSize: 20, lineHeight: 24, fontWeight: '800' },
   trackerStatus: { flexDirection: 'row', alignItems: 'center', gap: 7, marginTop: 7 },
-  trackerStatusDot: { width: 9, height: 9, borderRadius: 5, backgroundColor: '#2D83FF' },
-  trackerStatusText: { color: '#2D83FF', fontSize: 13, lineHeight: 17, fontWeight: '600' },
-  trackerLabel: { color: 'rgba(255,255,255,0.62)', fontSize: 11, lineHeight: 15, marginTop: 17 },
-  trackerTime: { color: '#FFFFFF', fontSize: 19, lineHeight: 23, fontWeight: '800', marginTop: 2 },
-  trackerMeta: { color: 'rgba(255,255,255,0.68)', fontSize: 13, lineHeight: 18, marginTop: 1 },
+  trackerStatusText: { flexShrink: 1, color: '#72A6FF', fontSize: 14, lineHeight: 18, fontWeight: '800' },
+  trackerLocation: { color: '#FFFFFF', fontSize: 13, lineHeight: 18, fontWeight: '600', marginTop: 10 },
+  trackerMeta: { color: 'rgba(255,255,255,0.68)', fontSize: 12, lineHeight: 17, marginTop: 4 },
   trackerChevron: {
     position: 'absolute',
     right: 14,

@@ -5,14 +5,18 @@ import type { ProvisioningApiConfig } from '../provisioning/api';
 import {
   getPremiumFeatures,
   getPremiumOverview,
+  listSafeZones,
   premiumErrorCode,
+  type DeviceSafeZone,
   type PremiumFeatureAccess,
   type PremiumTrackerOverview,
 } from './api';
+import { canUseSafeZones } from './entitlements';
 
 export type PremiumTrackerState = {
   features: Record<string, PremiumFeatureAccess>;
   overviews: Record<string, PremiumTrackerOverview>;
+  safeZones: Record<string, DeviceSafeZone[]>;
   loadingIds: ReadonlySet<string>;
   errors: Record<string, string | undefined>;
   refreshDevice: (deviceId: string) => Promise<void>;
@@ -69,6 +73,23 @@ function createDemoOverview(deviceId: string): PremiumTrackerOverview {
   };
 }
 
+function createDemoSafeZones(deviceId: string): DeviceSafeZone[] {
+  const now = new Date().toISOString();
+  return [{
+    id: '11111111-1111-4111-8111-111111111111',
+    deviceId,
+    name: 'Home',
+    latitude: 38.7223,
+    longitude: -9.1393,
+    radiusMeters: 75,
+    enabled: true,
+    lastTrackerInside: true,
+    lastEvaluatedAt: now,
+    createdAt: now,
+    updatedAt: now,
+  }];
+}
+
 export function usePremiumTrackers(scope: PremiumTrackerScope): PremiumTrackerState {
   const deviceIdsKey = scope.deviceIds.join('\u001f');
   const deviceIds = useMemo(
@@ -92,6 +113,7 @@ export function usePremiumTrackers(scope: PremiumTrackerScope): PremiumTrackerSt
   const generation = useRef(0);
   const [features, setFeatures] = useState<Record<string, PremiumFeatureAccess>>({});
   const [overviews, setOverviews] = useState<Record<string, PremiumTrackerOverview>>({});
+  const [safeZones, setSafeZones] = useState<Record<string, DeviceSafeZone[]>>({});
   const [loadingIds, setLoadingIds] = useState<ReadonlySet<string>>(new Set());
   const [errors, setErrors] = useState<Record<string, string | undefined>>({});
 
@@ -116,8 +138,20 @@ export function usePremiumTrackers(scope: PremiumTrackerScope): PremiumTrackerSt
           : await getPremiumOverview(scope.apiConfig!, scope.getAccessToken, deviceId);
         if (currentContext.current !== requestContext) return;
         setOverviews((current) => ({ ...current, [deviceId]: nextOverview }));
+        const nextSafeZones = canUseSafeZones(nextFeatures)
+          ? mode === 'demo'
+            ? createDemoSafeZones(deviceId)
+            : await listSafeZones(scope.apiConfig!, scope.getAccessToken, deviceId)
+          : [];
+        if (currentContext.current !== requestContext) return;
+        setSafeZones((current) => ({ ...current, [deviceId]: nextSafeZones }));
       } else {
         setOverviews((current) => {
+          const next = { ...current };
+          delete next[deviceId];
+          return next;
+        });
+        setSafeZones((current) => {
           const next = { ...current };
           delete next[deviceId];
           return next;
@@ -138,6 +172,11 @@ export function usePremiumTrackers(scope: PremiumTrackerScope): PremiumTrackerSt
           delete next[deviceId];
           return next;
         });
+        setSafeZones((current) => {
+          const next = { ...current };
+          delete next[deviceId];
+          return next;
+        });
       }
     } finally {
       if (currentContext.current === requestContext) {
@@ -151,6 +190,7 @@ export function usePremiumTrackers(scope: PremiumTrackerScope): PremiumTrackerSt
     const effectContext = contextIdentity;
     setFeatures({});
     setOverviews({});
+    setSafeZones({});
     setErrors({});
     setLoadingIds(mode === 'unavailable' ? new Set() : new Set(deviceIds));
 
@@ -185,5 +225,5 @@ export function usePremiumTrackers(scope: PremiumTrackerScope): PremiumTrackerSt
     return () => listener.remove();
   }, [deviceIds, mode, refreshDevice]);
 
-  return { features, overviews, loadingIds, errors, refreshDevice };
+  return { features, overviews, safeZones, loadingIds, errors, refreshDevice };
 }

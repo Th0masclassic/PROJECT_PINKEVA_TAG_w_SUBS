@@ -20,6 +20,7 @@ export function GoogleTrackerMap({
   focusTrackerId,
   showsUserLocation = false,
   pathCoordinates = EMPTY_PATH,
+  markerDescriptions = {},
   onPressInTracker,
   onPressOutTracker,
   onLongPressTracker,
@@ -31,6 +32,7 @@ export function GoogleTrackerMap({
   focusTrackerId?: string;
   showsUserLocation?: boolean;
   pathCoordinates?: LatLng[];
+  markerDescriptions?: Record<string, string | undefined>;
   onPressInTracker?: (trackerId: string) => void;
   onPressOutTracker?: () => void;
   onLongPressTracker?: (trackerId: string) => void;
@@ -144,7 +146,7 @@ export function GoogleTrackerMap({
             key={tracker.id}
             coordinate={coordinate}
             title={tracker.name}
-            description={tracker.address === '—' ? tracker.place : tracker.address}
+            description={markerDescriptions[tracker.id]}
             anchor={{ x: 0.5, y: 1 }}
             centerOffset={{ x: 0, y: -4 }}
             onCalloutPress={() => onOpenTracker(tracker.id)}

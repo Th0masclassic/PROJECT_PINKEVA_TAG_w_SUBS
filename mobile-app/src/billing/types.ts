@@ -77,6 +77,10 @@ export function isCurrentSubscription(subscription: AccountSubscription): boolea
   );
 }
 
+export function hasActiveSubscriptionAccess(subscription: AccountSubscription): boolean {
+  return subscription.status === 'active' || subscription.status === 'trialing';
+}
+
 export function canStartCheckout(subscription: AccountSubscription): boolean {
   return !isCurrentSubscription(subscription);
 }

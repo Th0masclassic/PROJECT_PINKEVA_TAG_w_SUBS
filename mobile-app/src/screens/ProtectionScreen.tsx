@@ -47,6 +47,7 @@ import {
 } from '../premium/copy';
 import { useSafeZones } from '../premium/useSafeZones';
 import { useProtectionServices } from '../premium/useProtectionServices';
+import { canUseSafeZones } from '../premium/entitlements';
 import type { ProvisioningApiConfig } from '../provisioning/api';
 import { colors, radii, shadow } from '../theme';
 
@@ -90,7 +91,7 @@ export function ProtectionScreen({
   const { language, t } = useI18n();
   const copy = useProtectionCopy();
   const active = Boolean(features?.subscriptionActive);
-  const safeZonesAvailable = Boolean(active && features?.safeZones);
+  const safeZonesAvailable = canUseSafeZones(features);
   const safeZoneState = useSafeZones({
     ownerKey,
     deviceId: tracker.id,
@@ -453,7 +454,7 @@ export function ProtectionScreen({
                   onChangeText={(name) => setDraft((current) => current ? { ...current, name } : null)}
                   testID="safe-zone-name"
                 />
-                <View style={styles.coordinateRow}>
+                {__DEV__ ? <View style={styles.coordinateRow}>
                   <EditorField
                     compact
                     label={copy.latitude}
@@ -470,7 +471,7 @@ export function ProtectionScreen({
                     onChangeText={(longitude) => setDraft((current) => current ? { ...current, longitude } : null)}
                     testID="safe-zone-longitude"
                   />
-                </View>
+                </View> : null}
                 <SafeZoneMapPicker
                   coordinate={draftCoordinate(draft)}
                   onChange={({ latitude, longitude }) => {
@@ -604,9 +605,7 @@ function ZoneRow({
         </View>
         <View style={styles.zoneCopy}>
           <Text numberOfLines={1} style={styles.zoneName}>{zone.name}</Text>
-          <Text style={styles.zoneMeta}>
-            {zone.latitude.toFixed(5)}, {zone.longitude.toFixed(5)} · {zone.radiusMeters} m
-          </Text>
+          <Text style={styles.zoneMeta}>{zone.radiusMeters} m</Text>
           <Text style={[
             styles.zoneState,
             zone.lastTrackerInside === false && styles.zoneStateOutside,
