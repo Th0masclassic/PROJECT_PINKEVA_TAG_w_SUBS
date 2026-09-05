@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>ENCODED ARCHIVE</title>
+  <style>
+    :root{--bg:#050706;--panel:#090d0b;--line:#173022;--green:#71ff9a;--green2:#2fdc67;--muted:#6c8b75;--red:#ff4d5e;--amber:#f6c85f}
+    *{box-sizing:border-box}html,body{margin:0;background:radial-gradient(circle at 50% 0%,rgba(37,110,63,.12),transparent 28%),linear-gradient(#050706,#020302 65%);color:var(--green);font-family:"Courier New",ui-monospace,monospace;min-height:100%}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.08;background:repeating-linear-gradient(to bottom,rgba(255,255,255,.18) 0,rgba(255,255,255,.18) 1px,transparent 1px,transparent 4px)}
+    .wrap{max-width:980px;margin:auto;padding:18px 14px 60px}.top{display:flex;align-items:center;justify-content:space-between;border:1px solid var(--line);background:rgba(5,10,7,.9);padding:11px 12px;box-shadow:0 0 22px rgba(50,255,107,.05)}
+    .brand{font-weight:800;letter-spacing:.18em;font-size:13px}.status{font-size:11px;color:var(--muted)}.blink{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green2);margin-right:7px;box-shadow:0 0 10px var(--green2);animation:pulse 1.15s infinite}@keyframes pulse{50%{opacity:.25}}
+    .grid{display:grid;grid-template-columns:1.02fr .98fr;gap:14px;margin-top:14px}.panel{border:1px solid var(--line);background:rgba(6,10,8,.92);box-shadow:0 0 25px rgba(27,255,93,.035)}.panel h2{margin:0;padding:10px 12px;border-bottom:1px solid var(--line);font-size:12px;letter-spacing:.13em;color:#a9ffc0}.media{padding:12px}
+    .drop{aspect-ratio:1/1;position:relative;display:grid;place-items:center;border:1px dashed #275f3d;background:linear-gradient(45deg,rgba(30,255,89,.02),rgba(255,255,255,0)),#030604;overflow:hidden}#preview{width:100%;height:100%;object-fit:cover;display:none;filter:grayscale(.35) contrast(1.08) saturate(.72)}.drop:after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(90deg,transparent 0 27px,rgba(78,255,128,.025) 28px),repeating-linear-gradient(0deg,transparent 0 27px,rgba(78,255,128,.02) 28px)}
+    .dropText{text-align:center;padding:30px;color:var(--muted);font-size:12px;line-height:1.8}input[type=file]{display:none}.btn{display:block;margin-top:10px;width:100%;border:1px solid #2a6c43;background:#071109;color:var(--green);padding:12px;font:inherit;font-size:12px;letter-spacing:.08em;cursor:pointer;text-align:center}.btn:active{transform:translateY(1px)}.kv{padding:10px 12px;border-bottom:1px solid #102218}.label{font-size:10px;color:var(--muted);letter-spacing:.12em;margin-bottom:5px}.value{font-size:12px;word-break:break-all;color:#baffca}.danger{color:var(--red)}.amber{color:var(--amber)}
+    .terminal{margin-top:14px;border:1px solid var(--line);background:#020403;padding:12px;min-height:210px}.terminal .line{font-size:11px;line-height:1.75;color:#86c994;white-space:pre-wrap}.footer{margin-top:12px;text-align:center;color:#355e42;font-size:10px;letter-spacing:.08em}.tag{display:inline-block;border:1px solid #234d32;padding:3px 6px;margin:4px 5px 0 0;font-size:9px;color:#6fbf84}@media(max-width:760px){.grid{grid-template-columns:1fr}.wrap{padding:10px 9px 40px}.top{gap:10px}.brand{font-size:11px}.status{font-size:9px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top"><div class="brand">NODE://ENCODED_ARCHIVE</div><div class="status"><span class="blink"></span>SESSION ACTIVE</div></div>
+    <div class="grid">
+      <section class="panel"><h2>VISUAL PAYLOAD</h2><div class="media"><div class="drop" id="drop" onclick="document.getElementById('file').click()" style="cursor:pointer;-webkit-tap-highlight-color:transparent;"><img id="preview" alt="Selected local image"><div class="dropText" id="dropText">NO VISUAL PAYLOAD LOADED<br><span style="color:#406f4c">local-memory decode channel ready</span></div></div><label class="btn" for="file">[ SELECT IMAGE FROM PHOTOS ]</label><input id="file" type="file" accept="image/*"></div></section>
+      <section class="panel"><h2>ENCODED RECORD</h2><div class="kv"><div class="label">OBJECT ID</div><div class="value" id="obj">0x0000000000000000</div></div><div class="kv"><div class="label">CONTENT HASH</div><div class="value" id="hash">awaiting payload...</div></div><div class="kv"><div class="label">CIPHER</div><div class="value">XChaCha20 / local visual obfuscation</div></div><div class="kv"><div class="label">ROUTE</div><div class="value">relay_07 → mirror_13 → archive_node</div></div><div class="kv"><div class="label">ACCESS FLAG</div><div class="value danger">RESTRICTED // NO INDEX</div></div><div class="kv"><div class="label">PACKET STATE</div><div class="value amber" id="state">IDLE</div></div><div class="kv"><div class="label">MARKERS</div><div><span class="tag">encrypted</span><span class="tag">mirrored</span><span class="tag">fragmented</span><span class="tag">local-only</span></div></div></section>
+    </div>
+    <div class="terminal" id="terminal"><div class="line">[boot] secure visual parser initialized</div><div class="line">[boot] entropy pool: ready</div><div class="line">[boot] waiting for local image payload...</div></div>
+    <div class="footer">NO NETWORK REQUESTS • IMAGE STAYS IN THIS BROWSER TAB</div>
+  </div>
+<script>
+const file=document.getElementById('file'),preview=document.getElementById('preview'),dropText=document.getElementById('dropText'),hashEl=document.getElementById('hash'),objEl=document.getElementById('obj'),stateEl=document.getElementById('state'),terminal=document.getElementById('terminal');
+function addLine(txt){const d=document.createElement('div');d.className='line';d.textContent=txt;terminal.appendChild(d);terminal.scrollTop=terminal.scrollHeight}function hex(buf){return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('')}function randomHex(n){const a=new Uint8Array(n);crypto.getRandomValues(a);return [...a].map(b=>b.toString(16).padStart(2,'0')).join('')}
+file.addEventListener('change',async()=>{const f=file.files?.[0];if(!f)return;stateEl.textContent='INGESTING';addLine('[ingest] payload accepted: '+f.name);addLine('[ingest] size: '+f.size+' bytes');const reader=new FileReader();reader.onload=()=>{preview.src=reader.result;preview.onload=()=>{preview.style.display='block';dropText.style.display='none'}};reader.onerror=()=>{addLine('[error] image preview failed');stateEl.textContent='PREVIEW ERROR'};reader.readAsDataURL(f);const data=await f.arrayBuffer();let digest;try{digest=await crypto.subtle.digest('SHA-256',data);hashEl.textContent='sha256:'+hex(digest)}catch(e){hashEl.textContent='sha256:'+randomHex(32)}objEl.textContent='0x'+randomHex(8);addLine('[encode] visual blocks mapped');addLine('[encode] metadata scrubbed in display layer');addLine('[route] mirror chain assigned');addLine('[archive] record sealed');stateEl.textContent='ENCODED / SEALED'});
+</script>
+</body>
+</html>
